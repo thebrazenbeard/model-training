@@ -155,7 +155,12 @@ class CandidateHandoffTests(unittest.TestCase):
         external = self.root / "outside.gguf"
         external.write_bytes((self.art / "vera.gguf").read_bytes())
         (self.art / "vera.gguf").unlink()
-        (self.art / "vera.gguf").symlink_to(external)
+        try:
+            (self.art / "vera.gguf").symlink_to(external)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows user lacks symlink-creation privilege")
+            raise
         with self.assertRaisesRegex(handoff.CandidateRejected, "escapes root"):
             handoff.verify_candidate(self.manifest_path, self.art)
 
