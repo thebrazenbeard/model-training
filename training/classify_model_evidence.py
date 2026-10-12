@@ -48,6 +48,47 @@ def classify(receipt):
             "hashes_verified": False, "training_executed_verified": False, "model_qualified": False}
 
 
+VERIFIED_STATES = ("CONFIGURED_ONLY", "WEIGHT_UPDATE_VERIFIED", "ARTIFACT_VERIFIED", "EVALUATION_VERIFIED")
+
+
+def _sha256_file(path):
+    import hashlib
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_bundle(receipt, paths):
+    """Verify the exact local bytes named by a syntactically valid evidence receipt.
+
+    Byte verification advances evidence state, never model qualification.
+    """
+    reported = classify(receipt)
+    claims = receipt["claims"]
+    required = []
+    if claims["weight_update"]:
+        required += ["dataset", "recipe", "run_log"]
+    if claims["artifact"]:
+        required += ["weights"]
+    if claims["evaluation"]:
+        required += ["eval_manifest", "eval_results", "baseline_results"]
+    if not isinstance(paths, dict):
+        raise ValueError("paths must be an object")
+    for key in required:
+        path = paths.get(key)
+        if not isinstance(path, str) or not Path(path).is_file():
+            raise ValueError(f"missing {key} file")
+        actual = _sha256_file(path)
+        expected = receipt["evidence"][f"{key}_sha256"]
+        if actual != expected:
+            raise ValueError(f"{key} digest mismatch")
+    level = sum(claims.values())
+    return {**reported, "classification": VERIFIED_STATES[level], "hashes_verified": True,
+            "training_executed_verified": claims["weight_update"], "model_qualified": False}
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser()
