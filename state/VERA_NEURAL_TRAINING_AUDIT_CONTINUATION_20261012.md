@@ -38,3 +38,14 @@ Complete read-only tree/history/branch/PR/artifact inventory and Vera Mono sourc
 
 ## Authority
 No paid training, credential changes, protected data publication, deployment, cutover, canonical memory writes, merge, P.O.R.T.A.L. runtime/connector/PR #22/Firesafe modifications. Patrick must explicitly authorize any such effect.
+
+
+## 2026-10-12 repair/build continuation
+
+Implemented a byte-binding layer above claim classification. `verify_bundle()` now hashes the exact required dataset, recipe, run-log, weights, and evaluation files according to the claimed stage and fails closed on missing or mismatched bytes. Verified-byte states are explicitly named `*_EVIDENCE_BYTES_VERIFIED`; byte matching does not set `training_executed_verified` and never sets `model_qualified`.
+
+TDD evidence: the first focused test failed because `verify_bundle` did not exist; the implementation then passed. A hostile review found an epistemic overclaim in the first implementation (matching bytes had set `training_executed_verified=true`). A second red-green cycle changed the expected contract to false and renamed the verified states to make the ceiling explicit.
+
+Added `training/candidates/VERA_QWEN35_V10R2_STEP12_EVIDENCE_V1.json`, binding the strongest inspected historical trained candidate to PR #81 / historical head `03a4fe4ce081122bfbe89ecf27c7fbfbbfe5dbc1`. It records the known corpus, recipe/spec, run receipt, and adapter SHA-256 and classifies only as `ARTIFACT_REPORTED`. The prior 16-case held-out diagnostic is provenance, not independent qualification.
+
+Current blocker is physical artifact readback: Lappy is offline, so the historical V10R2 adapter bytes under `D:\\VERA\\models\\adapters` cannot yet be re-hashed against the source receipt. No replacement training run is justified until existing candidate custody and lineage are resolved.
