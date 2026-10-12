@@ -48,7 +48,7 @@ def classify(receipt):
             "hashes_verified": False, "training_executed_verified": False, "model_qualified": False}
 
 
-VERIFIED_STATES = ("CONFIGURED_ONLY", "WEIGHT_UPDATE_VERIFIED", "ARTIFACT_VERIFIED", "EVALUATION_VERIFIED")
+VERIFIED_STATES = ("CONFIGURED_ONLY", "WEIGHT_UPDATE_EVIDENCE_BYTES_VERIFIED", "ARTIFACT_EVIDENCE_BYTES_VERIFIED", "EVALUATION_EVIDENCE_BYTES_VERIFIED")
 
 
 def _sha256_file(path):
@@ -86,7 +86,7 @@ def verify_bundle(receipt, paths):
             raise ValueError(f"{key} digest mismatch")
     level = sum(claims.values())
     return {**reported, "classification": VERIFIED_STATES[level], "hashes_verified": True,
-            "training_executed_verified": claims["weight_update"], "model_qualified": False}
+            "training_executed_verified": False, "model_qualified": False}
 
 
 def main():
