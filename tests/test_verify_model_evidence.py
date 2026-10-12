@@ -23,9 +23,9 @@ class VerifyBundleTests(unittest.TestCase):
                        "evidence": evidence, "held_out": True, "independent_evaluator": True}
             result = verify_bundle(receipt, {key: str(value) for key, value in paths.items()})
             self.assertTrue(result["hashes_verified"])
-            self.assertTrue(result["training_executed_verified"])
+            self.assertFalse(result["training_executed_verified"])
             self.assertFalse(result["model_qualified"])
-            self.assertEqual(result["classification"], "EVALUATION_VERIFIED")
+            self.assertEqual(result["classification"], "EVALUATION_EVIDENCE_BYTES_VERIFIED")
 
     def test_rejects_changed_weight_bytes(self):
         with tempfile.TemporaryDirectory() as td:
