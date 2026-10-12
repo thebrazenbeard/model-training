@@ -1,0 +1,27 @@
+{
+  "schema": "VERA_NEURAL_EVIDENCE_V1",
+  "candidate_id": "vera-qwen35-v10r2-step12-20261003",
+  "training_kind": "adapter_finetune",
+  "claims": {
+    "weight_update": true,
+    "artifact": true,
+    "evaluation": false
+  },
+  "evidence": {
+    "base_revision": "37c58ec6dc0f8b2d1278a9120209198131746e88",
+    "dataset_sha256": "a232732a7db1f22c7edabb984fb16a3fe5350022e0a152576d80877eb9430300",
+    "recipe_sha256": "c08b8a452882f38a1b6e760fd8362d0d99528ffa411bbf931c21b4f657c92c4a",
+    "run_log_sha256": "19a9876003f0d71bebde58d90403fca61597af2fc3562b15fd77f1353e863648",
+    "weights_sha256": "15df1dcd9f5b5a4db35a8e2fdde20771c3af305b4269480af67e57c1f42fe2c3"
+  },
+  "held_out": false,
+  "independent_evaluator": false,
+  "source": {
+    "repository": "thebrazenbeard/vera_model_training",
+    "merged_pr": 81,
+    "historical_head": "03a4fe4ce081122bfbe89ecf27c7fbfbbfe5dbc1",
+    "training_receipt_path": "successor/experiments/receipts/V10R2_QWEN35_CONT4_PLUS8_DEV_TRAINING_RECEIPT_20261003_V1.json",
+    "development_eval_path": "successor/experiments/receipts/V10R2_HELDOUT_BASE_STEP4_STEP12_16_20261003_V1.json"
+  },
+  "claim_ceiling": "ARTIFACT_REPORTED_FROM_SOURCE_HISTORY; LOCAL_BYTES_NOT_REVERIFIED; DEVELOPMENT_DIAGNOSTIC_NOT_INDEPENDENT_QUALIFICATION"
+}
