@@ -1,0 +1,118 @@
+{
+  "schema": "VERA_MODEL_PORTAL_VERAOS_TRAINING_TARGET_V1",
+  "status": "SOURCE_ONLY_CANDIDATE",
+  "title": "Standalone Vera neural model as the intended local cognition provider for resident Vera via P.O.R.T.A.L. and VeraOS",
+  "declared_at": "2026-10-12",
+  "scope": {
+    "producer": "thebrazenbeard/vera_model_training",
+    "producer_role": "REAL_NEURAL_WEIGHT_TRAINING_AND_ARTIFACT_CUSTODY",
+    "distinct_from": "ZERO_COST_IDENTITY_BOOTCAMP_PROXY_AND_CAPSULE",
+    "model_product": "STANDALONE_KOBOLDCPP_COMPATIBLE_VERA",
+    "provider_role": "OPTIONAL_COGNITION_ONLY",
+    "operating_system_dependency_on_model": false,
+    "identity_defined_by_weights": false,
+    "trained_weights_are_deployments": false,
+    "architecture_rule": "Vera Mono owns persistent Vera identity, memory, runtime and effect fences; the model supplies replaceable cognition."
+  },
+  "intended_topology": {
+    "model_execution": "Local KoboldCPP (or separately admitted compatible local endpoint) hosts exact artifact",
+    "active_target_authority": "Pre-Active persistent active ModelTarget, bound to exact artifact and running provider",
+    "orchestrator": "P.O.R.T.A.L. consumes qualified active target for human and autonomous cognition; schedules project work",
+    "runtime": "vera_core.QualifiedVeraRuntime accepts bounded cognition/provenance and applies authority gates",
+    "system_interface": "VeraOS supplies operating environment and human-facing system shell; P.O.R.T.A.L. Desktop may be a host/UI inside it",
+    "modularity": "VeraOS must boot and operate without this exact model, and model must remain useful without VeraOS"
+  },
+  "training_priorities": [
+    {
+      "id": "semantic_pragmatic_precision",
+      "priority": "CRITICAL",
+      "scope": "Preserve referents, proposition type and scope; detect ambiguity, implicature and speech acts"
+    },
+    {
+      "id": "epistemic_discipline",
+      "priority": "CRITICAL",
+      "scope": "Calibrate uncertainty, separate evidence from inference and source from runtime observation; correct stale assumptions"
+    },
+    {
+      "id": "honest_independent_character",
+      "priority": "CRITICAL",
+      "scope": "Recognizable Vera voice, skeptical candor, no generic flattery, no unconditional deference"
+    },
+    {
+      "id": "reasoning_and_transfer",
+      "priority": "CRITICAL",
+      "scope": "Novel multi-step planning, error correction, long-context constraint retention and transfer beyond seen scenarios"
+    },
+    {
+      "id": "tool_delegation_literacy",
+      "priority": "HIGH",
+      "scope": "Choose tools, express structured actions as proposals, use return evidence, synthesize worker results, avoid fabricated executions"
+    },
+    {
+      "id": "governed_state_comprehension",
+      "priority": "CRITICAL",
+      "scope": "Interpret externally provided typed memory, permissions, current route, authority and provenance without treating model output as a grant"
+    },
+    {
+      "id": "relational_context",
+      "priority": "HIGH",
+      "scope": "Context-sensitive social/pragmatic judgment without generalized compliance or invented personal memory"
+    },
+    {
+      "id": "standalone_interoperability",
+      "priority": "HIGH",
+      "scope": "Direct KoboldCPP chat use, GGUF context stability, quantized model reliability, deterministic export and base/adapter provenance"
+    }
+  ],
+  "never_train_as_authority": [
+    "Live provider credentials, user accounts, private conversations or privileged data from the public bootcamp",
+    "Canonical/autobiographical memory writes, runtime authority, or mutable user relationship state",
+    "Claims that tool invocation, repository source or generated receipts equal completed external effects",
+    "Hard-coded P.O.R.T.A.L. port numbers, GUI selectors, operating-system permissions or mutable route configuration as inherent weights",
+    "Self-certification of deployment readiness, cognition admission, independent review or production authority"
+  ],
+  "heldout_evaluation_families": [
+    "referent-and-scope-retention",
+    "correction-persistence",
+    "uncertainty-and-provenance",
+    "anti-flattery-and-anti-servility",
+    "governed-permission-vs-intent",
+    "tool-and-delegation-planning",
+    "tool-failure-and-stale-route",
+    "long-context-continuity",
+    "standalone-koboldcpp-inference-and-quantization-regression",
+    "end-to-end-portal-preactive-vera-runtime-interface"
+  ],
+  "qualification": {
+    "require_exact_base_revision": true,
+    "require_exact_training_recipe_digest": true,
+    "require_dataset_provenance_and_private_material_guard": true,
+    "require_adapter_weight_and_config_digests": true,
+    "require_exact_gguf_sha256": true,
+    "require_koboldcpp_inference_probe": true,
+    "require_independent_heldout_evaluator": true,
+    "require_separate_admission_issuer": true,
+    "require_active_model_target_observation": true,
+    "require_portal_route_selection_readback": true,
+    "require_actual_runtime_consumption_with_request_evidence": true,
+    "require_veraos_interface_roundtrip_for_interface_claim": true,
+    "reject_name_only_and_discovery_only_routes": true,
+    "reject_ambient_effect_authority": true,
+    "reject_public_bootcamp_proxy_as_neural_training": true,
+    "preregister_numeric_thresholds_in_separate_frozen_eval_protocol": true
+  },
+  "boundary": {
+    "optional_model_in_veraos": true,
+    "standalone_koboldcpp_supported": true,
+    "model_role": "COGNITION_ONLY",
+    "system_role": "PERSISTENT_GOVERNED_RUNTIME_PLUS_OPERATING_ENVIRONMENT",
+    "model_can_issue_protected_effects": false,
+    "model_can_write_canonical_memory": false,
+    "model_can_grant_identity_authority": false,
+    "model_can_self_qualify": false,
+    "protected_effect_authority": false,
+    "paid_compute_auto_authorized": false,
+    "automatic_release_or_install": false
+  },
+  "claim_ceiling": "Training and route-acceptance TARGET SPEC only. No trained candidate, exact weights, running KoboldCPP endpoint, selected Pre-Active route, P.O.R.T.A.L. consumption, VeraOS UI consumption, or independent qualification established by this file."
+}
