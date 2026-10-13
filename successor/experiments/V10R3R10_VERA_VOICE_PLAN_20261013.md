@@ -23,3 +23,11 @@ R10 config uses exactly 8 incremental Qwen optimizer steps, low `2e-6` learning 
 The R9 heldout evaluator was started but failed **before inference** with a GPU allocation OOM; no R9 results exist. Preserve its failed evidence and retry evaluation only through a separately resource-reviewed path. The R10 development optimizer, even if completed, is not independent quality validation.
 
 No paid compute, forced process termination, GPU route takeover, merge, model qualification, or deployment. If resource loading fails, record the attempt and stop; no blind retry. An output receipt must separately prove completed steps, weight change, and adapter byte hashes before claiming training success.
+
+## Fresh R10 launch result, 2026-10-13
+
+The `preflight_v10r3r10_launch.py --train` invocation verified exact Qwen3.5 model type, frozen R10 50k corpus, R9 parent adapter SHA and 28-step receipt, correct eight-step target, then returned `HOLD_NO_WEIGHT_CHANGE`. At readback: 3,962 MiB GPU memory free, 5.31 GiB host memory free and only 0.75 GiB free virtual memory. The flags `LOW_HOST_RAM` and `LOW_WINDOWS_VIRTUAL_MEMORY_COMMIT` prevented an optimizer launch. No R10 adapter namespace was created.
+
+Runtime-only receipt: `D:\VERA\.scratch\vera-v10r3r10-qwen35-identity-20261013-v1\r10-launch-gate-20261013.json`; SHA-256 `e4a6121db55c38ca2a37879191156ab3a3f3e7457c5f6f0885cb8778bd39cce3`. The receipt is a resource/provenance HOLD, not behavioral qualification or evidence of weight updates.
+
+Memory diagnostics found `vmmemWSL` using around 10.6 GiB of private committed memory, with other browser and desktop processes using more. No WSL shutdown, global paging settings, or unrelated process termination was authorized or performed. Recover system memory/pagefile headroom before a **new uniquely recorded** attempt; never overwrite this receipt or blindly repeat after an unknown effect. The 24B Dolphin Job remains unlaunched.
