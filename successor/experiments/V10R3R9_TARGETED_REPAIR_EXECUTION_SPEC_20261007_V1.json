@@ -1,0 +1,103 @@
+{
+  "authority": {
+    "actor_id": "PATRICK_USER_AUTHORITY",
+    "deploy_activate_authorized": false,
+    "merge_authorized": false,
+    "paid_compute_authorized": false,
+    "scope": "CHANGE_TRAINING_METHOD_AND_CONTINUE_LOCAL_MODEL_TRAINING",
+    "source": "EXPLICIT_CURRENT_USER_INSTRUCTION"
+  },
+  "comparison": {
+    "claim_ceiling": "LOCAL_DEVELOPMENT_REPAIR_ONLY_NOT_EXTERNALLY_QUALIFIED",
+    "heldout_required": true,
+    "repair_fraction": 0.5,
+    "repair_row_count": 64,
+    "repair_start_row": 160,
+    "replication_id": "V10R3R9_TARGETED_REPAIR_20261007_V1",
+    "role": "R9_RESUME_R8_EVIDENCE_BOUNDARY_REPAIR"
+  },
+  "date": "2026-10-07",
+  "development_window": {
+    "row_count": 64,
+    "start_row": 160
+  },
+  "experiment_class": "TARGETED_BEHAVIOR_REPAIR",
+  "lora": {
+    "alpha": 16,
+    "bias": "none",
+    "dropout": 0,
+    "r": 4,
+    "target_modules": "all-linear",
+    "task_type": "CAUSAL_LM"
+  },
+  "model_load": {
+    "device_map": {
+      "": 0
+    },
+    "dtype": "bfloat16",
+    "prepare_model_for_kbit_training_use_gradient_checkpointing": true,
+    "use_cache": false
+  },
+  "output": {
+    "namespace": "D:\\VERA\\models\\adapters\\v10r3r9-targeted-repair-r8-resume-20261007",
+    "overwrite_forbidden": true,
+    "save_final_adapter": true
+  },
+  "qualification": {
+    "claim_ceiling": "LOCAL_DEVELOPMENT_ADAPTER_ONLY_NOT_EXTERNALLY_QUALIFIED",
+    "development_training_may_precede_external_qualification": true,
+    "external_final_bank_required_for_qualification": true
+  },
+  "quantization": {
+    "compute_dtype": "bfloat16",
+    "double_quant": true,
+    "load_in_4bit": true,
+    "type": "nf4"
+  },
+  "resume_adapter": {
+    "adapter_model_sha256": "debe3bf4a806858eeece821a7eb49be8f9daada109d78c5c10cf5a952baf1092",
+    "next_train_row": 160,
+    "path": "D:\\VERA\\models\\adapters\\v10r3r8-lane-a-continuous20-sequential-20261007\\adapter",
+    "previous_optimizer_steps": 20,
+    "source_cumulative_optimizer_steps": 20,
+    "source_receipt_path": "D:\\VERA\\models\\adapters\\v10r3r8-lane-a-continuous20-sequential-20261007\\DEV_TRAINING_COMPLETE.json",
+    "source_receipt_sha256": "f761e2db4171753fa6208d9c75f489247b86d520e76cc75a412b6d1f2e2c3d76",
+    "source_spec_path": "successor/experiments/V10R3R8_CONTINUOUS20_EXECUTION_SPEC_20261007_V1.json",
+    "source_spec_sha256": "7f64429473bd6a23aa0b86117a4402939fe40db8ac7a63a896968ebb1b9e4005",
+    "source_weight_digest_after": "5fbd6cb245f1d2baaee01331ee93fde8dff9709fed04d407933e5af910003a03"
+  },
+  "schema": "V10R2_QWEN35_DEV_TRAINING_SPEC_V1",
+  "source_subject": {
+    "parent_revision": "03688f8de5d74b3e96fd5b0519143d83b6087a97",
+    "runtime_binding_sha256": "44b01efc6c2d0e1716208e04e7132433561b5562430adae821fd29e6a1493224",
+    "runtime_python_path": "C:\\ProgramData\\ProRun\\model-env\\Scripts\\python.exe",
+    "train_rows": 50000,
+    "train_sha256": "aad72387cf803162230344a306dff127ac521197c2ed55fb1590cf4969cbad5c",
+    "training_corpus_id": "VERA_SUCCESSOR_V10R3R9_TARGETED_REPAIR_50K_V1"
+  },
+  "status": "AUTHORIZED_LOCAL_DEVELOPMENT_TRAINING",
+  "trainer": {
+    "bf16": true,
+    "completion_only_loss": true,
+    "eval_strategy": "no",
+    "gradient_accumulation_steps": 8,
+    "gradient_checkpointing": true,
+    "gradient_checkpointing_use_reentrant": false,
+    "learning_rate": 5e-06,
+    "logging_steps": 1,
+    "lr_scheduler_type": "cosine",
+    "max_length": 512,
+    "max_optimizer_steps": 8,
+    "method": "QLORA_SFT_DEVELOPMENT",
+    "optimizer": "adamw_bnb_8bit",
+    "packing": false,
+    "per_device_train_batch_size": 1,
+    "report_to": "none",
+    "save_strategy": "no",
+    "seed": 20261007,
+    "shuffle_dataset": false,
+    "tf32": true,
+    "train_sampling_strategy": "sequential",
+    "warmup_optimizer_steps": 0
+  }
+}
