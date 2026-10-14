@@ -1,0 +1,6 @@
+successor/experiments/V10R3R9_TARGETED_REPAIR_EXECUTION_SPEC_20261007_V1.json text eol=lf
+successor/experiments/build_v10r3r11_vera_voice.py text eol=lf
+successor/experiments/preflight_v10r3r11_launch.py text eol=lf
+successor/experiments/V10R3R11_VERA_VOICE_EXECUTION_SPEC_20261014_V1.json text eol=lf
+successor/experiments/V10R3R11_VERA_VOICE_CORPUS_BINDING_20261014_V1.json text eol=lf
+tests/test_v10r3r11_vera_voice.py text eol=lf
