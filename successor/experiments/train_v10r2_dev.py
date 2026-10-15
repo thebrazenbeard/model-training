@@ -694,9 +694,10 @@ def execute_dev_training(
 
     from successor.experiments.r12_adapter_precision import verify_trainable, POLICY
     fp32_adapter = spec.get("adapter_precision_policy") == POLICY
-    precision_before = (
-        verify_trainable(model, torch, permit_cast=True) if fp32_adapter else None
-    )
+    # TRL SFTTrainer.__init__ casts all trainable adapters back to BF16 for
+    # quantized models (TRL sft_trainer.py quantization branch). Never cast
+    # here: it would be silently overwritten during trainer construction.
+    precision_before = None
     stack["transformers"].set_seed(trainer_spec["seed"])
     output_dir.mkdir(parents=True, exist_ok=False)
     work_dir = output_dir / "sft_work"
@@ -753,6 +754,10 @@ def execute_dev_training(
     coverage = validate_lora_target_coverage(
         _targeted_lora_module_names(trainer.model)
     )
+    # Restore/verify FP32 after TRL's mandatory BF16 quantized-adapter cast,
+    # but before optimizer parameter groups and state are materialized.
+    if fp32_adapter:
+        precision_before = verify_trainable(trainer.model, torch, permit_cast=True)
 
     optimizer = trainer.create_optimizer()
     optimizer_info = summarize_optimizer(optimizer)
