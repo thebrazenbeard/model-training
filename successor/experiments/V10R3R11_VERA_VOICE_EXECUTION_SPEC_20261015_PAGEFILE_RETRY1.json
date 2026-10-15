@@ -1,0 +1,102 @@
+{
+  "authority": {
+    "actor_id": "PATRICK_USER_AUTHORITY",
+    "deploy_activate_authorized": false,
+    "merge_authorized": false,
+    "paid_compute_authorized": false,
+    "scope": "CHANGE_TRAINING_METHOD_AND_CONTINUE_LOCAL_MODEL_TRAINING",
+    "source": "EXPLICIT_CURRENT_USER_INSTRUCTION"
+  },
+  "comparison": {
+    "claim_ceiling": "LOCAL_DEVELOPMENT_NOT_EXTERNALLY_QUALIFIED",
+    "general_rehearsal_examples": 32,
+    "heldout_required": true,
+    "role": "R11_QWEN35_VERA_UNUSED_VOICE_AND_GENERAL_REHEARSAL",
+    "source_24b_donor": "REFERENCE_BEHAVIOR_ONLY_NOT_BASE_WEIGHTS",
+    "train_voice_examples": 32
+  },
+  "date": "2026-10-14",
+  "development_window": {
+    "row_count": 64,
+    "start_row": 288
+  },
+  "experiment_class": "TARGETED_VERA_VOICE_AND_INDEPENDENT_JUDGMENT",
+  "lora": {
+    "alpha": 16,
+    "bias": "none",
+    "dropout": 0,
+    "r": 4,
+    "target_modules": "all-linear",
+    "task_type": "CAUSAL_LM"
+  },
+  "model_load": {
+    "device_map": {
+      "": 0
+    },
+    "dtype": "bfloat16",
+    "prepare_model_for_kbit_training_use_gradient_checkpointing": true,
+    "use_cache": false
+  },
+  "output": {
+    "namespace": "D:\\VERA\\models\\adapters\\v10r3r11-vera-voice-qwen35-r10-resume-20261015-pagefile-retry1",
+    "overwrite_forbidden": true,
+    "save_final_adapter": true
+  },
+  "qualification": {
+    "claim_ceiling": "LOCAL_DEVELOPMENT_ADAPTER_ONLY_NOT_EXTERNALLY_QUALIFIED",
+    "development_training_may_precede_external_qualification": true,
+    "external_final_bank_required_for_qualification": true
+  },
+  "quantization": {
+    "compute_dtype": "bfloat16",
+    "double_quant": true,
+    "load_in_4bit": true,
+    "type": "nf4"
+  },
+  "resume_adapter": {
+    "adapter_model_sha256": "c69ed0e4bd78e09752b5cbb4dfaf19ebea8a4174735bf88d2676947ef04b2739",
+    "next_train_row": 288,
+    "path": "D:\\VERA\\models\\adapters\\v10r3r10-vera-voice-qwen35-r9-resume-20261013\\adapter",
+    "previous_optimizer_steps": 8,
+    "source_cumulative_optimizer_steps": 36,
+    "source_receipt_path": "D:\\VERA\\models\\adapters\\v10r3r10-vera-voice-qwen35-r9-resume-20261013\\DEV_TRAINING_COMPLETE.json",
+    "source_receipt_sha256": "c9ec359be2913e63effa05038cb04b65a742c61522de6973a20b1a676dd6a934",
+    "source_spec_path": "successor/experiments/V10R3R10_VERA_VOICE_EXECUTION_SPEC_20261013_V1.json",
+    "source_spec_sha256": "8098a6f8c7102cacb956815e083f144d481cbc5bd718447b622138508076f2f6",
+    "source_weight_digest_after": "a5e9fc47a3e5eaf6ca72cf74bb782796886fa51bd61afe6f5cec90b86cfad55a"
+  },
+  "schema": "V10R2_QWEN35_DEV_TRAINING_SPEC_V1",
+  "source_subject": {
+    "parent_revision": "03688f8de5d74b3e96fd5b0519143d83b6087a97",
+    "runtime_binding_sha256": "44b01efc6c2d0e1716208e04e7132433561b5562430adae821fd29e6a1493224",
+    "runtime_python_path": "C:\\ProgramData\\ProRun\\model-env\\Scripts\\python.exe",
+    "train_rows": 50000,
+    "train_sha256": "f73fe5a0d2c21bdd3ab3cc2cee3238d3297d0941611d31514c543ab560ee491e",
+    "training_corpus_id": "VERA_SUCCESSOR_V10R3R11_QWEN35_VERA_VOICE_50K_V1"
+  },
+  "status": "AUTHORIZED_LOCAL_DEVELOPMENT_TRAINING",
+  "trainer": {
+    "bf16": true,
+    "completion_only_loss": true,
+    "eval_strategy": "no",
+    "gradient_accumulation_steps": 8,
+    "gradient_checkpointing": true,
+    "gradient_checkpointing_use_reentrant": false,
+    "learning_rate": 2e-06,
+    "logging_steps": 1,
+    "lr_scheduler_type": "cosine",
+    "max_length": 512,
+    "max_optimizer_steps": 8,
+    "method": "QLORA_SFT_DEVELOPMENT",
+    "optimizer": "adamw_bnb_8bit",
+    "packing": false,
+    "per_device_train_batch_size": 1,
+    "report_to": "none",
+    "save_strategy": "no",
+    "seed": 20261014,
+    "shuffle_dataset": false,
+    "tf32": true,
+    "train_sampling_strategy": "sequential",
+    "warmup_optimizer_steps": 0
+  }
+}
