@@ -324,6 +324,11 @@ def load_and_validate_dev_spec(path: Path | str) -> dict:
     if output.get("overwrite_forbidden") is not True:
         raise DevTrainingHold("output overwrite must be forbidden")
 
+    precision_policy = value.get("adapter_precision_policy", "LEGACY_BF16")
+    if precision_policy not in {"LEGACY_BF16", "FP32_RESUMED_LORA_TRAIN_AND_SAVE_V1"}:
+        raise DevTrainingHold("unrecognized adapter precision policy")
+    if precision_policy != "LEGACY_BF16" and resume is None:
+        raise DevTrainingHold("FP32 resumed LoRA policy requires an exact parent")
     return value
 
 
@@ -687,6 +692,11 @@ def execute_dev_training(
         )
         peft_config = None
 
+    from successor.experiments.r12_adapter_precision import verify_trainable, POLICY
+    fp32_adapter = spec.get("adapter_precision_policy") == POLICY
+    precision_before = (
+        verify_trainable(model, torch, permit_cast=True) if fp32_adapter else None
+    )
     stack["transformers"].set_seed(trainer_spec["seed"])
     output_dir.mkdir(parents=True, exist_ok=False)
     work_dir = output_dir / "sft_work"
@@ -841,9 +851,13 @@ def execute_dev_training(
     ):
         raise DevTrainingHold("optimizer identity changed during training")
 
-    for _, parameter in trainer.model.named_parameters():
-        if parameter.requires_grad and parameter.is_floating_point():
-            parameter.data = parameter.data.to(torch.bfloat16)
+    if fp32_adapter:
+        precision_after = verify_trainable(trainer.model, torch, permit_cast=False)
+    else:
+        precision_after = None
+        for _, parameter in trainer.model.named_parameters():
+            if parameter.requires_grad and parameter.is_floating_point():
+                parameter.data = parameter.data.to(torch.bfloat16)
 
     adapter_dir = output_dir / "adapter"
     trainer.model.save_pretrained(
@@ -931,6 +945,9 @@ def execute_dev_training(
         "base_topology": topology,
         "lora_coverage": coverage,
         "adapter_artifacts": artifact_manifest,
+        "adapter_precision_policy": spec.get("adapter_precision_policy", "LEGACY_BF16"),
+        "adapter_precision_initial": precision_before,
+        "adapter_precision_final": precision_after,
         "qualification_status": "NOT_EXTERNALLY_EVALUATED",
         "deployment_status": "NOT_DEPLOYED",
         "merge_status": "NOT_MERGED",
