@@ -753,8 +753,17 @@ def execute_dev_training(
     coverage = validate_lora_target_coverage(
         _targeted_lora_module_names(trainer.model)
     )
+    # TRL SFTTrainer 1.13 casts quantized trainable adapters back to BF16
+    # during its constructor. Enforce the bound FP32 policy AFTER that
+    # constructor, before the optimizer captures parameter references.
+    precision_after_trainer = (
+        verify_trainable(trainer.model, torch, permit_cast=True)
+        if fp32_adapter else None
+    )
 
     optimizer = trainer.create_optimizer()
+    if fp32_adapter:
+        verify_trainable(trainer.model, torch, permit_cast=False)
     optimizer_info = summarize_optimizer(optimizer)
     requested_optimizer = trainer_spec["optimizer"]
     if optimizer_info["is_paged"] is not False:
@@ -947,6 +956,7 @@ def execute_dev_training(
         "adapter_artifacts": artifact_manifest,
         "adapter_precision_policy": spec.get("adapter_precision_policy", "LEGACY_BF16"),
         "adapter_precision_initial": precision_before,
+        "adapter_precision_after_trainer": precision_after_trainer,
         "adapter_precision_final": precision_after,
         "qualification_status": "NOT_EXTERNALLY_EVALUATED",
         "deployment_status": "NOT_DEPLOYED",
