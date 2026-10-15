@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -16,6 +17,16 @@ RECEIPT = Path(r"D:\VERA\portal-task-state\VERA_R12_FP32_LAUNCH_GATE_20261015_V1
 MIN_RAM_GIB = 9
 MIN_VIRTUAL_GIB = 12
 MIN_GPU_MIB = 3900
+
+def validated_receipt(path: Path) -> Path:
+    path = path.resolve()
+    if path.parent != RECEIPT.parent.resolve() or not re.fullmatch(
+        r"VERA_R12_FP32_LAUNCH_GATE_20261015_V[1-9][0-9]*\.json", path.name
+    ):
+        raise RuntimeError("Unsafe R12 gate receipt destination")
+    if path.exists():
+        raise RuntimeError("Gate receipt exists; never overwrite prior attempt")
+    return path
 
 
 def classify(*, ram: float, virtual: float, gpu: int, active: int, output_exists: bool):
@@ -39,9 +50,9 @@ def classify(*, ram: float, virtual: float, gpu: int, active: int, output_exists
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--train", action="store_true")
+    parser.add_argument("--receipt", type=Path, default=RECEIPT)
     args = parser.parse_args()
-    if RECEIPT.exists():
-        raise RuntimeError("Gate receipt already exists; do not overwrite")
+    receipt_path = validated_receipt(args.receipt)
     spec = load_and_validate_dev_spec(SPEC_PATH)
     bound = verify_resume_adapter(REPO, spec["resume_adapter"])
     corpus = OUT_DIR / "train.jsonl"
@@ -62,7 +73,7 @@ def main():
                    "parent_r11_sha256": bound["adapter_model_sha256"],
                    "action_requested": "TRAIN" if args.train else "GATE_ONLY",
                    "train_launched": False})
-    with RECEIPT.open("x", encoding="utf8") as fd:
+    with receipt_path.open("x", encoding="utf8") as fd:
         json.dump(result,fd,indent=2,sort_keys=True)
         fd.write("\n")
     print(json.dumps(result, indent=2,sort_keys=True),flush=True)
