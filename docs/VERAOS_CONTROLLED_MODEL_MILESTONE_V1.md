@@ -86,3 +86,36 @@ same-task VeraOS no-effect result outperform the control. Bootcamp's
 identity capsule/proxy tests are not neural weight training.
 
 No model ran, training happened, or route changed for this work.
+
+
+## Explicit two-stage OS admission handoff (Training source adapter)
+
+The tested prepare_resident_admission_handoff(target, decision) returns
+SYNTHETIC_WIRING_ELIGIBLE ONLY for a coherent synthetic source preflight;
+all other input produces HOLD_UNVERIFIED_REAL_ADMISSION. Both responses
+contain a VERA_OS_COGNITION_PROVIDER_V1-shaped descriptor with
+qualification.status=HOLD, admission.status=HELD, all authority flags false.
+It is accepted by the exact VeraOS cognition_provider.validate_provider
+shape checker but is not eligible in provider_route_eligible.
+validate_resident_admission_handoff rejects fabricated PASS, fake admission,
+changed artifact subject or route/status escalation; this is source
+consistency checking, NOT authentication of model, issuer or source.
+
+The genuinely verified resident admission belongs INSIDE VeraOS. The
+authorized OS host verifier must independently bind enrolled Windows
+serving-host generation/session and one-time nonce to the exact Ollama
+model manifest+model blob bytes, current CPU/RAM availability, endpoint
+identity, task continuity and authorized PORTAL local-text route. Only then
+may VeraOS produce a SEPARATE trusted-qualified provider with actual
+signature/issuer/trust-policy evidence appropriate to the local controlled
+trial and recheck the task before native_cognition.admit_local_text_route.
+Training NEVER emits PASS. For synthetic fake-model wiring, keep any
+testing override exclusively in an OS test harness, not an installed
+normal-resident default or user-reachable provider config.
+
+Deferrable until production: long-lived multi-issuer PKI/revocation,
+trained-Vera model replacement, global Intranel sender attestation,
+Executor protected-effect gateway, continuous behavioral qualification.
+NOT deferrable for an actual bounded resident trial: explicit operator
+authority, host-owned artifact and nonce checks, same-session resources,
+limited no-tool route, and observed durable Pre-Active request/result.

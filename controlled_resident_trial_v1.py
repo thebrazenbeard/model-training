@@ -193,3 +193,105 @@ def evaluate_controlled_trial(
         "ACCEPT_SYNTHETIC_DEV_PREFLIGHT" if accepted else "HOLD_SOURCE_PREFLIGHT",
         tuple(dict.fromkeys(holds)),target.serving_host_id,target.model_lineage,
         source_preflight_accepted=accepted)
+
+# Source-only adapter to the EXISTING VeraOS cognition_provider schema.
+# Important: VeraOS validate_provider checks shape/status, NOT the issuer.
+# Therefore this adapter NEVER emits PASS/VERAOS_ROUTE_ELIGIBLE.
+_REAL_TRIAL_REQUIREMENTS=(
+    "actual_windows_ollama_serving_host_bound_to_receiver_registration",
+    "receiver_owned_one_use_nonce_and_generation",
+    "same_host_session_bracketing_and_fresh_capacity_sample",
+    "actual_loaded_model_blob_manifest_and_byte_hash_verified",
+    "task_identity_semantics_dissent_and_fresh_journal_head",
+    "operator_scoped_development_trial_authority",
+    "installed_veraos_trusted_provider_verification_and_portal_route",
+    "durable_single_request_result_and_idempotent_replay",
+)
+
+
+def prepare_resident_admission_handoff(
+    target: ControlledTrialTarget,
+    decision: ControlledTrialDecision,
+) -> dict:
+    """Build only the OS *HELD* descriptor and a typed wiring/proof boundary.
+
+    A synthetic green result grants source-wiring TEST eligibility only. The
+    host owner must separately implement and verify real evidence at the OS
+    boundary; this module cannot issue or bless a live provider qualification.
+    """
+    if type(target) is not ControlledTrialTarget or type(decision) is not ControlledTrialDecision:
+        raise ValueError("typed source target and decision required")
+    synthetic=(decision.status=="ACCEPT_SYNTHETIC_DEV_PREFLIGHT" and
+               decision.source_preflight_accepted is True and
+               decision.holds==() and
+               decision.normal_resident_admitted is False and
+               decision.model_identity_authenticated is False and
+               decision.inference_executed is False and
+               decision.effect_authority is False and
+               decision.trained_vera_model_proven is False and
+               target.model_lineage=="QWEN_DEVELOPMENT" and
+               target.model_name==DEV_MODEL and
+               target.os_source==DEV_OS_HEAD and
+               target.route_class=="COGNITION_ONLY" and
+               target.intended_endpoint=="http://127.0.0.1:18766/v1" and
+               decision.target_host==target.serving_host_id and
+               decision.source_model_lineage==target.model_lineage)
+    return {
+        "schema":"VERAOS_CONTROLLED_RESIDENT_ADMISSION_HANDOFF_V1",
+        "readiness":("SYNTHETIC_WIRING_ELIGIBLE" if synthetic
+                     else "HOLD_UNVERIFIED_REAL_ADMISSION"),
+        "synthetic_wiring_eligible":synthetic,
+        "real_resident_admitted":False,
+        "provider_authenticated":False,
+        "real_admission_requires":list(_REAL_TRIAL_REQUIREMENTS),
+        "serving_host":target.serving_host_id,
+        "task_id":target.task_id,
+        "model_lineage":target.model_lineage,
+        "inventory_digest_is_artifact_hash":False,
+        "suite_and_issuer_independently_verified":False,
+        "provider":{
+            "schema":"VERA_OS_COGNITION_PROVIDER_V1",
+            "provider_id":"dev:virtio-qwen4b",
+            "provider_kind":"LOCAL_MODEL",
+            "capabilities":["text"],
+            "transport":{
+                "kind":"OPENAI_COMPATIBLE_HTTP",
+                "attachment":target.intended_endpoint,
+            },
+            # These are structural placeholders. The subject is the source
+            # target digest (synthetic for fixture); issuer is schema-required
+            # source text, NOT an authenticated trusted signer.
+            "qualification":{
+                "status":"HOLD",
+                "issuer":"thebrazenbeard/vera-os",
+                "subject_sha256":target.artifact_sha256,
+                "suite_sha256":"0"*64,
+            },
+            "authority":{
+                "identity_authority":False,
+                "canonical_memory_write_authority":False,
+                "protected_effect_authority":False,
+                "browser_authority":False,
+            },
+            "admission":{
+                "status":"HELD",
+                "route_class":"COGNITION_ONLY",
+                "selector_owner":"thebrazenbeard/portal",
+            },
+        },
+    }
+
+
+def validate_resident_admission_handoff(
+    target: ControlledTrialTarget,
+    decision: ControlledTrialDecision,
+    candidate: object,
+) -> bool:
+    """Fail closed for changed source handoff. Never attest a runtime PASS.
+
+    This exact comparison guards corruption between source adapter and OS
+    fixture wiring. It cannot authenticate trusted runtime observations.
+    """
+    if type(candidate) is not dict or candidate!=prepare_resident_admission_handoff(target,decision):
+        raise ValueError("unrecognized, forged, or escalated resident admission source")
+    return True

@@ -5,7 +5,8 @@ import unittest
 
 from controlled_resident_trial_v1 import (
     ControlledTrialTarget, ServingSession, ArtifactResourceSample,
-    evaluate_controlled_trial,
+    evaluate_controlled_trial, prepare_resident_admission_handoff,
+    validate_resident_admission_handoff,
 )
 from test_participating_cognition_v1 import compose
 from test_veraos_development_evidence_v1 import VeraOSDevelopmentCutTests
@@ -58,6 +59,68 @@ class ControlledResidentTrialTests(unittest.TestCase):
             evidence_scope="SYNTHETIC_NO_EFFECT_FIXTURE",
             fixture_nonce_ledger=(self.fixture_nonce_ledger if nonce_ledger is None
                                   else nonce_ledger))
+
+    def test_eligible_synthetic_trial_proposes_os_provider_HELD_not_PASS(self):
+        good=self.evaluate()
+        proposal=prepare_resident_admission_handoff(self.target,good)
+        self.assertEqual(proposal["readiness"],"SYNTHETIC_WIRING_ELIGIBLE")
+        self.assertTrue(proposal["synthetic_wiring_eligible"])
+        self.assertFalse(proposal["real_resident_admitted"])
+        self.assertFalse(proposal["provider_authenticated"])
+        self.assertEqual(proposal["provider"]["qualification"]["status"],"HOLD")
+        self.assertEqual(proposal["provider"]["admission"]["status"],"HELD")
+        self.assertEqual(proposal["provider"]["transport"]["attachment"],
+                         "http://127.0.0.1:18766/v1")
+        self.assertEqual(proposal["serving_host"],"windows:ollama-host")
+        self.assertTrue(validate_resident_admission_handoff(self.target,good,proposal))
+        self.assertIn("receiver_owned_one_use_nonce_and_generation",
+                      proposal["real_admission_requires"])
+
+    def test_forged_PASS_and_self_claimed_runtime_attestation_rejected(self):
+        good=self.evaluate()
+        baseline=prepare_resident_admission_handoff(self.target,good)
+        attempts=[
+            {**baseline,"real_resident_admitted":True},
+            {**baseline,"provider_authenticated":True},
+            {**baseline,"readiness":"GENUINE_RESIDENT_ADMITTED"},
+            {**baseline,"provider":{**baseline["provider"],
+               "qualification":{**baseline["provider"]["qualification"],"status":"PASS"},
+               "admission":{**baseline["provider"]["admission"],
+                            "status":"VERAOS_ROUTE_ELIGIBLE"}}},
+            {**baseline,"provider":{**baseline["provider"],
+               "qualification":{**baseline["provider"]["qualification"],
+                                "subject_sha256":"0"*64}}},
+        ]
+        for attempt in attempts:
+            with self.subTest(field=list(attempt)):
+                with self.assertRaises(ValueError):
+                    validate_resident_admission_handoff(self.target,good,attempt)
+
+    def test_unverified_real_host_missing_bytes_and_trained_lineage_stay_HELD(self):
+        real=evaluate_controlled_trial(
+            self.target,self.session,self.sample,self.session,self.bytes,
+            self.development,self.cognition,episode=self.episode,
+            now_epoch_s=1800000001,evidence_scope="REAL_HOST_UNATTESTED")
+        real_proposal=prepare_resident_admission_handoff(self.target,real)
+        self.assertEqual(real_proposal["readiness"],"HOLD_UNVERIFIED_REAL_ADMISSION")
+        self.assertFalse(real_proposal["synthetic_wiring_eligible"])
+        self.assertEqual(real_proposal["provider"]["qualification"]["status"],"HOLD")
+        self.assertTrue(validate_resident_admission_handoff(self.target,real,real_proposal))
+
+        absent=self.evaluate(content=None)  # this helper intentionally defaults bytes
+        self.assertTrue(absent.source_preflight_accepted)
+        no_file=evaluate_controlled_trial(
+            self.target,self.session,self.sample,self.session,None,
+            self.development,self.cognition,episode=self.episode,
+            now_epoch_s=1800000001,evidence_scope="SYNTHETIC_NO_EFFECT_FIXTURE",
+            fixture_nonce_ledger=set())
+        self.assertIn("SYNTHETIC_ARTIFACT_BYTES_REQUIRED",no_file.holds)
+        self.assertFalse(prepare_resident_admission_handoff(
+            self.target,no_file)["synthetic_wiring_eligible"])
+        renamed=replace(self.target,model_lineage="VERA_TRAINED")
+        held=self.evaluate(target=renamed)
+        self.assertFalse(prepare_resident_admission_handoff(
+            renamed,held)["real_resident_admitted"])
 
     def test_synthetic_own_host_artifact_bytes_and_cognition_accepts_preflight_only(self):
         r=self.evaluate()
