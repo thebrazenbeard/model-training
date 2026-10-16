@@ -177,10 +177,41 @@ class ParticipantBoundaryTests(unittest.TestCase):
                  required_capabilities=["typed:referent","latent:unknown"],
                  missing_capabilities=["latent:unknown"],
                  unresolved_capabilities=["latent:unknown"])
-        receipt=compose(core_plan=p,cricket_result={"disposition":"BLOCK","findings":[]}).as_dict()
+        finding=dict(rule_id="deny:effect",severity="BLOCK",title="Blocked",
+                     rationale="Protected effect",evidence="No permission",
+                     recommendation="Hold",source="Cricket")
+        receipt=compose(core_plan=p,
+                        cricket_result={"disposition":"BLOCK","findings":[finding]}).as_dict()
         self.assertEqual(receipt["status"],"CRICKET_BLOCKED")
         self.assertEqual(receipt["core_semantic_plan"]["fidelity"],"UNREPRESENTABLE")
         self.assertEqual(receipt["authority_effect"],"NONE")
+
+    def test_cricket_disposition_must_equal_actual_maximum_finding_severity(self):
+        def finding(severity):
+            return dict(rule_id="source:rule",severity=severity,title="Review",
+                        rationale="Source policy",evidence="Fixture",
+                        recommendation="Keep held",source="Cricket")
+        cases=(
+            ("BLOCK",[]),("CHALLENGE",[]),
+            ("BLOCK",[finding("CHALLENGE")]),
+            ("CHALLENGE",[finding("BLOCK")]),
+            ("PASS",[finding("CHALLENGE")]),
+            ("PASS",[finding("BLOCK")]),
+        )
+        for disposition,findings in cases:
+            with self.subTest(disposition=disposition,findings=findings):
+                with self.assertRaisesRegex(ParticipationError,"Cricket"):
+                    compose(cricket_result={"disposition":disposition,"findings":findings})
+        for disposition,findings in (
+            ("PASS",[]),("PASS",[finding("NOTE")]),
+            ("CHALLENGE",[finding("CHALLENGE")]),
+            ("BLOCK",[finding("BLOCK")]),
+        ):
+            with self.subTest(valid=disposition):
+                out=compose(cricket_result={
+                    "disposition":disposition,"findings":findings}).as_dict()
+                self.assertEqual(out["cricket_review"]["disposition"],disposition)
+                self.assertEqual(out["authority_effect"],"NONE")
 
     def test_cricket_pass_cannot_become_effect_or_identity_proof(self):
         out=compose(cricket_result={"disposition":"PASS","findings":[]}).as_dict()

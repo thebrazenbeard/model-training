@@ -199,11 +199,13 @@ def compose_episode(
            f["severity"] not in ("NOTE","CHALLENGE","BLOCK")
            for f in review["findings"]):
         raise ParticipationError("Invalid Cricket finding content")
-    # Disposition must not contradict stronger findings. Refuse to launder
-    # a source BLOCK through the aggregate's otherwise advisory status.
+    # Cricket.review computes its disposition from the strongest finding.
+    # Reject stronger AND weaker claimed dispositions, including BLOCK with
+    # empty findings, so synthetic receipts cannot masquerade as real Cricket.
     severities={finding["severity"] for finding in review["findings"]}
-    if (("BLOCK" in severities and review["disposition"]!="BLOCK") or
-        ("CHALLENGE" in severities and review["disposition"]=="PASS")):
+    expected_disposition=("BLOCK" if "BLOCK" in severities else
+                          "CHALLENGE" if "CHALLENGE" in severities else "PASS")
+    if review["disposition"]!=expected_disposition:
         raise ParticipationError("Contradictory Cricket disposition and findings")
     # A blocking review must remain visible even when the semantic plan
     # separately declares the transfer unrepresentable.
