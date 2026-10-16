@@ -12,6 +12,8 @@ ROOT = Path(r"D:\VERA")
 SOURCE = ROOT / ".scratch/vera-v10r3r11-qwen35-voice-20261014-v1/train.jsonl"
 SOURCE_SHA = "f73fe5a0d2c21bdd3ab3cc2cee3238d3297d0941611d31514c543ab560ee491e"
 VOICE = Path(__file__).with_name("R12_VERA_CURATED_VOICE_20261015_V1.jsonl")
+# SHA of exact Git LF blob; Windows checkout may use CRLF without changing content.
+VOICE_SHA = "419e01f529bd857da2e6dc62ffea73ccece22ced53b8e24175401f126e7b1f81"
 HOLDOUT = ROOT / "portal-task-state/vera-model-glm24b-lappy-20261012/evaluation/cases/vera_voice_heldout_v1.jsonl"
 HOLDOUT_SHA = "bd2b5375e2b7da78f42ed3ac1387f73ddec4807bc5e446b228bdbb7db3caf25f"
 R11_PATH = ROOT / "models/adapters/v10r3r11-vera-voice-qwen35-r10-resume-20261015-pagefile-retry1"
@@ -33,11 +35,34 @@ def require(ok, reason):
         raise ValueError("R12_SOURCE_HOLD: " + reason)
 
 
+def canonical_lf_sha256(path: Path) -> str:
+    """Digest source-controlled text independent of CRLF checkout transport.
+
+    Only CRLF to LF normalization is allowed. Other carriage returns are
+    rejected; semantic content changes still fail the frozen SHA binding.
+    This applies to the source voice JSONL, not binary/model artifacts.
+    """
+    original = path.read_bytes()
+    canonical = original.replace(b"\r\n", b"\n")
+    if b"\r" in canonical:
+        raise ValueError("R12_SOURCE_HOLD: unsupported carriage-return newline")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def verify_curated_source(path: Path, expected_sha: str) -> str:
+    actual = canonical_lf_sha256(path)
+    require(actual == expected_sha, "curated source SHA mismatch")
+    return actual
+
+
 def load_rows(path):
     return [json.loads(line) for line in path.read_text(encoding="utf8").splitlines() if line.strip()]
+
+
 def prepare():
     require(not any(p.exists() for p in (OUT_DIR, NEW_ADAPTER, SPEC_PATH, BINDING_PATH)),
             "target already exists; no overwrite")
+    verify_curated_source(VOICE, VOICE_SHA)
     require(sha256_file(SOURCE) == SOURCE_SHA, "R11 corpus changed")
     require(sha256_file(HOLDOUT) == HOLDOUT_SHA, "heldout source changed")
     require(sha256_file(REPO / R11_SPEC_REL) == R11_SPEC_SHA, "R11 source spec changed")
@@ -126,7 +151,7 @@ def build():
         "schema": "VERA_R12_VOICE_CORPUS_BINDING_V1",
         "source_r11_corpus_sha256": SOURCE_SHA,
         "r12_corpus_sha256": spec["source_subject"]["train_sha256"],
-        "r12_source_voice_sha256": sha256_file(VOICE),
+        "r12_source_voice_sha256": verify_curated_source(VOICE, VOICE_SHA),
         "heldout_sha256": HOLDOUT_SHA,
         "window_start": START, "window_count": COUNT,
         "curated_voice_ids": [v["id"] for v in voice],
@@ -138,7 +163,7 @@ def build():
     SPEC_PATH.write_text(json.dumps(spec, indent=2, sort_keys=True) + "\n", encoding="utf8")
     BINDING_PATH.write_text(json.dumps(binding, indent=2, sort_keys=True) + "\n", encoding="utf8")
     return {"status":"R12_FROZEN_SOURCE_ONLY_NOT_TRAINED", "corpus":str(corpus),
-            "corpus_sha256": sha256_file(corpus), "voice_sha256": sha256_file(VOICE),
+            "corpus_sha256": sha256_file(corpus), "voice_sha256": verify_curated_source(VOICE, VOICE_SHA),
             "spec_sha256":sha256_file(SPEC_PATH), "binding_sha256": sha256_file(BINDING_PATH),
             "r12_new_steps_if_completed": 8, "cumulative_if_completed": 52,
             "output":str(NEW_ADAPTER), "r11_preserved":True}
