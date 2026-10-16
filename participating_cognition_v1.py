@@ -128,8 +128,7 @@ def compose_episode(
         raise ParticipationError("Two typed contributions required")
     if first.task_id!=second.task_id or first.participant.identity!=second.participant.identity:
         raise ParticipationError("Cannot combine different task/shared identity")
-    if (first.participant.node_id,first.participant.agent_id)==(
-        second.participant.node_id,second.participant.agent_id):
+    if first.participant.agent_id==second.participant.agent_id:
         raise ParticipationError("Same logical agent cannot be counted twice by restarting it")
     # No automatic assertion of source, model or *cognitive* independence.
     dissent=review_pair(first.claim,second.claim,
@@ -182,6 +181,10 @@ def compose_episode(
            f["severity"] not in ("NOTE","CHALLENGE","BLOCK")
            for f in review["findings"]):
         raise ParticipationError("Invalid Cricket finding content")
+    if review["disposition"]=="PASS" and any(
+        finding["severity"]=="BLOCK" for finding in review["findings"]
+    ):
+        raise ParticipationError("Cricket PASS contradicts BLOCK finding")
     if plan["fidelity"]=="UNREPRESENTABLE":
         status="SEMANTIC_TRANSFER_UNREPRESENTABLE"
     elif dissent.classification in ("DIFFERENT_PROPOSITION","DIFFERENT_SCOPE","DIFFERENT_REVISION"):
