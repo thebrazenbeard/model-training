@@ -90,6 +90,31 @@ class ParticipantBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ParticipationError,"Same logical agent"):
             compose(first,restarted)
 
+    def test_migrated_logical_agent_is_not_a_second_participant(self):
+        first=source(node="VN1",agent="agent:one",inst="runtime:old")
+        migrated=source(node="Lappy",agent="agent:one",inst="runtime:new",value=False)
+        with self.assertRaisesRegex(ParticipationError,"Same logical agent"):
+            compose(first,migrated)
+
+    def test_distinct_agents_on_same_physical_node_remain_distinct(self):
+        first=source(node="VN1",agent="agent:one",inst="runtime:one")
+        second=source(node="VN1",agent="agent:two",inst="runtime:two",value=False)
+        out=compose(first,second).as_dict()
+        self.assertEqual(out["contributions"][0]["participant"]["agent_id"],"agent:one")
+        self.assertEqual(out["contributions"][1]["participant"]["agent_id"],"agent:two")
+
+    def test_cricket_pass_with_block_finding_rejected(self):
+        finding=dict(rule_id="deny:effect",severity="BLOCK",title="Blocked",
+                     rationale="Protected effect",evidence="No permission",
+                     recommendation="Hold",source="Cricket")
+        with self.assertRaisesRegex(ParticipationError,"Contradictory Cricket"):
+            compose(cricket_result={"disposition":"PASS","findings":[finding]})
+        with self.assertRaisesRegex(ParticipationError,"Contradictory Cricket"):
+            compose(cricket_result={"disposition":"CHALLENGE","findings":[finding]})
+        blocked=compose(cricket_result={"disposition":"BLOCK","findings":[finding]}).as_dict()
+        self.assertEqual(blocked["status"],"CRICKET_BLOCKED")
+        self.assertEqual(blocked["authority_effect"],"NONE")
+
     def test_identity_node_model_substitution_rejected(self):
         a=source()
         b=source(node="Lappy",agent="agent:lappy",inst="runtime:two")
