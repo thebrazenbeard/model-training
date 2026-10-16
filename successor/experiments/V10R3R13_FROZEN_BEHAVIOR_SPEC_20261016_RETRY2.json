@@ -1,0 +1,112 @@
+{
+  "adapter_precision_policy": "FP32_RESUMED_LORA_TRAIN_AND_SAVE_V1",
+  "authority": {
+    "actor_id": "PATRICK_USER_AUTHORITY",
+    "deploy_activate_authorized": false,
+    "merge_authorized": false,
+    "paid_compute_authorized": false,
+    "scope": "CHANGE_TRAINING_METHOD_AND_CONTINUE_LOCAL_MODEL_TRAINING",
+    "source": "EXPLICIT_CURRENT_USER_INSTRUCTION"
+  },
+  "comparison": {
+    "claim_ceiling": "DEVELOPMENT_ONLY_UNQUALIFIED",
+    "general_rehearsal_examples": 128,
+    "heldout_required": true,
+    "role": "R13_EXACT_FP32_SAVED_TENSOR_REHYDRATION_RETRY2",
+    "train_behavioral_examples": 128
+  },
+  "correction_attempt": {
+    "failed_r13_v1_controller_receipt": "D:\\VERA\\portal-task-state\\VERA_R13_TRAIN_20261016_CONTROLLER_V3.json",
+    "parent_r12_exact_saved_digest": "0cad82b0ef32484eb54358ddb8e07ae0abaa9cc2eaa54775d111321175931d28",
+    "parent_r12_lossy_bf16_roundtrip_digest": "fa28c3373b8e22ccd92f5b0451762556743f0e27370ef7af5daf15412e6d34de",
+    "preserved_failed_r13_v1_output": "D:\\VERA\\models\\adapters\\v10r3r13-vera-identity-judgment-qwen35-r12-resume-20261016-v1",
+    "protected_effects_authorized": false,
+    "repair": "RESTORE_EXACT_SAVED_FP32_TENSOR_VALUES_AFTER_TRL_INIT_BEFORE_OPTIMIZER",
+    "root_cause": "PEFT_RELOADED_FP32_LORA_AS_BF16_IN_MEMORY",
+    "schema": "VERA_R13_RETRY2_FP32_RESUME_REPAIR_V1"
+  },
+  "date": "2026-10-16",
+  "development_window": {
+    "row_count": 256,
+    "start_row": 416
+  },
+  "experiment_class": "R13_FROZEN_DIVERSE_IDENTITY_AND_JUDGMENT_32_STEPS",
+  "lora": {
+    "alpha": 16,
+    "bias": "none",
+    "dropout": 0,
+    "r": 4,
+    "target_modules": "all-linear",
+    "task_type": "CAUSAL_LM"
+  },
+  "model_load": {
+    "device_map": {
+      "": 0
+    },
+    "dtype": "bfloat16",
+    "prepare_model_for_kbit_training_use_gradient_checkpointing": true,
+    "use_cache": false
+  },
+  "output": {
+    "namespace": "D:\\VERA\\models\\adapters\\v10r3r13-vera-identity-judgment-qwen35-r12-resume-20261016-retry2",
+    "overwrite_forbidden": true,
+    "save_final_adapter": true
+  },
+  "qualification": {
+    "claim_ceiling": "LOCAL_DEVELOPMENT_ADAPTER_ONLY_NOT_EXTERNALLY_QUALIFIED",
+    "development_training_may_precede_external_qualification": true,
+    "external_final_bank_required_for_qualification": true
+  },
+  "quantization": {
+    "compute_dtype": "bfloat16",
+    "double_quant": true,
+    "load_in_4bit": true,
+    "type": "nf4"
+  },
+  "resume_adapter": {
+    "adapter_model_sha256": "a80f5e36a1a2319029309521fc88f6575215ac99d488c6a4bbf883afac53d72c",
+    "next_train_row": 416,
+    "path": "D:\\VERA\\models\\adapters\\v10r3r12-vera-fp32-qwen35-r11-resume-20261015-trl-retry2\\adapter",
+    "previous_optimizer_steps": 8,
+    "source_cumulative_optimizer_steps": 52,
+    "source_receipt_path": "D:\\VERA\\models\\adapters\\v10r3r12-vera-fp32-qwen35-r11-resume-20261015-trl-retry2\\DEV_TRAINING_COMPLETE.json",
+    "source_receipt_sha256": "5d7c636f361a1ea9871f6a523270d989233dd2276a911ab290c22b0484b34bc9",
+    "source_spec_path": "successor/experiments/V10R3R12_FP32_VERA_VOICE_EXECUTION_SPEC_20261015_TRL_RETRY2.json",
+    "source_spec_sha256": "be394d5c7e94842581d4a4f30f8ce1b21fed4237ed1c4b1e09058f800d7615f2",
+    "source_weight_digest_after": "0cad82b0ef32484eb54358ddb8e07ae0abaa9cc2eaa54775d111321175931d28"
+  },
+  "schema": "V10R2_QWEN35_DEV_TRAINING_SPEC_V1",
+  "source_subject": {
+    "parent_revision": "3829f81274127b1567ffb321a5ea9455506a770d",
+    "runtime_binding_sha256": "44b01efc6c2d0e1716208e04e7132433561b5562430adae821fd29e6a1493224",
+    "runtime_python_path": "C:\\ProgramData\\ProRun\\model-env\\Scripts\\python.exe",
+    "train_rows": 50000,
+    "train_sha256": "90de3879113a99f85002ec884d504ee487e5ed699d9deaa0146290c47597b3c5",
+    "training_corpus_id": "VERA_R13_NEW_DIVERSE_IDENTITY_JUDGMENT_50K_V1"
+  },
+  "status": "AUTHORIZED_LOCAL_DEVELOPMENT_TRAINING",
+  "trainer": {
+    "bf16": true,
+    "completion_only_loss": true,
+    "eval_strategy": "no",
+    "gradient_accumulation_steps": 8,
+    "gradient_checkpointing": true,
+    "gradient_checkpointing_use_reentrant": false,
+    "learning_rate": 1e-05,
+    "logging_steps": 1,
+    "lr_scheduler_type": "cosine",
+    "max_length": 512,
+    "max_optimizer_steps": 32,
+    "method": "QLORA_SFT_DEVELOPMENT",
+    "optimizer": "adamw_bnb_8bit",
+    "packing": false,
+    "per_device_train_batch_size": 1,
+    "report_to": "none",
+    "save_strategy": "no",
+    "seed": 20261016,
+    "shuffle_dataset": false,
+    "tf32": true,
+    "train_sampling_strategy": "sequential",
+    "warmup_optimizer_steps": 0
+  }
+}
