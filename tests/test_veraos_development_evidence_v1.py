@@ -4,7 +4,8 @@ import unittest
 from veraos_development_evidence_v1 import (
     DevelopmentCut, DevelopmentInventory, evaluate_development_cut,
     DEV_OS_HEAD, DEV_MODEL, DEV_OLLAMA_REPORTED_DIGEST, DEV_MODEL_BYTES,
-    bind_participation_development_cut,
+    bind_participation_development_cut, SourceObservationStamp,
+    normal_resident_qualification_requirements,
 )
 
 
@@ -29,6 +30,10 @@ class VeraOSDevelopmentCutTests(unittest.TestCase):
             ram_available_mib=8192, gpu_free_vram_mib=None,
             artifact_bytes_sha256=None, descriptor_status="PASS",
             route="DIAGNOSTIC_QEMU_ONLY",
+            registry_stamp=SourceObservationStamp(1800000000,"sample:registration"),
+            telemetry_stamp=SourceObservationStamp(1800000000,"sample:telemetry"),
+            inventory_stamp=SourceObservationStamp(1800000000,"sample:inventory"),
+            artifact_stamp=SourceObservationStamp(1800000000,"sample:artifact"),
         )
         self.args=dict(expected_node_id="Lappy",expected_generation=6,
             expected_session="session:6",expected_nonce="a"*32,
@@ -119,6 +124,62 @@ class VeraOSDevelopmentCutTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bind_participation_development_cut(item,self.review(),
                                                expected_task_id="task:one")
+
+    def test_independently_stale_telemetry_and_artifact_must_fail(self):
+        for role in ("registry","telemetry","inventory","artifact"):
+            with self.subTest(role=role):
+                field=role+"_stamp"
+                stale=replace(self.cut,**{field:replace(
+                    getattr(self.cut,field),observed_at_epoch_s=1799999600)})
+                self.assertEqual(self.review(cut=stale).status,"HELD_SOURCE_PROVENANCE")
+                self.assertIn("COMPONENT_OBSERVATION_OUTSIDE_WINDOW",
+                              self.review(cut=stale).holds)
+                absent=replace(self.cut,**{field:None})
+                self.assertIn("COMPONENT_OBSERVATION_MISSING",
+                              self.review(cut=absent).holds)
+
+    def test_reused_source_observation_ids_cannot_claim_one_capture(self):
+        reuse=replace(self.cut,telemetry_stamp=replace(
+            self.cut.telemetry_stamp,
+            sample_id=self.cut.artifact_stamp.sample_id))
+        answer=self.review(cut=reuse)
+        self.assertEqual(answer.status,"HELD_SOURCE_PROVENANCE")
+        self.assertIn("REUSED_SOURCE_OBSERVATION_ID",answer.holds)
+        # Changing a source sample ID cannot authenticate an attacker-replayed sample.
+        reissued=replace(reuse,telemetry_stamp=replace(
+            reuse.telemetry_stamp,sample_id="sample:new"))
+        self.assertEqual(self.review(cut=reissued).status,"DEVELOPMENT_METADATA_ONLY")
+        self.assertFalse(self.review(cut=reissued).model_bytes_authenticated)
+
+    def test_malformed_sample_and_cross_request_replay_never_authenticates(self):
+        with self.assertRaises(ValueError):
+            replace(self.cut,artifact_stamp={"observed_at_epoch_s":1800000000,
+                                             "sample_id":"sample:artifact"})
+        with self.assertRaises(ValueError):
+            SourceObservationStamp(True,"sample:bad")
+        first=self.review()
+        second=self.review()  # no durable nonce-consumption ledger in this module
+        self.assertEqual(first.status,second.status)
+        self.assertFalse(second.normal_resident_admitted)
+        self.assertFalse(second.model_bytes_authenticated)
+
+    def test_minimum_resident_receipt_needs_signed_issuer_and_behavior_evidence(self):
+        requirements=normal_resident_qualification_requirements(self.review())
+        self.assertEqual(requirements["status"],"HOLD_UNAUTHENTICATED_NORMAL_RESIDENT")
+        self.assertIn("receiver_authenticated_session_nonce_generation",
+                      requirements["required_evidence"])
+        self.assertIn("raw_model_artifact_byte_hash_and_size",
+                      requirements["required_evidence"])
+        self.assertIn("trusted_issuer_signature_over_complete_evidence",
+                      requirements["required_evidence"])
+        self.assertIn("independent_model_behavior_qualification",
+                      requirements["required_evidence"])
+        self.assertIn("normal_resident_route_permission_and_currentness",
+                      requirements["required_evidence"])
+        self.assertNotEqual(DEV_OLLAMA_REPORTED_DIGEST,
+                            requirements["source_artifact_sha256"])
+        self.assertIsNone(requirements["source_artifact_sha256"])
+        self.assertFalse(requirements["admitted"])
 
     def test_data_contract_rejects_boolean_generations_and_invented_size(self):
         with self.assertRaises(ValueError):

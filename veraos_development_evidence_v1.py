@@ -31,6 +31,20 @@ class DevelopmentInventory:
             raise ValueError("invalid reported development model inventory")
 
 @dataclass(frozen=True)
+class SourceObservationStamp:
+    """Self-reported sample time/id; not an authenticated issuer or replay ledger."""
+    observed_at_epoch_s: int
+    sample_id: str
+
+    def __post_init__(self):
+        if (type(self.observed_at_epoch_s) is not int or
+            self.observed_at_epoch_s < 0 or
+            type(self.sample_id) is not str or
+            _ID.fullmatch(self.sample_id) is None):
+            raise ValueError("invalid sample time or identity")
+
+
+@dataclass(frozen=True)
 class DevelopmentCut:
     registry_node_id: str
     registry_generation: int
@@ -55,9 +69,16 @@ class DevelopmentCut:
     artifact_bytes_sha256: str | None
     descriptor_status: str
     route: str
+    registry_stamp: SourceObservationStamp | None = None
+    telemetry_stamp: SourceObservationStamp | None = None
+    inventory_stamp: SourceObservationStamp | None = None
+    artifact_stamp: SourceObservationStamp | None = None
 
     def __post_init__(self):
         for prefix in ("registry","telemetry","inventory","artifact"):
+            stamp=getattr(self,prefix+"_stamp")
+            if stamp is not None and type(stamp) is not SourceObservationStamp:
+                raise ValueError("source sample stamp must be typed")
             if (type(getattr(self,prefix+"_node_id")) is not str or
                 _ID.fullmatch(getattr(self,prefix+"_node_id")) is None or
                 type(getattr(self,prefix+"_generation")) is not int or
@@ -118,6 +139,24 @@ def evaluate_development_cut(cut: DevelopmentCut, inventory: DevelopmentInventor
             break
     if now_epoch_s-cut.observed_at_epoch_s not in range(121):
         hard.append("OBSERVATION_OUTSIDE_WINDOW")
+    # The previous envelope-only time allowed one stale telemetry/model
+    # sample to ride beside a freshly timestamped registry observation.
+    # These stamps are still caller claims and cannot independently prove
+    # non-reuse across processes, issuers, or sessions.
+    stamps=[getattr(cut,role+"_stamp") for role in
+            ("registry","telemetry","inventory","artifact")]
+    if any(stamp is None for stamp in stamps):
+        hard.append("COMPONENT_OBSERVATION_MISSING")
+    ids=[]
+    for stamp in stamps:
+        if stamp is None:
+            continue
+        ids.append(stamp.sample_id)
+        if (now_epoch_s-stamp.observed_at_epoch_s not in range(121) or
+            abs(stamp.observed_at_epoch_s-cut.observed_at_epoch_s)>120):
+            hard.append("COMPONENT_OBSERVATION_OUTSIDE_WINDOW")
+    if len(ids)!=len(set(ids)):
+        hard.append("REUSED_SOURCE_OBSERVATION_ID")
     if (inventory.source_head!=DEV_OS_HEAD or inventory.model!=DEV_MODEL or
         inventory.reported_ollama_digest!=DEV_OLLAMA_REPORTED_DIGEST or
         inventory.reported_ollama_size_bytes!=DEV_MODEL_BYTES or
@@ -195,4 +234,39 @@ def bind_participation_development_cut(episode, cut: DevelopmentAssessment, *,
         "cognitive_independence_proven":False,
         "accepted_as_task_result":False,
         "effect_authority":False,
+    }
+
+def normal_resident_qualification_requirements(
+    development: DevelopmentAssessment,
+) -> dict:
+    """Describe minimum independent proofs, NOT a signature-verification API.
+
+    Model bytes, model competence and resident policy/route are distinct.
+    The proposed receipt needs authenticated issuer over canonical bytes and
+    fresh admission currentness; caller strings never suffice.
+    """
+    if type(development) is not DevelopmentAssessment:
+        raise ValueError("typed development assessment required")
+    return {
+        "schema": "VERA_OS_NORMAL_RESIDENT_MODEL_QUALIFICATION_REQUIREMENTS_V1",
+        "status": "HOLD_UNAUTHENTICATED_NORMAL_RESIDENT",
+        "development_source": DEV_OS_HEAD,
+        "reported_model": DEV_MODEL,
+        "reported_ollama_inventory_digest": DEV_OLLAMA_REPORTED_DIGEST,
+        "source_artifact_sha256": None,
+        "required_evidence": [
+            "receiver_authenticated_session_nonce_generation",
+            "same_session_resource_samples_with_distinct_capture_times",
+            "raw_model_artifact_byte_hash_and_size",
+            "signed_model_identity_and_exact_runtime_target",
+            "trusted_issuer_signature_over_complete_evidence",
+            "independent_model_behavior_qualification",
+            "normal_resident_route_permission_and_currentness",
+            "durable_task_and_route_recheck_before_use",
+        ],
+        "individually_attributed_participants_required": True,
+        "admitted": False,
+        "protected_effect_authority": False,
+        "canonical_memory_authority": False,
+        "identity_authority": False,
     }
