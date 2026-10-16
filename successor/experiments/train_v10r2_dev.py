@@ -775,6 +775,20 @@ def execute_dev_training(
         verify_trainable(trainer.model, torch, permit_cast=True)
         if fp32_adapter else None
     )
+    # PEFT can load an FP32 checkpoint through BF16 module parameters.
+    # BF16 -> FP32 upcasting does not restore the lost low bits. On the
+    # bounded R13 branch, restore the exact SHA-verified saved tensor bytes
+    # after TRL's constructor and BEFORE optimizer parameter capture.
+    exact_resume_rehydration = None
+    if spec.get("experiment_class") == "R13_FROZEN_DIVERSE_IDENTITY_AND_JUDGMENT_32_STEPS":
+        from successor.experiments.r13_resume_fp32_integrity import restore_exact_lora
+        exact_resume_rehydration = restore_exact_lora(
+            trainer.model,
+            Path(resume_check["adapter_dir"]) / "adapter_model.safetensors",
+            expected_sha=resume_check["adapter_model_sha256"],
+            expected_tensors=precision_after_trainer["verified_trainable_tensors"],
+            torch=torch,
+        )
 
     optimizer = trainer.create_optimizer()
     if fp32_adapter:
@@ -972,6 +986,7 @@ def execute_dev_training(
         "adapter_precision_policy": spec.get("adapter_precision_policy", "LEGACY_BF16"),
         "adapter_precision_initial": precision_before,
         "adapter_precision_after_trainer": precision_after_trainer,
+        "exact_resume_rehydration": exact_resume_rehydration,
         "adapter_precision_final": precision_after,
         "qualification_status": "NOT_EXTERNALLY_EVALUATED",
         "deployment_status": "NOT_DEPLOYED",

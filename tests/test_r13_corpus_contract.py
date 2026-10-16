@@ -41,7 +41,11 @@ class R13CorpusContractTests(unittest.TestCase):
             root=Path(td)
             with patch.multiple(build, OUT_DIR=root/"new-corpus",
                                 SPEC=root/"new-spec.json", BINDING=root/"new-binding.json"):
-                evidence=build.build()
+                # A separate test proves output collision rejection; suppress
+                # just that gate while rebuilding source into this disposable
+                # location, retaining the exact frozen adapter namespace.
+                with patch.object(build,"require_fresh_outputs",return_value=None):
+                    evidence=build.build()
                 self.assertEqual(evidence["corpus_sha256"],
                     "90de3879113a99f85002ec884d504ee487e5ed699d9deaa0146290c47597b3c5")
                 self.assertEqual(evidence["spec_sha256"],
