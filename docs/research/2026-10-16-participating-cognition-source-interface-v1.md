@@ -50,4 +50,8 @@ python -B -m unittest discover -s tests -p test_participating_cognition_v1.py -v
 
 Without `VERA_REAL_CONTRACT_ROOT`, the synthetic unit tests run but exact-source integration tests visibly `SKIP`. Set it to a locally verified **independent checkout parent** with `vera-mono/`, `mosaic/`, `cricket/` directories to actually exercise the three source codepaths. Any outcome without those sources is *not* cross-repository interoperability evidence.
 
+**Optional exact-file compatibility:** `VERA_CORE_SOURCE_ONLY=1` loads Vera Core's actual `semantic_transfer.py` after verifying its contents match the pinned `vera-mono@16a2828dfa7fb7e6c0e19004f014bc68fc47badf` Git blob. This deliberately skips the vera_core package initializer; it is a **narrower file API test** and cannot prove installed package importability. VN1's Python 3.13 lacks its existing `jsonschema` dependency. No package is installed.
+
+**Independence refinement:** A restarted process running the same (node, agent) identity is not a second independent participant, even when its runtime instance differs.
+
 No GPU contention, paid compute, main change, deployment, provider update, new scheduler, automated task or VN1 recovery claim is involved.

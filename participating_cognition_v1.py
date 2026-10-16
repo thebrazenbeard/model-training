@@ -128,11 +128,9 @@ def compose_episode(
         raise ParticipationError("Two typed contributions required")
     if first.task_id!=second.task_id or first.participant.identity!=second.participant.identity:
         raise ParticipationError("Cannot combine different task/shared identity")
-    if (first.participant.node_id,first.participant.agent_id,
-        first.participant.runtime_instance_id)==(
-        second.participant.node_id,second.participant.agent_id,
-        second.participant.runtime_instance_id):
-        raise ParticipationError("Same runtime participant cannot be counted twice")
+    if (first.participant.node_id,first.participant.agent_id)==(
+        second.participant.node_id,second.participant.agent_id):
+        raise ParticipationError("Same logical agent cannot be counted twice by restarting it")
     # No automatic assertion of source, model or *cognitive* independence.
     dissent=review_pair(first.claim,second.claim,
         verify_evidence=verify_evidence,verify_independence=verify_independence)

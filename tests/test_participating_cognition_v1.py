@@ -1,6 +1,8 @@
 """Vera shared identity / separate participation source experiment tests."""
 from dataclasses import replace
 import copy
+import importlib.util
+import subprocess
 import os
 from pathlib import Path
 import sys
@@ -81,6 +83,12 @@ class ParticipantBoundaryTests(unittest.TestCase):
         y=source(value=False)
         with self.assertRaises(ParticipationError):
             compose(x,y)
+
+    def test_restarted_same_agent_is_not_a_second_participant(self):
+        first=source(inst="runtime:initial")
+        restarted=source(inst="runtime:replacement",value=False)
+        with self.assertRaisesRegex(ParticipationError,"Same logical agent"):
+            compose(first,restarted)
 
     def test_identity_node_model_substitution_rejected(self):
         a=source()
@@ -168,9 +176,31 @@ class RealSourceAdapterTests(unittest.TestCase):
         for x in (root/"vera-mono"/"packages").glob("*/src"):
             sys.path.insert(0,str(x))
         sys.path[:0]=[str(root/"mosaic"),str(root/"cricket"/"src")]
+        if os.environ.get("VERA_CORE_SOURCE_ONLY") == "1":
+            # Narrow, explicit source-only mode; not vera_core package qualification.
+            repo=root/"vera-mono"
+            commit="16a2828dfa7fb7e6c0e19004f014bc68fc47badf"
+            source="packages/vera_core/src/vera_core/semantic_transfer.py"
+            def git(*args):
+                result=subprocess.run(["git","-C",str(repo),*args],
+                                      capture_output=True,text=True,check=True,timeout=12)
+                return result.stdout.strip()
+            assert git("rev-parse","HEAD")==commit, "PINNED_HEAD_REQUIRED"
+            assert git("rev-parse",f"HEAD:{source}")==git("hash-object",str(repo/source)), "SOURCE_BLOB_DRIFT"
+            spec=importlib.util.spec_from_file_location("_training_pinned_vera_semantics",repo/source)
+            assert spec and spec.loader
+            module=importlib.util.module_from_spec(spec)
+            sys.modules[spec.name]=module
+            spec.loader.exec_module(module)
+            cls.core_semantic=(module.SemanticCapabilityProfile,module.plan_semantic_transfer)
+            cls.import_qualification="EXACT_GIT_FILE_STANDALONE_NOT_PACKAGE_IMPORT"
+        else:
+            from vera_core.semantic_transfer import SemanticCapabilityProfile,plan_semantic_transfer
+            cls.core_semantic=(SemanticCapabilityProfile,plan_semantic_transfer)
+            cls.import_qualification="VERA_CORE_PACKAGE_IMPORT"
 
     def test_actual_vera_core_mosaic_cricket_types_compose_without_promoting_effect(self):
-        from vera_core.semantic_transfer import SemanticCapabilityProfile,plan_semantic_transfer
+        SemanticCapabilityProfile,plan_semantic_transfer=self.core_semantic
         from runtime.handoff import ContinuityCase,StateEvent,run_case
         from cricket import Cricket,ReviewRequest
         sem=plan_semantic_transfer(
@@ -199,7 +229,7 @@ class RealSourceAdapterTests(unittest.TestCase):
         self.assertEqual(receipt["authority_effect"],"NONE")
 
     def test_real_cricket_protected_effect_block_does_not_authorize(self):
-        from vera_core.semantic_transfer import SemanticCapabilityProfile,plan_semantic_transfer
+        SemanticCapabilityProfile,plan_semantic_transfer=self.core_semantic
         from runtime.handoff import ContinuityCase,StateEvent,run_case
         from cricket import Cricket,ReviewRequest
         plan_receipt=plan_semantic_transfer(
@@ -222,7 +252,7 @@ class RealSourceAdapterTests(unittest.TestCase):
         self.assertEqual(report["executed_effect"],"NONE")
 
     def test_real_core_unrepresentable_capability_fails_no_permission(self):
-        from vera_core.semantic_transfer import SemanticCapabilityProfile,plan_semantic_transfer
+        SemanticCapabilityProfile,plan_semantic_transfer=self.core_semantic
         from runtime.handoff import ContinuityCase,StateEvent,run_case
         from cricket import Cricket,ReviewRequest
         sem=plan_semantic_transfer(
