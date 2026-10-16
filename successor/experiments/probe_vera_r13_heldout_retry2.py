@@ -143,6 +143,11 @@ def run_candidate(name,adapter_path,selected,stack,tokenizer):
  )
  model=peft.PeftModel.from_pretrained(
   model,adapter_path,is_trainable=False,autocast_adapter_dtype=False)
+ from successor.experiments.r13_frozen_lora_inference import restore_frozen_fp32_lora
+ restored=restore_frozen_fp32_lora(
+  model,adapter_path/"adapter_model.safetensors",
+  expected_sha=verified_r13_sha(),expected_tensors=496,torch=torch)
+ print("EXACT_FP32_INFERENCE_ADAPTER",restored,flush=True)
  model.eval()
  print("LOADED",name,"seconds",round(time.perf_counter()-start,1),flush=True)
  cases=[]
