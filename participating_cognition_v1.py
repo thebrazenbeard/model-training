@@ -187,10 +187,12 @@ def compose_episode(
     if (("BLOCK" in severities and review["disposition"]!="BLOCK") or
         ("CHALLENGE" in severities and review["disposition"]=="PASS")):
         raise ParticipationError("Contradictory Cricket disposition and findings")
-    if plan["fidelity"]=="UNREPRESENTABLE":
-        status="SEMANTIC_TRANSFER_UNREPRESENTABLE"
-    elif review["disposition"]=="BLOCK":
+    # A blocking review must remain visible even when the semantic plan
+    # separately declares the transfer unrepresentable.
+    if review["disposition"]=="BLOCK":
         status="CRICKET_BLOCKED"
+    elif plan["fidelity"]=="UNREPRESENTABLE":
+        status="SEMANTIC_TRANSFER_UNREPRESENTABLE"
     elif review["disposition"]=="CHALLENGE":
         status="CRICKET_CHALLENGED"
     elif dissent.classification in ("DIFFERENT_PROPOSITION","DIFFERENT_SCOPE","DIFFERENT_REVISION"):

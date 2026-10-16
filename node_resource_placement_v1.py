@@ -102,7 +102,12 @@ def advise_resource_fit(
     """Only evaluates fresh measurements; cannot authorize a model or route."""
     if not isinstance(observed,NodeResourceObservation) or not isinstance(task,CognitiveWorkload):
         raise ResourceError("Typed observation and workload required")
-    if type(now_epoch_s) is not int or type(freshness_seconds) is not int or not 1<=freshness_seconds<=300:
+    if (type(expected_node_id) is not str or _IDENT.fullmatch(expected_node_id) is None or
+        type(expected_session) is not str or _IDENT.fullmatch(expected_session) is None or
+        type(expected_generation) is not int or expected_generation < 1):
+        raise ResourceError("Invalid expected node/session reference")
+    if (type(now_epoch_s) is not int or now_epoch_s < 0 or
+        type(freshness_seconds) is not int or not 1<=freshness_seconds<=300):
         raise ResourceError("Invalid readback/freshness bound")
     reasons=[]
     if verify_registry_observation is None:

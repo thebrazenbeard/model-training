@@ -125,6 +125,17 @@ class ParticipantBoundaryTests(unittest.TestCase):
         with self.assertRaises(ParticipationError):
             compose(second=replace(source(node="Lappy",agent="agent:lappy",inst="runtime:two"),task_id="task:other"))
 
+    def test_cricket_block_status_survives_semantic_unrepresentability(self):
+        p=plan()
+        p.update(fidelity="UNREPRESENTABLE",
+                 required_capabilities=["typed:referent","latent:unknown"],
+                 missing_capabilities=["latent:unknown"],
+                 unresolved_capabilities=["latent:unknown"])
+        receipt=compose(core_plan=p,cricket_result={"disposition":"BLOCK","findings":[]}).as_dict()
+        self.assertEqual(receipt["status"],"CRICKET_BLOCKED")
+        self.assertEqual(receipt["core_semantic_plan"]["fidelity"],"UNREPRESENTABLE")
+        self.assertEqual(receipt["authority_effect"],"NONE")
+
     def test_cricket_pass_cannot_become_effect_or_identity_proof(self):
         out=compose(cricket_result={"disposition":"PASS","findings":[]}).as_dict()
         self.assertEqual(out["authority_effect"],"NONE")

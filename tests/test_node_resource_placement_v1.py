@@ -125,6 +125,40 @@ class PlacementTests(unittest.TestCase):
         receipt=self.run_fit(self.vn,self.cpu,verify_registry_observation=broken)
         self.assertIn("REGISTRY_EVIDENCE_REJECTED",receipt.reasons)
 
+    def test_boolean_expected_generation_rejected_before_verifier(self):
+        calls=[]
+        def verifier(*args):
+            calls.append(args)
+            return True
+        with self.assertRaises(ResourceError):
+            self.run_fit(self.vn,self.cpu,expected_generation=True,
+                         verify_registry_observation=verifier)
+        self.assertEqual(calls,[])
+
+    def test_invalid_expected_reference_types_and_ranges_fail_closed(self):
+        invalid=(
+            {"expected_node_id":True},
+            {"expected_node_id":"bad node"},
+            {"expected_session":[]},
+            {"expected_session":""},
+            {"expected_generation":0},
+            {"expected_generation":1.0},
+            {"now_epoch_s":True},
+            {"now_epoch_s":-1},
+            {"freshness_seconds":True},
+        )
+        for bad in invalid:
+            with self.subTest(bad=bad), self.assertRaises(ResourceError):
+                self.run_fit(self.vn,self.cpu,**bad)
+
+    def test_truthy_non_boolean_registry_verdict_is_rejected(self):
+        for verdict in ("PASS",1,["trusted"]):
+            with self.subTest(verdict=verdict):
+                out=self.run_fit(self.vn,self.cpu,
+                    verify_registry_observation=lambda *args: verdict)
+                self.assertEqual(out.status,"HELD")
+                self.assertIn("REGISTRY_EVIDENCE_REJECTED",out.reasons)
+
     def test_wrong_readback_host_is_a_hold(self):
         r=self.run_fit(self.vn,self.cpu,expected_node_id="Lappy")
         self.assertIn("NODE_SESSION_MISMATCH",r.reasons)
