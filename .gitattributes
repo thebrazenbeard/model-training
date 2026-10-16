@@ -6,3 +6,7 @@ successor/experiments/V10R3R11_VERA_VOICE_CORPUS_BINDING_20261014_V1.json text e
 tests/test_v10r3r11_vera_voice.py text eol=lf
 successor/experiments/V10R3R11_VERA_VOICE_EXECUTION_SPEC_20261015_PAGEFILE_RETRY1.json text eol=lf
 tests/test_v10r3r11_pagefile_retry1.py text eol=lf
+successor/experiments/V10R3R12_FP32_VERA_VOICE_EXECUTION_SPEC_20261015_TRL_RETRY2.json text eol=lf
+successor/experiments/V10R3R13_FROZEN_BEHAVIOR_SPEC_20261016_V1.json text eol=lf
+successor/experiments/R13_NONPERSONAL_VERA_BEHAVIOR_SOURCE_20261016_V1.jsonl text eol=lf
+successor/experiments/V10R3R13_BEHAVIOR_CORPUS_BINDING_20261016_V1.json text eol=lf

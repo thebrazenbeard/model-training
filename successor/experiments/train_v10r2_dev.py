@@ -162,6 +162,21 @@ def load_and_validate_dev_spec(path: Path | str) -> dict:
             raise DevTrainingHold(
                 "recipe-semantics experiment requires sequential sampling"
             )
+    elif experiment_class == "R13_FROZEN_DIVERSE_IDENTITY_AND_JUDGMENT_32_STEPS":
+        if max_steps != 32:
+            raise DevTrainingHold("R13 requires exactly 32 optimizer steps")
+        if trainer.get("learning_rate") != 1e-5:
+            raise DevTrainingHold("R13 requires learning rate exactly 1e-5")
+        if optimizer_name != "adamw_bnb_8bit":
+            raise DevTrainingHold("R13 requires nonpaged adamw_bnb_8bit")
+        if trainer.get("shuffle_dataset") is not False or sampling_strategy != "sequential":
+            raise DevTrainingHold("R13 requires deterministic sequential sampling")
+        if value.get("adapter_precision_policy") != "FP32_RESUMED_LORA_TRAIN_AND_SAVE_V1":
+            raise DevTrainingHold("R13 requires resumed FP32 LoRA weights")
+        if value.get("resume_adapter") is None:
+            raise DevTrainingHold("R13 requires verified R12 parent checkpoint")
+        if trainer.get("warmup_optimizer_steps") != 0:
+            raise DevTrainingHold("R13 requires zero warmup steps")
     elif not isinstance(max_steps, int) or max_steps < 1 or max_steps > 8:
         raise DevTrainingHold(
             "development optimizer steps must be an integer from 1 through 8"
