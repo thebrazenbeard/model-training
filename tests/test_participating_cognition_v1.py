@@ -103,6 +103,52 @@ class ParticipantBoundaryTests(unittest.TestCase):
         self.assertEqual(out["contributions"][0]["participant"]["agent_id"],"agent:one")
         self.assertEqual(out["contributions"][1]["participant"]["agent_id"],"agent:two")
 
+    def test_same_runtime_distinct_agents_are_correlated_not_independent_conflict(self):
+        a=source(node="VN1",agent="agent:one",inst="runtime:shared",value=True)
+        b=source(node="Lappy",agent="agent:two",inst="runtime:shared",value=False)
+        checks=[]
+        def independent(*args):
+            checks.append(args)
+            return True
+        receipt=compose(a,b,verify_evidence=lambda *args: True,
+                        verify_independence=independent).as_dict()
+        self.assertEqual(receipt["dissent"]["classification"],"SELF_OR_CORRELATED_CLAIMS")
+        self.assertFalse(receipt["dissent"]["challenge_for_review"])
+        self.assertEqual(checks,[])
+        self.assertEqual(len(receipt["contributions"]),2)
+        self.assertEqual(receipt["authority_effect"],"NONE")
+
+    def test_claim_only_independence_does_not_prove_distinct_runtimes(self):
+        receipt=compose(verify_evidence=lambda *args: True,
+                        verify_independence=lambda *args: True).as_dict()
+        self.assertEqual(receipt["dissent"]["classification"],"UNVERIFIED_DISSENT")
+        self.assertFalse(receipt["dissent"]["challenge_for_review"])
+
+    def test_pair_verifier_receives_exact_participant_bindings(self):
+        seen=[]
+        def pair_check(a,b):
+            seen.append((a.participant.runtime_instance_id,
+                         b.participant.runtime_instance_id,
+                         a.participant.agent_id,b.participant.agent_id))
+            return True
+        receipt=compose(verify_evidence=lambda *args: True,
+                        verify_independence=lambda *args: True,
+                        verify_participant_independence=pair_check).as_dict()
+        self.assertEqual(receipt["dissent"]["classification"],"EVIDENCE_CONFLICT_FOR_REVIEW")
+        self.assertEqual(seen,[("runtime:one","runtime:two","agent:vn1","agent:lappy")])
+        self.assertFalse(receipt["dissent"]["independence_proven"])
+        self.assertEqual(receipt["authority_effect"],"NONE")
+
+    def test_pair_independence_verifier_errors_and_truthy_values_fail_closed(self):
+        def fail(*args):
+            raise RuntimeError("receiver verifier unavailable")
+        for verifier in (lambda *args: 1, lambda *args: "yes", fail):
+            receipt=compose(verify_evidence=lambda *args: True,
+                            verify_independence=lambda *args: True,
+                            verify_participant_independence=verifier).as_dict()
+            self.assertEqual(receipt["dissent"]["classification"],"UNVERIFIED_DISSENT")
+            self.assertFalse(receipt["dissent"]["challenge_for_review"])
+
     def test_cricket_pass_with_block_finding_rejected(self):
         finding=dict(rule_id="deny:effect",severity="BLOCK",title="Blocked",
                      rationale="Protected effect",evidence="No permission",

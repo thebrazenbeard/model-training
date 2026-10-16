@@ -6,7 +6,7 @@ selecting or invoking a live QualifiedVeraRuntime. No learned model, brain,
 external permission, global memory, or automatic authority transition.
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import json
 import re
@@ -118,11 +118,15 @@ def compose_episode(
     cricket_result: Mapping[str,Any],
     verify_evidence=None,
     verify_independence=None,
+    verify_participant_independence=None,
 ) -> ParticipationReceipt:
     """Requires reports computed *by* real source modules at the call site.
 
     Never infer that source 'PASS', model agreement, or a handoff is effect
     authority or same-process identity. Inputs are source-test observations.
+    A participant-level verifier must independently establish whether separate
+    claimed runtime instances are truly independent; a claim-only verifier is
+    insufficient. Both callbacks are untrusted until receiver-owned.
     """
     if not isinstance(first,Contribution) or not isinstance(second,Contribution):
         raise ParticipationError("Two typed contributions required")
@@ -130,9 +134,23 @@ def compose_episode(
         raise ParticipationError("Cannot combine different task/shared identity")
     if first.participant.agent_id == second.participant.agent_id:
         raise ParticipationError("Same logical agent cannot be counted twice by restarting it")
-    # No automatic assertion of source, model or *cognitive* independence.
-    dissent=review_pair(first.claim,second.claim,
-        verify_evidence=verify_evidence,verify_independence=verify_independence)
+    # A claim-only callback does not see node-bound participant runtime IDs.
+    # A reused declared runtime identity is correlation, NOT erasure of either
+    # logical participant and NOT a second independent piece of evidence.
+    if first.participant.runtime_instance_id == second.participant.runtime_instance_id:
+        dissent=review_pair(first.claim,second.claim)
+        if dissent.classification=="UNVERIFIED_DISSENT":
+            dissent=replace(dissent,classification="SELF_OR_CORRELATED_CLAIMS")
+    else:
+        def _verify_pair(a,b):
+            if verify_participant_independence is None or verify_independence is None:
+                return False
+            # Exceptions, missing verifiers, non-Boolean results fail closed
+            # through review_pair's callback guard.
+            return (verify_participant_independence(first,second) is True and
+                    verify_independence(a,b) is True)
+        dissent=review_pair(first.claim,second.claim,
+            verify_evidence=verify_evidence,verify_independence=_verify_pair)
     plan=_safe_receipt("Vera Core semantic plan",core_plan,{
         "source_profile","target_profile","required_capabilities",
         "native_capabilities","missing_capabilities","unresolved_capabilities",

@@ -23,7 +23,8 @@ class PlacementTests(unittest.TestCase):
                   expected_session=host.registry_session,
                   now_epoch_s=self.now,
                   verify_registry_observation=lambda *args: True,
-                  verify_model_artifact=lambda *args: True)
+                  verify_model_artifact=lambda *args: True,
+                  verify_resource_observation=lambda *args: True)
         opts.update(overrides)
         return advise_resource_fit(host,task,**opts)
 
@@ -158,6 +159,31 @@ class PlacementTests(unittest.TestCase):
                     verify_registry_observation=lambda *args: verdict)
                 self.assertEqual(out.status,"HELD")
                 self.assertIn("REGISTRY_EVIDENCE_REJECTED",out.reasons)
+
+    def test_registry_proof_does_not_attest_resource_measurement(self):
+        out=self.run_fit(self.vn,self.cpu,verify_resource_observation=None)
+        self.assertEqual(out.status,"HELD")
+        self.assertIn("RESOURCE_MEASUREMENT_UNVERIFIED",out.reasons)
+        self.assertFalse(out.capacity_reserved)
+        self.assertFalse(out.route_authorized)
+
+    def test_resource_verifier_must_explicitly_accept_bound_workload(self):
+        seen=[]
+        def verified(observed,task):
+            seen.append((observed.node_id,task.task_id,task.min_free_ram_mib))
+            return True
+        ok=self.run_fit(self.vn,self.cpu,verify_resource_observation=verified)
+        self.assertEqual(ok.status,"RESOURCE_FIT_ONLY")
+        self.assertEqual(seen,[("VERA-NODE-1","task:coord",512)])
+        for verdict in (False,1,"yes"):
+            out=self.run_fit(self.vn,self.cpu,
+                verify_resource_observation=lambda *args: verdict)
+            self.assertEqual(out.status,"HELD")
+            self.assertIn("RESOURCE_MEASUREMENT_REJECTED",out.reasons)
+        def boom(*args):
+            raise RuntimeError("untrusted measurement")
+        failed=self.run_fit(self.vn,self.cpu,verify_resource_observation=boom)
+        self.assertIn("RESOURCE_MEASUREMENT_REJECTED",failed.reasons)
 
     def test_wrong_readback_host_is_a_hold(self):
         r=self.run_fit(self.vn,self.cpu,expected_node_id="Lappy")
