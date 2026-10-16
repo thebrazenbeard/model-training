@@ -90,6 +90,27 @@ class ParticipantBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ParticipationError,"Same logical agent"):
             compose(first,restarted)
 
+    def test_migrated_logical_agent_is_not_two_contributors(self):
+        first=source(node="VN1",agent="agent:shared",inst="runtime:before")
+        migrated=source(node="Lappy",agent="agent:shared",inst="runtime:after",value=False)
+        with self.assertRaisesRegex(ParticipationError,"Same logical agent"):
+            compose(first,migrated)
+
+    def test_distinct_agents_on_one_node_remain_distinct(self):
+        first=source(node="VN1",agent="agent:one",inst="runtime:one")
+        second=source(node="VN1",agent="agent:two",inst="runtime:two",value=False)
+        out=compose(first,second).as_dict()
+        self.assertEqual([c["participant"]["agent_id"] for c in out["contributions"]],
+                         ["agent:one","agent:two"])
+
+    def test_cricket_pass_with_block_finding_is_rejected(self):
+        review={"disposition":"PASS","findings":[{
+            "rule_id":"test:blocked","severity":"BLOCK","title":"Protected effect",
+            "rationale":"Unverified","evidence":"fixture",
+            "recommendation":"Hold","source":"fixture"}]}
+        with self.assertRaisesRegex(ParticipationError,"Cricket PASS contradicts BLOCK"):
+            compose(cricket_result=review)
+
     def test_identity_node_model_substitution_rejected(self):
         a=source()
         b=source(node="Lappy",agent="agent:lappy",inst="runtime:two")
