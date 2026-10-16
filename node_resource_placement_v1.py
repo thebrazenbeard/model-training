@@ -97,6 +97,7 @@ def advise_resource_fit(
     observed: NodeResourceObservation, task: CognitiveWorkload, *,
     expected_node_id: str, expected_generation: int, expected_session: str,
     now_epoch_s: int, freshness_seconds: int = 120,
+    verify_registry_observation=None, verify_model_artifact=None,
 ) -> ResourceFitReceipt:
     """Only evaluates fresh measurements; cannot authorize a model or route."""
     if not isinstance(observed,NodeResourceObservation) or not isinstance(task,CognitiveWorkload):
@@ -104,6 +105,25 @@ def advise_resource_fit(
     if type(now_epoch_s) is not int or type(freshness_seconds) is not int or not 1<=freshness_seconds<=300:
         raise ResourceError("Invalid readback/freshness bound")
     reasons=[]
+    if verify_registry_observation is None:
+        reasons.append("REGISTRY_EVIDENCE_UNVERIFIED")
+    else:
+        try:
+            verified = verify_registry_observation(observed, expected_node_id, expected_generation, expected_session)
+        except Exception:
+            verified = False
+        if verified is not True:
+            reasons.append("REGISTRY_EVIDENCE_REJECTED")
+    if task.model_artifact_sha256 is not None:
+        if verify_model_artifact is None:
+            reasons.append("MODEL_ARTIFACT_UNVERIFIED")
+        else:
+            try:
+                verified_model = verify_model_artifact(observed, task.model_artifact_sha256)
+            except Exception:
+                verified_model = False
+            if verified_model is not True:
+                reasons.append("MODEL_ARTIFACT_REJECTED")
     if (observed.node_id!=expected_node_id or
         observed.registry_generation!=expected_generation or
         observed.registry_session!=expected_session):
@@ -126,7 +146,8 @@ def advise_resource_fit(
             reasons.append("INSUFFICIENT_FREE_VRAM")
     return ResourceFitReceipt(
         node_id=observed.node_id,task_id=task.task_id,
-        status="HELD" if reasons else "RESOURCE_FIT_ONLY",
+        status=("RESOURCE_CLAIM_ONLY" if reasons == ["REGISTRY_EVIDENCE_UNVERIFIED"]
+                else "HELD" if reasons else "RESOURCE_FIT_ONLY"),
         reasons=tuple(reasons),
         registry_generation=observed.registry_generation,
         registry_session=observed.registry_session,
