@@ -173,6 +173,27 @@ def compose_episode(
         raise ParticipationError("Unresolved capabilities not tied to missing ones")
     if bool(unresolved)!=(plan["fidelity"]=="UNREPRESENTABLE"):
         raise ParticipationError("Unresolved semantic transfer falsely declared representable")
+    # An EXACT receipt with missing capabilities cannot omit their rewrites.
+    # Verify the entire source-plan inventory, not just its top-level label.
+    rewrites=plan["rewrites"]
+    rewrite_keys={"source_capability","rule_name","fidelity","description"}
+    if type(rewrites) is not list or any(
+        type(r) is not dict or set(r)!=rewrite_keys or
+        any(type(r[k]) is not str or not r[k] for k in rewrite_keys) or
+        r["fidelity"] not in _FIDELITY for r in rewrites
+    ):
+        raise ParticipationError("Invalid semantic rewrite entries")
+    rewrite_sources=[r["source_capability"] for r in rewrites]
+    if (len(rewrite_sources)!=len(set(rewrite_sources)) or
+        set(rewrite_sources)|set(unresolved)!=set(missing) or
+        set(rewrite_sources)&set(unresolved)):
+        raise ParticipationError("Semantic rewrite coverage contradicts missing capabilities")
+    severity={"EXACT":0,"CONSTRUCTIVE":1,"LOSSY":2,"UNREPRESENTABLE":3}
+    expected_fidelity=("UNREPRESENTABLE" if unresolved else
+        max(("EXACT", *(r["fidelity"] for r in rewrites)),
+            key=severity.__getitem__))
+    if plan["fidelity"]!=expected_fidelity:
+        raise ParticipationError("Semantic fidelity contradicts rewrite severity")
     handoff=_safe_receipt("Mosaic P1 result",mosaic_result,{
         "case_id","family","condition","answer","expected_value",
         "correct","stale_error","correction_burden","payload_bytes",

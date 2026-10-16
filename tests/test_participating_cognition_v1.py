@@ -228,6 +228,30 @@ class ParticipantBoundaryTests(unittest.TestCase):
             with self.subTest(field=field),self.assertRaises(ParticipationError):
                 compose(core_plan=p)
 
+    def test_semantic_missing_capabilities_require_exact_rewrite_coverage(self):
+        missing=plan()
+        missing.update(required_capabilities=["typed:referent","kv:layout"],
+                       missing_capabilities=["kv:layout"],rewrites=[],fidelity="EXACT")
+        with self.assertRaisesRegex(ParticipationError,"rewrite"):
+            compose(core_plan=missing)
+        covered=dict(missing)
+        covered["rewrites"]=[dict(source_capability="kv:layout",rule_name="replace:kv",
+                                  fidelity="LOSSY",description="Approximate")]
+        with self.assertRaisesRegex(ParticipationError,"fidelity"):
+            compose(core_plan=covered)
+        covered["fidelity"]="LOSSY"
+        out=compose(core_plan=covered).as_dict()
+        self.assertEqual(out["core_semantic_plan"]["fidelity"],"LOSSY")
+        self.assertEqual(out["authority_effect"],"NONE")
+        for edits in (
+            [dict(covered["rewrites"][0],source_capability="unknown")],
+            covered["rewrites"]+covered["rewrites"],
+            [dict(covered["rewrites"][0],fidelity="INVALID")],
+            [dict(covered["rewrites"][0],fidelity=["LOSSY"])],
+        ):
+            with self.subTest(rewrites=edits), self.assertRaises(ParticipationError):
+                compose(core_plan={**covered,"rewrites":edits})
+
     def test_mosaic_success_cannot_claim_cognitive_gain(self):
         out=compose(mosaic_result=mosaic()).as_dict()
         self.assertTrue(out["mosaic_handoff"]["correct"])
@@ -340,6 +364,28 @@ class RealSourceAdapterTests(unittest.TestCase):
         self.assertTrue(receipt["mosaic_handoff"]["correct"])
         self.assertIn(receipt["cricket_review"]["disposition"],("PASS","CHALLENGE","BLOCK"))
         self.assertEqual(receipt["authority_effect"],"NONE")
+
+    def test_actual_core_lossy_rewrite_cannot_claim_exact_transfer(self):
+        SemanticCapabilityProfile,plan_semantic_transfer=self.core_semantic
+        import importlib
+        core=importlib.import_module(SemanticCapabilityProfile.__module__)
+        rule=core.SemanticTransferRule(
+            name="lossy:kv",source_capability="kv:layout",
+            target_capabilities=frozenset({"typed:referent"}),
+            fidelity=core.TransferFidelity.LOSSY,
+            description="Bounded non-equivalent rewrite")
+        sem=plan_semantic_transfer(
+            SemanticCapabilityProfile("vera-core",frozenset({"typed:referent","kv:layout"})),
+            SemanticCapabilityProfile("mosaic",frozenset({"typed:referent"})),
+            ["typed:referent","kv:layout"],rules=[rule])
+        out=compose(core_plan=sem.as_dict()).as_dict()
+        self.assertEqual(out["core_semantic_plan"]["missing_capabilities"],["kv:layout"])
+        self.assertEqual(out["core_semantic_plan"]["fidelity"],"LOSSY")
+        self.assertEqual(out["authority_effect"],"NONE")
+        falsified=sem.as_dict()
+        falsified["fidelity"]="EXACT"
+        with self.assertRaisesRegex(ParticipationError,"fidelity"):
+            compose(core_plan=falsified)
 
     def test_real_cricket_protected_effect_block_does_not_authorize(self):
         SemanticCapabilityProfile,plan_semantic_transfer=self.core_semantic
