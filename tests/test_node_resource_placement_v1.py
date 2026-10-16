@@ -21,7 +21,9 @@ class PlacementTests(unittest.TestCase):
         opts=dict(expected_node_id=host.node_id,
                   expected_generation=host.registry_generation,
                   expected_session=host.registry_session,
-                  now_epoch_s=self.now)
+                  now_epoch_s=self.now,
+                  verify_registry_observation=lambda *args: True,
+                  verify_model_artifact=lambda *args: True)
         opts.update(overrides)
         return advise_resource_fit(host,task,**opts)
 
@@ -99,6 +101,29 @@ class PlacementTests(unittest.TestCase):
         self.assertFalse(r.physical_identity_authenticated)
         self.assertFalse(r.model_qualified)
         self.assertFalse(r.capacity_reserved)
+
+    def test_fabricated_matching_registry_fields_cannot_attest_session(self):
+        fake=self.run_fit(self.vn,self.cpu,verify_registry_observation=None)
+        self.assertEqual(fake.status,"RESOURCE_CLAIM_ONLY")
+        self.assertIn("REGISTRY_EVIDENCE_UNVERIFIED",fake.reasons)
+        rejected=self.run_fit(self.vn,self.cpu,verify_registry_observation=lambda *args: False)
+        self.assertEqual(rejected.status,"HELD")
+        self.assertIn("REGISTRY_EVIDENCE_REJECTED",rejected.reasons)
+
+    def test_registry_proof_does_not_prove_model_artifact(self):
+        receipt=self.run_fit(self.vn,self.model_cpu,verify_model_artifact=None)
+        self.assertEqual(receipt.status,"HELD")
+        self.assertIn("MODEL_ARTIFACT_UNVERIFIED",receipt.reasons)
+        denied=self.run_fit(self.vn,self.model_cpu,verify_model_artifact=lambda *args: False)
+        self.assertIn("MODEL_ARTIFACT_REJECTED",denied.reasons)
+        self.assertFalse(denied.model_qualified)
+        self.assertFalse(denied.route_authorized)
+
+    def test_verifier_exception_fails_closed(self):
+        def broken(*args):
+            raise RuntimeError("gateway unavailable")
+        receipt=self.run_fit(self.vn,self.cpu,verify_registry_observation=broken)
+        self.assertIn("REGISTRY_EVIDENCE_REJECTED",receipt.reasons)
 
     def test_wrong_readback_host_is_a_hold(self):
         r=self.run_fit(self.vn,self.cpu,expected_node_id="Lappy")
