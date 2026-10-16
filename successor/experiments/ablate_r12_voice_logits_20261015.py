@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 import sys
 import time
+import subprocess
 
 ROOT = Path(r"D:\VERA")
 HERE = Path(__file__).resolve().parents[2]
@@ -18,7 +19,7 @@ BASE = ROOT / "models/latest-trained/base"
 R11 = ROOT / "models/adapters/v10r3r11-vera-voice-qwen35-r10-resume-20261015-pagefile-retry1/adapter"
 R12 = ROOT / "models/adapters/v10r3r12-vera-fp32-qwen35-r11-resume-20261015-trl-retry2/adapter"
 VOICE = ROOT / "portal-task-state/vera-model-glm24b-lappy-20261012/evaluation/cases/vera_voice_heldout_v1.jsonl"
-OUTPUT = ROOT / "portal-task-state/VERA_R12_R11_BASE_LOGIT_ABLATION_20261015_V1.json"
+OUTPUT = ROOT / "portal-task-state/VERA_R12_R11_BASE_LOGIT_ABLATION_20261015_V2.json"
 R11_SHA = "45f056297a55e19b22918d5298bcd5a9808fb0d8b8f5bf4210ebac91e4b88e10"
 R12_SHA = "a80f5e36a1a2319029309521fc88f6575215ac99d488c6a4bbf883afac53d72c"
 VOICE_SHA = "bd2b5375e2b7da78f42ed3ac1387f73ddec4807bc5e446b228bdbb7db3caf25f"
@@ -52,6 +53,15 @@ def describe_delta(a, b):
 def main():
     if OUTPUT.exists():
         raise RuntimeError("Ablation output already exists; preserve it")
+    git_args = ["git", "-C", str(HERE)]
+    head = subprocess.run(git_args + ["rev-parse", "HEAD"], check=True,
+                          capture_output=True, text=True).stdout.strip()
+    if len(head) != 40 or any(c not in "0123456789abcdef" for c in head):
+        raise RuntimeError("Unknown Git source revision")
+    dirty = subprocess.run(git_args + ["status", "--porcelain"], check=True,
+                           capture_output=True, text=True).stdout
+    if dirty.strip():
+        raise RuntimeError("Read-only ablation source must be committed and clean")
     if sha(R11 / "adapter_model.safetensors") != R11_SHA:
         raise RuntimeError("R11 preserved parent hash drift")
     if sha(R12 / "adapter_model.safetensors") != R12_SHA:
@@ -140,7 +150,8 @@ def main():
     report = {
         "schema": "VERA_R12_BASE_R11_LOGIT_ABLATION_V1",
         "status": "INFERENCE_LOGIT_DIFFERENCE_MEASURED_NOT_BEHAVIOR_QUALIFICATION",
-        "source_head": "7ea9c65b0ecbb42fc9d3e15f9ce0ab82bca33cdc",
+        "source_head": head,
+        "source_script_sha256": sha(Path(__file__).resolve()),
         "r11_adapter_sha256": R11_SHA,
         "r12_adapter_sha256": R12_SHA,
         "heldout_sha256": VOICE_SHA,

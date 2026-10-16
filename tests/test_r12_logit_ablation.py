@@ -34,3 +34,10 @@ class R12LogitAblationTests(unittest.TestCase):
         self.assertIn("model.set_adapter(adapter)", s)
         self.assertIn('OUTPUT.open("x"', s)
         self.assertNotIn("trainer.train(", s)
+
+    def test_report_binds_runtime_exact_head_and_preserves_v1(self):
+        s = SOURCE.read_text(encoding="utf8")
+        self.assertIn('git_args + ["rev-parse", "HEAD"]', s)
+        self.assertIn('"source_script_sha256": sha(Path(__file__).resolve())', s)
+        self.assertEqual(probe.OUTPUT.name,
+                         "VERA_R12_R11_BASE_LOGIT_ABLATION_20261015_V2.json")
