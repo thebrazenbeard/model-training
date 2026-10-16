@@ -162,5 +162,24 @@ class MachineSemanticQualificationTests(unittest.TestCase):
         with self.assertRaises(SemanticGateError):handoff(mode="MAGIC_LATENT")
         with self.assertRaises(SemanticGateError):handoff(peer_node_id="evil\nheader")
 
+    def test_malformed_lineage_and_qualification_fail_closed(self):
+        with self.assertRaises(SemanticGateError):
+            Handoff(task="not a task",sender=model(),receiver=model(),
+                    mode="TYPED_STATE",peer_node_id="vn1")
+        with self.assertRaises(SemanticGateError):
+            qualifying(scores=(None,))
+
+    def test_unavailable_external_verifier_quarantines_not_exceptions(self):
+        h=handoff(mode="LATENT",alignment_evidence_sha256=sha("0"))
+        def unavailable(*args):
+            raise OSError("Offline verification registry")
+        r=gate(h,verify_qualification=unavailable,verify_alignment=unavailable)
+        self.assertIn("QUALIFICATION_NOT_VERIFIED",r.reasons)
+        self.assertIn("LATENT_ALIGNMENT_NOT_VERIFIED",r.reasons)
+        self.assertEqual(r.status,"HELD")
+        kv=handoff(mode="KV_CACHE",alignment_evidence_sha256=sha("0"))
+        r=gate(kv,verify_alignment=unavailable,allow_kv_cache=True)
+        self.assertIn("KV_CONTEXT_AND_POSITION_NOT_VERIFIED",r.reasons)
+
 if __name__=="__main__":
     unittest.main()

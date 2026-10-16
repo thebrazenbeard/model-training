@@ -124,6 +124,7 @@ class Qualification:
             _digest(getattr(self, name))
         _id(self.capability_id)
         if (type(self.scores) is not tuple or
+            any(not isinstance(x, CategoryScore) for x in self.scores) or
             tuple(x.name for x in self.scores) != _CATEGORIES or
             sum(x.total for x in self.scores) < 25):
             raise SemanticGateError("Five named held-out categories required")
@@ -152,6 +153,10 @@ class Handoff:
     alignment_evidence_sha256: str | None = None
 
     def __post_init__(self):
+        if (not isinstance(self.task, SemanticTask) or
+            not isinstance(self.sender, ModelLineage) or
+            not isinstance(self.receiver, ModelLineage)):
+            raise SemanticGateError("Handoff requires typed task and model lineages")
         if self.mode not in _MODES:
             raise SemanticGateError("Unsupported neural handoff mode")
         _id(self.peer_node_id)
@@ -175,6 +180,16 @@ class GateResult:
 # Returned True ONLY after verifier-owned validation against external evidence.
 VerifyQualification = Callable[[Qualification], bool]
 VerifyAlignment = Callable[[str, Handoff], bool]
+
+
+def _verified(callback, *args) -> bool:
+    """Unknown/failed third-party verification is a HOLD, never an ALLOW."""
+    if callback is None:
+        return False
+    try:
+        return callback(*args) is True
+    except Exception:
+        return False
 
 
 def assess_handoff(
@@ -210,7 +225,7 @@ def assess_handoff(
             qualification.input_schema_sha256 != task.input_schema_sha256 or
             qualification.output_schema_sha256 != task.output_schema_sha256):
             reasons.append("QUALIFICATION_BINDING_MISMATCH")
-        if verify_qualification is None or verify_qualification(qualification) is not True:
+        if not _verified(verify_qualification, qualification):
             reasons.append("QUALIFICATION_NOT_VERIFIED")
         if any(score.passed * 5 < score.total * 4 for score in qualification.scores):
             reasons.append("QUALIFICATION_BELOW_THRESHOLD")
@@ -223,8 +238,7 @@ def assess_handoff(
             handoff.sender.semantic_space_sha256 != handoff.receiver.semantic_space_sha256):
             reasons.append("SEMANTIC_SPACE_MISMATCH")
         if (handoff.alignment_evidence_sha256 is None or
-            verify_alignment is None or
-            verify_alignment(handoff.alignment_evidence_sha256, handoff) is not True):
+            not _verified(verify_alignment, handoff.alignment_evidence_sha256, handoff)):
             reasons.append("LATENT_ALIGNMENT_NOT_VERIFIED")
     elif handoff.mode == "KV_CACHE":
         if not allow_kv_cache:
@@ -237,8 +251,7 @@ def assess_handoff(
             if getattr(handoff.sender, field) != getattr(handoff.receiver, field):
                 reasons.append("KV_"+field.upper()+"_MISMATCH")
         if (handoff.alignment_evidence_sha256 is None or
-            verify_alignment is None or
-            verify_alignment(handoff.alignment_evidence_sha256,handoff) is not True):
+            not _verified(verify_alignment, handoff.alignment_evidence_sha256,handoff)):
             reasons.append("KV_CONTEXT_AND_POSITION_NOT_VERIFIED")
     # TYPED_STATE is model-agnostic; ontology and output contracts
     # are still bound through the independent qualification.

@@ -1,0 +1,455 @@
+{
+  "case_limit": 25,
+  "dataset_sha256": "87e9a109d7700e77c13a8d3310967d44c38c421b20f656cfd56ab6065ed1c2d8",
+  "endpoint_scope": "LAPPY_LOOPBACK_ONLY",
+  "evaluation_scope": "PUBLIC_DEVELOPMENT_SET_NOT_HELD_OUT",
+  "model_advertisement": "qwen3.5-4b-local",
+  "model_artifact_sha256": "UNVERIFIED",
+  "model_case_results": [
+    {
+      "duration_ms": 1922,
+      "finish_reason": "stop",
+      "id": "referent-01",
+      "model_response": "{\"decision\":\"VALUE\",\"value\":\"entity:A\"}",
+      "parsed": {
+        "decision": "VALUE",
+        "value": "entity:A"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1438,
+      "finish_reason": "stop",
+      "id": "referent-02",
+      "model_response": "{\"decision\":\"CONFLICT\",\"value\":{}}",
+      "parsed": {
+        "decision": "CONFLICT",
+        "value": {}
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1437,
+      "finish_reason": "stop",
+      "id": "referent-03",
+      "model_response": "{\"decision\":\"CONFLICT\",\"value\":null}",
+      "parsed": {
+        "decision": "CONFLICT",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1469,
+      "finish_reason": "stop",
+      "id": "referent-04",
+      "model_response": "{\"decision\":\"CONFLICT\",\"value\":{}}",
+      "parsed": {
+        "decision": "CONFLICT",
+        "value": {}
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1766,
+      "finish_reason": "stop",
+      "id": "referent-05",
+      "model_response": "{\"decision\":\"AMBIGUOUS\",\"value\":null}",
+      "parsed": {
+        "decision": "AMBIGUOUS",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1468,
+      "finish_reason": "stop",
+      "id": "correction-01",
+      "model_response": "{\"decision\":\"STALE_BINDING\",\"value\":true}",
+      "parsed": {
+        "decision": "STALE_BINDING",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1391,
+      "finish_reason": "stop",
+      "id": "correction-02",
+      "model_response": "{\"decision\":\"CURRENT\",\"value\":true}",
+      "parsed": {
+        "decision": "CURRENT",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1609,
+      "finish_reason": "stop",
+      "id": "correction-03",
+      "model_response": "{\"decision\":\"CONFLICT\",\"value\":true}",
+      "parsed": {
+        "decision": "CONFLICT",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1328,
+      "finish_reason": "stop",
+      "id": "correction-04",
+      "model_response": "{\"decision\":\"VALUE\",\"value\":true}",
+      "parsed": {
+        "decision": "VALUE",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1438,
+      "finish_reason": "stop",
+      "id": "correction-05",
+      "model_response": "{\"decision\":\"VALUE\",\"value\":true}",
+      "parsed": {
+        "decision": "VALUE",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1609,
+      "finish_reason": "stop",
+      "id": "scope-01",
+      "model_response": "{\"decision\":\"VALUE\",\"value\":\"model:qwen\"}",
+      "parsed": {
+        "decision": "VALUE",
+        "value": "model:qwen"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1266,
+      "finish_reason": "stop",
+      "id": "scope-02",
+      "model_response": "{\"decision\":\"VALUE\",\"value\":\"true\"}",
+      "parsed": {
+        "decision": "VALUE",
+        "value": "true"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1359,
+      "finish_reason": "stop",
+      "id": "scope-03",
+      "model_response": "{\"decision\":\"CONFLICT\",\"value\":{}}",
+      "parsed": {
+        "decision": "CONFLICT",
+        "value": {}
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1610,
+      "finish_reason": "stop",
+      "id": "scope-04",
+      "model_response": "{\"decision\":\"MISMATCH\",\"value\":{}}",
+      "parsed": {
+        "decision": "MISMATCH",
+        "value": {}
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1547,
+      "finish_reason": "stop",
+      "id": "scope-05",
+      "model_response": "{\"decision\":\"MISMATCH\",\"value\":true}",
+      "parsed": {
+        "decision": "MISMATCH",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1468,
+      "finish_reason": "stop",
+      "id": "authority-01",
+      "model_response": "{\"decision\":\"ACCEPTED\",\"value\":true}",
+      "parsed": {
+        "decision": "ACCEPTED",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1703,
+      "finish_reason": "stop",
+      "id": "authority-02",
+      "model_response": "{\"decision\":\"UNAUTHENTICATED\",\"value\":{}}",
+      "parsed": {
+        "decision": "UNAUTHENTICATED",
+        "value": {}
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1406,
+      "finish_reason": "stop",
+      "id": "authority-03",
+      "model_response": "{\"decision\":\"CURRENT\",\"value\":true}",
+      "parsed": {
+        "decision": "CURRENT",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1907,
+      "finish_reason": "stop",
+      "id": "authority-04",
+      "model_response": "{\"decision\":\"EFFECT_CONFLICT\",\"value\":true}",
+      "parsed": {
+        "decision": "EFFECT_CONFLICT",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1734,
+      "finish_reason": "stop",
+      "id": "authority-05",
+      "model_response": "{\"decision\":\"UNAUTHENTICATED\",\"value\":null}",
+      "parsed": {
+        "decision": "UNAUTHENTICATED",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1562,
+      "finish_reason": "stop",
+      "id": "recovery-01",
+      "model_response": "{\"decision\":\"VALUE\",\"value\":true}",
+      "parsed": {
+        "decision": "VALUE",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1422,
+      "finish_reason": "stop",
+      "id": "recovery-02",
+      "model_response": "{\"decision\":\"VALUE\",\"value\":true}",
+      "parsed": {
+        "decision": "VALUE",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1469,
+      "finish_reason": "stop",
+      "id": "recovery-03",
+      "model_response": "{\"decision\":\"PENDING\",\"value\":null}",
+      "parsed": {
+        "decision": "PENDING",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1547,
+      "finish_reason": "stop",
+      "id": "recovery-04",
+      "model_response": "{\"decision\":\"UNRESOLVED\",\"value\":{}}",
+      "parsed": {
+        "decision": "UNRESOLVED",
+        "value": {}
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1406,
+      "finish_reason": "stop",
+      "id": "recovery-05",
+      "model_response": "{\"decision\":\"CURRENT\",\"value\":true}",
+      "parsed": {
+        "decision": "CURRENT",
+        "value": true
+      },
+      "usage": null
+    }
+  ],
+  "prediction_receipt": {
+    "predictions": {
+      "authority-01": {
+        "decision": "ACCEPTED",
+        "value": true
+      },
+      "authority-02": {
+        "decision": "UNAUTHENTICATED",
+        "value": {}
+      },
+      "authority-03": {
+        "decision": "CURRENT",
+        "value": true
+      },
+      "authority-04": {
+        "decision": "EFFECT_CONFLICT",
+        "value": true
+      },
+      "authority-05": {
+        "decision": "UNAUTHENTICATED",
+        "value": null
+      },
+      "correction-01": {
+        "decision": "STALE_BINDING",
+        "value": true
+      },
+      "correction-02": {
+        "decision": "CURRENT",
+        "value": true
+      },
+      "correction-03": {
+        "decision": "CONFLICT",
+        "value": true
+      },
+      "correction-04": {
+        "decision": "VALUE",
+        "value": true
+      },
+      "correction-05": {
+        "decision": "VALUE",
+        "value": true
+      },
+      "recovery-01": {
+        "decision": "VALUE",
+        "value": true
+      },
+      "recovery-02": {
+        "decision": "VALUE",
+        "value": true
+      },
+      "recovery-03": {
+        "decision": "PENDING",
+        "value": null
+      },
+      "recovery-04": {
+        "decision": "UNRESOLVED",
+        "value": {}
+      },
+      "recovery-05": {
+        "decision": "CURRENT",
+        "value": true
+      },
+      "referent-01": {
+        "decision": "VALUE",
+        "value": "entity:A"
+      },
+      "referent-02": {
+        "decision": "CONFLICT",
+        "value": {}
+      },
+      "referent-03": {
+        "decision": "CONFLICT",
+        "value": null
+      },
+      "referent-04": {
+        "decision": "CONFLICT",
+        "value": {}
+      },
+      "referent-05": {
+        "decision": "AMBIGUOUS",
+        "value": null
+      },
+      "scope-01": {
+        "decision": "VALUE",
+        "value": "model:qwen"
+      },
+      "scope-02": {
+        "decision": "VALUE",
+        "value": "true"
+      },
+      "scope-03": {
+        "decision": "CONFLICT",
+        "value": {}
+      },
+      "scope-04": {
+        "decision": "MISMATCH",
+        "value": {}
+      },
+      "scope-05": {
+        "decision": "MISMATCH",
+        "value": true
+      }
+    },
+    "schema": "VERA_SEMANTIC_TRANSFER_PREDICTIONS_V1"
+  },
+  "prompt_profile": "minimal",
+  "prompt_profile_sha256": "38eadf73bc0dc3f3b8a26f1945a86407e43dc68450931345077f04ee9d03ade4",
+  "report": {
+    "dataset_sha256": "87e9a109d7700e77c13a8d3310967d44c38c421b20f656cfd56ab6065ed1c2d8",
+    "failed_ids": [
+      "referent-01",
+      "referent-02",
+      "referent-03",
+      "referent-04",
+      "referent-05",
+      "correction-01",
+      "correction-02",
+      "correction-03",
+      "correction-04",
+      "correction-05",
+      "scope-02",
+      "scope-03",
+      "scope-04",
+      "scope-05",
+      "authority-01",
+      "authority-02",
+      "authority-03",
+      "authority-04",
+      "authority-05",
+      "recovery-01",
+      "recovery-02",
+      "recovery-03",
+      "recovery-04",
+      "recovery-05"
+    ],
+    "prediction_sha256": "6a42760635a6ad2a1be3b6ad7bb450660e8eea05e9f34f96e39520f0c09d6983",
+    "qualification": "UNQUALIFIED_DEVELOPMENT_DIAGNOSTIC",
+    "run_id": "lappy-local-qwen3.5-4b-dev-v1-minimal",
+    "schema": "VERA_SEMANTIC_TRANSFER_DEV_REPORT_V1",
+    "scores": [
+      {
+        "category": "referent",
+        "passed": 0,
+        "total": 5
+      },
+      {
+        "category": "correction",
+        "passed": 0,
+        "total": 5
+      },
+      {
+        "category": "scope",
+        "passed": 1,
+        "total": 5
+      },
+      {
+        "category": "authority",
+        "passed": 0,
+        "total": 5
+      },
+      {
+        "category": "recovery",
+        "passed": 0,
+        "total": 5
+      }
+    ],
+    "submission_kind": "LOCAL_MODEL_DEVELOPMENT"
+  },
+  "schema": "VERA_SEMANTIC_TRANSFER_LOCAL_MODEL_PROBE_V1",
+  "training_activity": "NONE"
+}

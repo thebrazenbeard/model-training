@@ -1,0 +1,5 @@
+local_probe_receipts/
+
+__pycache__/
+
+*.pyc

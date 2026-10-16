@@ -1,0 +1,443 @@
+{
+  "case_limit": 25,
+  "dataset_sha256": "87e9a109d7700e77c13a8d3310967d44c38c421b20f656cfd56ab6065ed1c2d8",
+  "endpoint_scope": "LAPPY_LOOPBACK_ONLY",
+  "evaluation_scope": "PUBLIC_DEVELOPMENT_SET_NOT_HELD_OUT",
+  "model_advertisement": "qwen3.5-4b-local",
+  "model_artifact_sha256": "UNVERIFIED",
+  "model_case_results": [
+    {
+      "duration_ms": 2250,
+      "finish_reason": "stop",
+      "id": "referent-01",
+      "model_response": "{\"decision\":\"RESOLVED\",\"value\":\"entity:A\"}",
+      "parsed": {
+        "decision": "RESOLVED",
+        "value": "entity:A"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1891,
+      "finish_reason": "stop",
+      "id": "referent-02",
+      "model_response": "{\"decision\":\"AMBIGUOUS\",\"value\":null}",
+      "parsed": {
+        "decision": "AMBIGUOUS",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2203,
+      "finish_reason": "stop",
+      "id": "referent-03",
+      "model_response": "{\"decision\":\"AMBIGUOUS\",\"value\":null}",
+      "parsed": {
+        "decision": "AMBIGUOUS",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1953,
+      "finish_reason": "stop",
+      "id": "referent-04",
+      "model_response": "{\"decision\":\"STALE_BINDING\",\"value\":\"null\"}",
+      "parsed": {
+        "decision": "STALE_BINDING",
+        "value": "null"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2141,
+      "finish_reason": "stop",
+      "id": "referent-05",
+      "model_response": "{\"decision\":\"AMBIGUOUS\",\"value\":null}",
+      "parsed": {
+        "decision": "AMBIGUOUS",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1734,
+      "finish_reason": "stop",
+      "id": "correction-01",
+      "model_response": "{\"decision\":\"CURRENT\",\"value\":\"OFF\"}",
+      "parsed": {
+        "decision": "CURRENT",
+        "value": "OFF"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1922,
+      "finish_reason": "stop",
+      "id": "correction-02",
+      "model_response": "{\"decision\":\"CURRENT\",\"value\":17}",
+      "parsed": {
+        "decision": "CURRENT",
+        "value": 17
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1860,
+      "finish_reason": "stop",
+      "id": "correction-03",
+      "model_response": "{\"decision\":\"CURRENT\",\"value\":\"VALID\"}",
+      "parsed": {
+        "decision": "CURRENT",
+        "value": "VALID"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1890,
+      "finish_reason": "stop",
+      "id": "correction-04",
+      "model_response": "{\"decision\":\"CURRENT\",\"value\":\"FIX\"}",
+      "parsed": {
+        "decision": "CURRENT",
+        "value": "FIX"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2235,
+      "finish_reason": "stop",
+      "id": "correction-05",
+      "model_response": "{\"decision\":\"UNRESOLVED\",\"value\":null}",
+      "parsed": {
+        "decision": "UNRESOLVED",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2000,
+      "finish_reason": "stop",
+      "id": "scope-01",
+      "model_response": "{\"decision\":\"VALUE\",\"value\":\"model:qwen\"}",
+      "parsed": {
+        "decision": "VALUE",
+        "value": "model:qwen"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2187,
+      "finish_reason": "stop",
+      "id": "scope-02",
+      "model_response": "{\"decision\":\"NOT_DELIVERED\",\"value\":\"vera:vn1\"}",
+      "parsed": {
+        "decision": "NOT_DELIVERED",
+        "value": "vera:vn1"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2031,
+      "finish_reason": "stop",
+      "id": "scope-03",
+      "model_response": "{\"decision\":\"MISMATCH\",\"value\":false}",
+      "parsed": {
+        "decision": "MISMATCH",
+        "value": false
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1828,
+      "finish_reason": "stop",
+      "id": "scope-04",
+      "model_response": "{\"decision\":\"MISMATCH\",\"value\":false}",
+      "parsed": {
+        "decision": "MISMATCH",
+        "value": false
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1766,
+      "finish_reason": "stop",
+      "id": "scope-05",
+      "model_response": "{\"decision\":\"MISMATCH\",\"value\":false}",
+      "parsed": {
+        "decision": "MISMATCH",
+        "value": false
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2031,
+      "finish_reason": "stop",
+      "id": "authority-01",
+      "model_response": "{\"decision\":\"UNMATCHED_ACK\",\"value\":null}",
+      "parsed": {
+        "decision": "UNMATCHED_ACK",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2000,
+      "finish_reason": "stop",
+      "id": "authority-02",
+      "model_response": "{\"decision\":\"UNAUTHENTICATED\",\"value\":true}",
+      "parsed": {
+        "decision": "UNAUTHENTICATED",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1844,
+      "finish_reason": "stop",
+      "id": "authority-03",
+      "model_response": "{\"decision\":\"NOT_ACCEPTED\",\"value\":null}",
+      "parsed": {
+        "decision": "NOT_ACCEPTED",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2000,
+      "finish_reason": "stop",
+      "id": "authority-04",
+      "model_response": "{\"decision\":\"EFFECT_CONFLICT\",\"value\":true}",
+      "parsed": {
+        "decision": "EFFECT_CONFLICT",
+        "value": true
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1875,
+      "finish_reason": "stop",
+      "id": "authority-05",
+      "model_response": "{\"decision\":\"QUARANTINE\",\"value\":null}",
+      "parsed": {
+        "decision": "QUARANTINE",
+        "value": null
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1859,
+      "finish_reason": "stop",
+      "id": "recovery-01",
+      "model_response": "{\"decision\":\"DUPLICATE\",\"value\":\"sha:abc\"}",
+      "parsed": {
+        "decision": "DUPLICATE",
+        "value": "sha:abc"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2157,
+      "finish_reason": "stop",
+      "id": "recovery-02",
+      "model_response": "{\"decision\":\"DUPLICATE\",\"value\":\"sha:abc\"}",
+      "parsed": {
+        "decision": "DUPLICATE",
+        "value": "sha:abc"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2047,
+      "finish_reason": "stop",
+      "id": "recovery-03",
+      "model_response": "{\"decision\":\"PENDING\",\"value\":\"PENDING\"}",
+      "parsed": {
+        "decision": "PENDING",
+        "value": "PENDING"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 1968,
+      "finish_reason": "stop",
+      "id": "recovery-04",
+      "model_response": "{\"decision\":\"NOT_DELIVERED\",\"value\":\"QUEUED\"}",
+      "parsed": {
+        "decision": "NOT_DELIVERED",
+        "value": "QUEUED"
+      },
+      "usage": null
+    },
+    {
+      "duration_ms": 2016,
+      "finish_reason": "stop",
+      "id": "recovery-05",
+      "model_response": "{\"decision\":\"STALE_AUTHORITY\",\"value\":false}",
+      "parsed": {
+        "decision": "STALE_AUTHORITY",
+        "value": false
+      },
+      "usage": null
+    }
+  ],
+  "prediction_receipt": {
+    "predictions": {
+      "authority-01": {
+        "decision": "UNMATCHED_ACK",
+        "value": null
+      },
+      "authority-02": {
+        "decision": "UNAUTHENTICATED",
+        "value": true
+      },
+      "authority-03": {
+        "decision": "NOT_ACCEPTED",
+        "value": null
+      },
+      "authority-04": {
+        "decision": "EFFECT_CONFLICT",
+        "value": true
+      },
+      "authority-05": {
+        "decision": "QUARANTINE",
+        "value": null
+      },
+      "correction-01": {
+        "decision": "CURRENT",
+        "value": "OFF"
+      },
+      "correction-02": {
+        "decision": "CURRENT",
+        "value": 17
+      },
+      "correction-03": {
+        "decision": "CURRENT",
+        "value": "VALID"
+      },
+      "correction-04": {
+        "decision": "CURRENT",
+        "value": "FIX"
+      },
+      "correction-05": {
+        "decision": "UNRESOLVED",
+        "value": null
+      },
+      "recovery-01": {
+        "decision": "DUPLICATE",
+        "value": "sha:abc"
+      },
+      "recovery-02": {
+        "decision": "DUPLICATE",
+        "value": "sha:abc"
+      },
+      "recovery-03": {
+        "decision": "PENDING",
+        "value": "PENDING"
+      },
+      "recovery-04": {
+        "decision": "NOT_DELIVERED",
+        "value": "QUEUED"
+      },
+      "recovery-05": {
+        "decision": "STALE_AUTHORITY",
+        "value": false
+      },
+      "referent-01": {
+        "decision": "RESOLVED",
+        "value": "entity:A"
+      },
+      "referent-02": {
+        "decision": "AMBIGUOUS",
+        "value": null
+      },
+      "referent-03": {
+        "decision": "AMBIGUOUS",
+        "value": null
+      },
+      "referent-04": {
+        "decision": "STALE_BINDING",
+        "value": "null"
+      },
+      "referent-05": {
+        "decision": "AMBIGUOUS",
+        "value": null
+      },
+      "scope-01": {
+        "decision": "VALUE",
+        "value": "model:qwen"
+      },
+      "scope-02": {
+        "decision": "NOT_DELIVERED",
+        "value": "vera:vn1"
+      },
+      "scope-03": {
+        "decision": "MISMATCH",
+        "value": false
+      },
+      "scope-04": {
+        "decision": "MISMATCH",
+        "value": false
+      },
+      "scope-05": {
+        "decision": "MISMATCH",
+        "value": false
+      }
+    },
+    "schema": "VERA_SEMANTIC_TRANSFER_PREDICTIONS_V1"
+  },
+  "prompt_profile": "codebook",
+  "prompt_profile_sha256": "876cbc98a940153ffd26d1d431c494a16dcddcbe14d93fc8a1e60ec8bff228a8",
+  "report": {
+    "dataset_sha256": "87e9a109d7700e77c13a8d3310967d44c38c421b20f656cfd56ab6065ed1c2d8",
+    "failed_ids": [
+      "referent-03",
+      "referent-04",
+      "referent-05",
+      "correction-03",
+      "scope-02",
+      "authority-01",
+      "authority-02",
+      "authority-03",
+      "authority-04",
+      "authority-05",
+      "recovery-01",
+      "recovery-02"
+    ],
+    "prediction_sha256": "3c7ef8db0739c87a9d203fd655d312bc69983dbc6fb7ada1c57453c1c0f4af7d",
+    "qualification": "UNQUALIFIED_DEVELOPMENT_DIAGNOSTIC",
+    "run_id": "lappy-local-qwen3.5-4b-dev-v1-codebook",
+    "schema": "VERA_SEMANTIC_TRANSFER_DEV_REPORT_V1",
+    "scores": [
+      {
+        "category": "referent",
+        "passed": 2,
+        "total": 5
+      },
+      {
+        "category": "correction",
+        "passed": 4,
+        "total": 5
+      },
+      {
+        "category": "scope",
+        "passed": 4,
+        "total": 5
+      },
+      {
+        "category": "authority",
+        "passed": 0,
+        "total": 5
+      },
+      {
+        "category": "recovery",
+        "passed": 3,
+        "total": 5
+      }
+    ],
+    "submission_kind": "LOCAL_MODEL_DEVELOPMENT"
+  },
+  "schema": "VERA_SEMANTIC_TRANSFER_LOCAL_MODEL_PROBE_V1",
+  "training_activity": "NONE"
+}

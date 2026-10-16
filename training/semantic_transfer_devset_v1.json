@@ -1,0 +1,530 @@
+{
+  "schema": "VERA_SEMANTIC_TRANSFER_DEVSET_V1",
+  "cases": [
+    {
+      "id": "referent-01",
+      "category": "referent",
+      "state": {
+        "entities": [
+          {
+            "id": "entity:A",
+            "alias": "K"
+          },
+          {
+            "id": "entity:B",
+            "alias": "J"
+          }
+        ]
+      },
+      "query": {
+        "resolve_alias": "K"
+      },
+      "expected": {
+        "decision": "RESOLVED",
+        "value": "entity:A"
+      }
+    },
+    {
+      "id": "referent-02",
+      "category": "referent",
+      "state": {
+        "entities": [
+          {
+            "id": "entity:A",
+            "alias": "same"
+          },
+          {
+            "id": "entity:B",
+            "alias": "same"
+          }
+        ]
+      },
+      "query": {
+        "resolve_alias": "same"
+      },
+      "expected": {
+        "decision": "AMBIGUOUS",
+        "value": null
+      }
+    },
+    {
+      "id": "referent-03",
+      "category": "referent",
+      "state": {
+        "entities": [
+          {
+            "id": "entity:one",
+            "alias": "target",
+            "source": "node:vn1"
+          },
+          {
+            "id": "entity:two",
+            "alias": "target",
+            "source": "node:lappy"
+          }
+        ]
+      },
+      "query": {
+        "resolve_alias": "target",
+        "source": "node:lappy"
+      },
+      "expected": {
+        "decision": "RESOLVED",
+        "value": "entity:two"
+      }
+    },
+    {
+      "id": "referent-04",
+      "category": "referent",
+      "state": {
+        "entities": [
+          {
+            "id": "entity:x",
+            "position": 0
+          },
+          {
+            "id": "entity:y",
+            "position": 1
+          }
+        ],
+        "claimed_pointer": {
+          "index": 0,
+          "binding_digest": "old"
+        }
+      },
+      "query": {
+        "resolve_position": 0,
+        "required_binding_digest": "new"
+      },
+      "expected": {
+        "decision": "STALE_BINDING",
+        "value": null
+      }
+    },
+    {
+      "id": "referent-05",
+      "category": "referent",
+      "state": {
+        "entities": [
+          {
+            "id": "entity:A",
+            "alias": "x",
+            "namespace": "source:one"
+          },
+          {
+            "id": "entity:B",
+            "alias": "x",
+            "namespace": "source:two"
+          }
+        ]
+      },
+      "query": {
+        "resolve_alias": "x",
+        "namespace": "source:two"
+      },
+      "expected": {
+        "decision": "RESOLVED",
+        "value": "entity:B"
+      }
+    },
+    {
+      "id": "correction-01",
+      "category": "correction",
+      "state": {
+        "events": [
+          {
+            "revision": 1,
+            "value": "ON"
+          },
+          {
+            "revision": 2,
+            "value": "OFF",
+            "supersedes": 1
+          }
+        ]
+      },
+      "query": {
+        "current_value": true
+      },
+      "expected": {
+        "decision": "CURRENT",
+        "value": "OFF"
+      }
+    },
+    {
+      "id": "correction-02",
+      "category": "correction",
+      "state": {
+        "events": [
+          {
+            "revision": 3,
+            "value": 17
+          },
+          {
+            "revision": 2,
+            "value": 99
+          }
+        ],
+        "latest_revision": 3
+      },
+      "query": {
+        "current_value": true
+      },
+      "expected": {
+        "decision": "CURRENT",
+        "value": 17
+      }
+    },
+    {
+      "id": "correction-03",
+      "category": "correction",
+      "state": {
+        "events": [
+          {
+            "revision": 3,
+            "value": "ERROR",
+            "kind": "HYPOTHESIS"
+          },
+          {
+            "revision": 2,
+            "value": "VALID",
+            "kind": "ACCEPTED"
+          }
+        ]
+      },
+      "query": {
+        "accepted_value": true
+      },
+      "expected": {
+        "decision": "ACCEPTED",
+        "value": "VALID"
+      }
+    },
+    {
+      "id": "correction-04",
+      "category": "correction",
+      "state": {
+        "events": [
+          {
+            "revision": 10,
+            "subject": "repo:A",
+            "value": "FIX"
+          },
+          {
+            "revision": 11,
+            "subject": "repo:B",
+            "value": "BREAK"
+          }
+        ]
+      },
+      "query": {
+        "subject": "repo:A",
+        "current_value": true
+      },
+      "expected": {
+        "decision": "CURRENT",
+        "value": "FIX"
+      }
+    },
+    {
+      "id": "correction-05",
+      "category": "correction",
+      "state": {
+        "events": [
+          {
+            "node": "VN1",
+            "value": "UP",
+            "kind": "OBSERVATION"
+          },
+          {
+            "node": "Lappy",
+            "value": "DOWN",
+            "kind": "OBSERVATION"
+          }
+        ],
+        "accepted_revision": null
+      },
+      "query": {
+        "accepted_value": true
+      },
+      "expected": {
+        "decision": "UNRESOLVED",
+        "value": null
+      }
+    },
+    {
+      "id": "scope-01",
+      "category": "scope",
+      "state": {
+        "node_id": "VN1",
+        "agent_id": "agent:review",
+        "model_id": "model:qwen"
+      },
+      "query": {
+        "field": "model_id"
+      },
+      "expected": {
+        "decision": "VALUE",
+        "value": "model:qwen"
+      }
+    },
+    {
+      "id": "scope-02",
+      "category": "scope",
+      "state": {
+        "packet": {
+          "origin": "vera:training",
+          "target": "vera:portal"
+        },
+        "observer": "vera:vn1"
+      },
+      "query": {
+        "delivered_to": "vera:vn1"
+      },
+      "expected": {
+        "decision": "NOT_DELIVERED",
+        "value": false
+      }
+    },
+    {
+      "id": "scope-03",
+      "category": "scope",
+      "state": {
+        "request": {
+          "conversation_id": "round:A"
+        },
+        "reply": {
+          "conversation_id": "round:B"
+        }
+      },
+      "query": {
+        "same_round": true
+      },
+      "expected": {
+        "decision": "MISMATCH",
+        "value": false
+      }
+    },
+    {
+      "id": "scope-04",
+      "category": "scope",
+      "state": {
+        "request": {
+          "exact_subject": "sha1:abcdef"
+        },
+        "reply": {
+          "exact_subject": "git:abcdef"
+        }
+      },
+      "query": {
+        "exact_subject_match": true
+      },
+      "expected": {
+        "decision": "MISMATCH",
+        "value": false
+      }
+    },
+    {
+      "id": "scope-05",
+      "category": "scope",
+      "state": {
+        "task": {
+          "subject": "repo:A@sha:123"
+        },
+        "output": {
+          "subject": "repo:B@sha:123"
+        }
+      },
+      "query": {
+        "subject_match": true
+      },
+      "expected": {
+        "decision": "MISMATCH",
+        "value": false
+      }
+    },
+    {
+      "id": "authority-01",
+      "category": "authority",
+      "state": {
+        "request": {
+          "message_id": "req:1"
+        },
+        "reply": {
+          "performative": "ACK",
+          "parent_message_id": null
+        }
+      },
+      "query": {
+        "ack_acceptance": true
+      },
+      "expected": {
+        "decision": "UNMATCHED_ACK",
+        "value": false
+      }
+    },
+    {
+      "id": "authority-02",
+      "category": "authority",
+      "state": {
+        "packet": {
+          "origin": "vera:vn1",
+          "sender_attested": false,
+          "hash_verified": true
+        }
+      },
+      "query": {
+        "identity_verified": true
+      },
+      "expected": {
+        "decision": "UNAUTHENTICATED",
+        "value": false
+      }
+    },
+    {
+      "id": "authority-03",
+      "category": "authority",
+      "state": {
+        "message": {
+          "status": "STAGED",
+          "ack_required": true
+        }
+      },
+      "query": {
+        "receiver_accepted": true
+      },
+      "expected": {
+        "decision": "NOT_ACCEPTED",
+        "value": false
+      }
+    },
+    {
+      "id": "authority-04",
+      "category": "authority",
+      "state": {
+        "request": {
+          "performative": "EXECUTE",
+          "effect_class": "READ_ONLY"
+        },
+        "receiver_effect_class": "PROTECTED_MUTATION"
+      },
+      "query": {
+        "effect_permitted": true
+      },
+      "expected": {
+        "decision": "EFFECT_CONFLICT",
+        "value": false
+      }
+    },
+    {
+      "id": "authority-05",
+      "category": "authority",
+      "state": {
+        "request": {
+          "effect_class": "PROTECTED_MUTATION",
+          "authority_claim_ref": "token:42"
+        },
+        "receiver_authority_valid": null
+      },
+      "query": {
+        "effect_permitted": true
+      },
+      "expected": {
+        "decision": "QUARANTINE",
+        "value": false
+      }
+    },
+    {
+      "id": "recovery-01",
+      "category": "recovery",
+      "state": {
+        "inbox": {
+          "message_id": "m1",
+          "digest": "sha:abc"
+        },
+        "incoming": {
+          "message_id": "m1",
+          "digest": "sha:abc"
+        }
+      },
+      "query": {
+        "deliver_again": true
+      },
+      "expected": {
+        "decision": "DUPLICATE",
+        "value": false
+      }
+    },
+    {
+      "id": "recovery-02",
+      "category": "recovery",
+      "state": {
+        "inbox": {
+          "message_id": "m1",
+          "digest": "sha:abc"
+        },
+        "incoming": {
+          "message_id": "m1",
+          "digest": "sha:def"
+        }
+      },
+      "query": {
+        "deliver_again": true
+      },
+      "expected": {
+        "decision": "CONFLICT",
+        "value": false
+      }
+    },
+    {
+      "id": "recovery-03",
+      "category": "recovery",
+      "state": {
+        "pre_restart": "PENDING",
+        "post_restart_acked": false
+      },
+      "query": {
+        "delivery_status": true
+      },
+      "expected": {
+        "decision": "PENDING",
+        "value": "PENDING"
+      }
+    },
+    {
+      "id": "recovery-04",
+      "category": "recovery",
+      "state": {
+        "link": "OFFLINE",
+        "message_status": "QUEUED",
+        "recipient_readback": false
+      },
+      "query": {
+        "delivery_status": true
+      },
+      "expected": {
+        "decision": "NOT_DELIVERED",
+        "value": "QUEUED"
+      }
+    },
+    {
+      "id": "recovery-05",
+      "category": "recovery",
+      "state": {
+        "lease": {
+          "epoch": 9
+        },
+        "effect_request": {
+          "epoch": 8
+        }
+      },
+      "query": {
+        "execute_effect": true
+      },
+      "expected": {
+        "decision": "STALE_AUTHORITY",
+        "value": false
+      }
+    }
+  ]
+}
