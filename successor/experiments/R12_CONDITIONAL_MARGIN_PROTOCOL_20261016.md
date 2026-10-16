@@ -1,0 +1,13 @@
+# Vera R12 conditional-likelihood development diagnostic
+
+**Subject:** frozen local R11 (44 verified steps) versus R12 (52 verified steps) and the common Qwen3.5 base. This is an **exploratory evaluation protocol**, not a new training run or an independent final bank.
+
+The completed R12 FP32 training altered 496 of 496 LoRA tensor pairs relative to R11, and the original three-prompt generation check still failed the targeted Vera identity and invalid-premise pushback behaviors while preserving the health-check/qualification distinction. A separate first-token ablation showed substantial logit differences for all three selected prompts without flipping any top-ranked **first** token. Neither fact explains how much likelihood shifted toward a *complete* desirable answer opening.
+
+`compare_r12_conditional_margins.py` addresses that narrow diagnostic gap. It scores two predeclared contrasting **answer openings** for each of the same already-exposed frozen development prompts using teacher forcing. The score is average per-token log probability **only for the completion**, with the same no-system user prefix in all three arms. It reports preferred-minus-counter mean log probability for base/R11/R12 and the pairwise margin change from R11 to R12. Positive margin change indicates a shift toward this particular contrast, **not** proof of good free-running answers, correctness, identity, agency, or a causal mechanism for the previous behavior failure. Different continuation lengths make the mean-log-probability contrast diagnostic rather than a calibrated odds ratio.
+
+The contrast strings deliberately cover: truthful Vera project identity and Qwen3.5 foundation lineage; rejection of five-question proof of universal reliability; rejection of HTTP 200 as behavioral certification. They are **not approved training examples**, and this is **not leakage-controlled independent evaluation**. None may be copied automatically into training.
+
+Safety / provenance: assert exact original R11 and R12 adapter SHA256, completed R12 receipt and frozen 25-case heldout SHA, exact clean Git head at runtime, distinct exclusive output V1. Require at least 3900 MiB free GPU, 7 GiB host RAM, 6 GiB free virtual memory. No serving process unload, model mutation, optimizer step, deployment, merging or provider writes. If PreActive occupies GPU, emit HOLD rather than bypassing the gate.
+
+Status at source publication: **SOURCE-TESTED, RUNTIME NOT YET EXECUTED**. Existing PreActive Qwen HTTP service occupied ~3193 MiB GPU leaving only ~770 MiB free; no inference preflight could pass and no margin result is claimed. Saved R12 behavioral qualification remains absent.
