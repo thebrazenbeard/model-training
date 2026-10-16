@@ -8,6 +8,13 @@ RECOVER = ROOT / "restore_preactive_r13_20261016.ps1"
 
 
 class MaintenanceContractTests(unittest.TestCase):
+    def test_dry_run_never_writes_execution_receipt(self):
+        code = CONTROL.read_text(encoding="utf8")
+        self.assertIn("if(-not $PreflightOnly){\n $receiptData=[ordered]@{", code)
+        self.assertIn("VERA_R13_TRAIN_20261016_CONTROLLER_V3.json", code)
+        self.assertIn("VERA_R13_BEHAVIOR_LAUNCH_GATE_20261016_V3.json", code)
+        self.assertNotIn("VERA_R13_TRAIN_20261016_CONTROLLER.json", code)
+
     def test_recovery_task_registered_before_any_preactive_stop(self):
         code = CONTROL.read_text(encoding="utf8")
         self.assertLess(code.index("Register-ScheduledTask -TaskName $taskName"),

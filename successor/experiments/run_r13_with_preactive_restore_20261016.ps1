@@ -14,11 +14,11 @@ $output='D:\VERA\models\adapters\v10r3r13-vera-identity-judgment-qwen35-r12-resu
 $python='C:\ProgramData\ProRun\model-env\Scripts\python.exe'
 $recover=Join-Path $repo 'successor\experiments\restore_preactive_r13_20261016.ps1'
 $taskName='BT2 Vera R13 PreActive Recovery 20261016'
-$gate=Join-Path $state 'VERA_R13_BEHAVIOR_LAUNCH_GATE_20261016_V2.json'
-$stdout=Join-Path $state 'VERA_R13_TRAIN_20261016_V2_STDOUT.log'
-$stderr=Join-Path $state 'VERA_R13_TRAIN_20261016_V2_STDERR.log'
-$log=Join-Path $state 'VERA_R13_TRAIN_20261016_CONTROLLER.log'
-$receipt=Join-Path $state 'VERA_R13_TRAIN_20261016_CONTROLLER.json'
+$gate=Join-Path $state 'VERA_R13_BEHAVIOR_LAUNCH_GATE_20261016_V3.json'
+$stdout=Join-Path $state 'VERA_R13_TRAIN_20261016_V3_STDOUT.log'
+$stderr=Join-Path $state 'VERA_R13_TRAIN_20261016_V3_STDERR.log'
+$log=Join-Path $state 'VERA_R13_TRAIN_20261016_CONTROLLER_V3.log'
+$receipt=Join-Path $state 'VERA_R13_TRAIN_20261016_CONTROLLER_V3.json'
 $specSha='ad2a3d56c9a5ee648764e9469676b78155bb993de690edda9627189a767b0fdf'
 $corpusSha='90de3879113a99f85002ec884d504ee487e5ed699d9deaa0146290c47597b3c5'
 $parentSha='a80f5e36a1a2319029309521fc88f6575215ac99d488c6a4bbf883afac53d72c'
@@ -225,6 +225,7 @@ try {
   }
   RestorePreActive
  }
+ if(-not $PreflightOnly){
  $receiptData=[ordered]@{
   schema='VERA_R13_BOUNDED_MAINTENANCE_CONTROLLER_V1'
   status=$stateResult
@@ -256,6 +257,7 @@ try {
    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
    Log 'EMERGENCY_WATCHDOG_DISARMED_AFTER_VERIFIED_RESTORE'
   }catch{Log ('WATCHDOG_LEFT_FOR_SAFE_RECOVERY '+$_.Exception.Message)}
+ }
  }
 }
 if($stateResult -eq 'R13_SAVED_84_STEPS_MECHANICALLY_VERIFIED_BEHAVIOR_UNQUALIFIED' -and $restored){exit 0}
