@@ -24,7 +24,7 @@ class ActualPreActiveStoreTests(unittest.TestCase):
                 response="synthetic result from a manual PreActive Store record"
                 eid=store.enqueue_event(
                     kind="task.requested",payload={"task":task,"capabilities":[]},
-                    dedup_key="veraos-text:real-store-1",now=1000.0)
+                    dedup_key="veraos-text:source-task:1",now=1000.0)
                 rid=store.create_run(
                     task=task,capabilities=set(),source_event_id=eid,now=1000.0)
                 store.record_run_message(run_id=rid,role="assistant",

@@ -27,7 +27,7 @@ class ResidentModelTurnReadbackTests(unittest.TestCase):
         self.db.execute("INSERT INTO events VALUES (?,?,?,?,?)",(
             "event-1","task.requested",
             json.dumps({"task":self.task,"capabilities":[]}),
-            "veraos-text:turn-one","DONE"))
+            "veraos-text:task-one","DONE"))
         self.db.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?)",(
             "run-1",self.task,"COMPLETED",self.response,"event-1","[]",None))
         self.db.execute("INSERT INTO run_messages(run_id,role,content) VALUES (?,?,?)",(
@@ -118,7 +118,7 @@ class ResidentModelTurnReadbackTests(unittest.TestCase):
     def test_wrong_task_and_reused_request_key_fail(self):
         self.db.execute("UPDATE events SET dedup_key='veraos-text:other' WHERE id='event-1'")
         self.assertEqual(self.assess().status,"HOLD")
-        self.db.execute("UPDATE events SET dedup_key='veraos-text:turn-one' WHERE id='event-1'")
+        self.db.execute("UPDATE events SET dedup_key='veraos-text:task-one' WHERE id='event-1'")
         self.db.execute("UPDATE runs SET task='different user request' WHERE id='run-1'")
         self.assertEqual(self.assess().status,"HOLD")
 

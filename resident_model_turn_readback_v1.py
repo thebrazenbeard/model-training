@@ -173,8 +173,8 @@ def verify_resident_model_turn(
         except (TypeError,ValueError):
             payload=caps=None
         if (event["kind"]!="task.requested" or
-            event["dedup_key"]!=f"veraos-text:{expected.request_id}" or
-            event["status"] not in ("DONE","CLAIMED") or
+            event["dedup_key"]!=f"veraos-text:{expected.task_id}" or
+            event["status"]!="DONE" or
             payload!={"task":expected.task_text,"capabilities":[]} or
             run["source_event_id"]!=event["id"] or
             run["task"]!=expected.task_text or
@@ -200,7 +200,7 @@ def verify_resident_model_turn(
                 j.get("model")==expected.model_id and
                 j.get("effect_class")=="COGNITION_ONLY"):
                 accepted_journal=True
-        if not accepted_journal:
+        if not accepted_journal or len(journal)!=1:
             holds.append("ROUTE_SELECTION_JOURNAL_MISMATCH")
     return TextTurnReadback(
         status="SYNTHETIC_STORE_LINK_VERIFIED" if not holds else "HOLD",
