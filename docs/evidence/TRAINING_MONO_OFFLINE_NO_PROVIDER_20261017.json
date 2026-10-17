@@ -1,0 +1,127 @@
+{
+  "authorized_provider": false,
+  "cold_recovery": true,
+  "decision": "ACCEPT_MINIMAL_MONO_TASK_ONLY_DEFER_REAL_VERAOS_BOOT",
+  "different_root": {
+    "authenticated": false,
+    "closed": false,
+    "elapsed_ns": 1091762800,
+    "event_types": [
+      "TASK_OPENED"
+    ],
+    "head": "454026a50189c742fc7cfdb3f2da0a2ae8e0b486b184c651af7ce1dd882fbfe1",
+    "no_optional_imports": true,
+    "process_wall_ms": 1204.9,
+    "provider_transport_count": 0,
+    "source": "8d7989c3a8a13d6d07b1757e5dd8ea3126d09dddd6143fee8fd3bdd5d94e3c29",
+    "task_count": 1,
+    "task_id": "ui-a73e61667123a4005762446420380b5875f25b21f17dec3a18aac6f65efee0ea"
+  },
+  "effect_executed": false,
+  "fixture_sha256": "5eb4750ddd38ecbdc5600ad1787ace67de98c67b678a71a0ca3457ea08e51c40",
+  "hard_negative_cases": 6,
+  "initial": {
+    "authenticated": false,
+    "closed": false,
+    "elapsed_ns": 1379247700,
+    "event_types": [
+      "TASK_OPENED"
+    ],
+    "head": "454026a50189c742fc7cfdb3f2da0a2ae8e0b486b184c651af7ce1dd882fbfe1",
+    "no_optional_imports": true,
+    "process_wall_ms": 1497.65,
+    "provider_transport_count": 0,
+    "source": "8d7989c3a8a13d6d07b1757e5dd8ea3126d09dddd6143fee8fd3bdd5d94e3c29",
+    "task_count": 1,
+    "task_id": "ui-a73e61667123a4005762446420380b5875f25b21f17dec3a18aac6f65efee0ea"
+  },
+  "literal_substitutions_rejected": 2,
+  "loaded_model": false,
+  "memory_proposal_admitted": false,
+  "negative_cases": [
+    {
+      "event_only_open": true,
+      "held_open": true,
+      "name": "fabricated_done",
+      "no_optional_imports": true,
+      "no_provider": true,
+      "original_identity": true,
+      "wall_ms": 825.17
+    },
+    {
+      "event_only_open": true,
+      "held_open": true,
+      "name": "forged_provider",
+      "no_optional_imports": true,
+      "no_provider": true,
+      "original_identity": true,
+      "wall_ms": 828.56
+    },
+    {
+      "event_only_open": true,
+      "held_open": true,
+      "name": "reused_nonce",
+      "no_optional_imports": true,
+      "no_provider": true,
+      "original_identity": true,
+      "wall_ms": 931.98
+    },
+    {
+      "event_only_open": true,
+      "held_open": true,
+      "name": "wrong_route",
+      "no_optional_imports": true,
+      "no_provider": true,
+      "original_identity": true,
+      "wall_ms": 994.65
+    },
+    {
+      "event_only_open": true,
+      "held_open": true,
+      "name": "wrong_scope",
+      "no_optional_imports": true,
+      "no_provider": true,
+      "original_identity": true,
+      "wall_ms": 955.46
+    },
+    {
+      "event_only_open": true,
+      "held_open": true,
+      "name": "self_certified_origin",
+      "no_optional_imports": true,
+      "no_provider": true,
+      "original_identity": true,
+      "wall_ms": 952.3
+    }
+  ],
+  "negative_rejections": 6,
+  "optional_module_imported": false,
+  "real_guest_boot": false,
+  "recovered": {
+    "closed": false,
+    "elapsed_ns": 742992400,
+    "event_types": [
+      "TASK_OPENED"
+    ],
+    "head": "454026a50189c742fc7cfdb3f2da0a2ae8e0b486b184c651af7ce1dd882fbfe1",
+    "history": 1,
+    "literal": "literal  content",
+    "no_optional_imports": true,
+    "process_wall_ms": 851.85,
+    "provider_transport_count": 0,
+    "source": "8d7989c3a8a13d6d07b1757e5dd8ea3126d09dddd6143fee8fd3bdd5d94e3c29",
+    "task_count": 1,
+    "task_id": "ui-a73e61667123a4005762446420380b5875f25b21f17dec3a18aac6f65efee0ea"
+  },
+  "schema": "TRAINING_MONO_OFFLINE_NO_PROVIDER_SOURCE_ABLATION_V1",
+  "selected_prototype_source_stage": {
+    "mono_files": 316,
+    "portal_files": 89,
+    "pre_active_files": 18,
+    "stage_is_not_strict_boot_requirement": true,
+    "total": 431,
+    "volition_files": 8
+  },
+  "separate_state_roots": true,
+  "total_process_wall_ms": 10967.04
+}
