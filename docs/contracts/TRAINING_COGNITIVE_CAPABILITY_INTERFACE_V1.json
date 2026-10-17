@@ -1,0 +1,223 @@
+{
+  "schema": "VERA_TRAINING_COGNITIVE_CAPABILITY_INTERFACE_V1",
+  "status": "SOURCE_RESEARCH_NOT_INSTALLED",
+  "canonical_owner": "vera_core.QualifiedVeraRuntime",
+  "allow_new_task_store": false,
+  "allow_new_memory_store": false,
+  "allow_new_supervisor": false,
+  "allow_self_certified_provider": false,
+  "stages": [
+    {
+      "id": "canonical_intake",
+      "owner": "vera_core.local_conversation.open_message / TaskExecutionLedger",
+      "input": [
+        "conversation_id",
+        "message_id",
+        "literal_text"
+      ],
+      "output": [
+        "task_id",
+        "opened_head",
+        "packet_digest",
+        "source_digest"
+      ],
+      "boundary": "origin is untrusted; exact bytes, no provider admission"
+    },
+    {
+      "id": "source_context",
+      "owner": "vera_core.conversation_history + vera_memory provenance",
+      "input": [
+        "task/head/source digest",
+        "referent",
+        "scope",
+        "source_event_ids"
+      ],
+      "output": [
+        "scoped_evidence",
+        "conflicts",
+        "currentness"
+      ],
+      "boundary": "read only; absent evidence HOLD; memory is not truth"
+    },
+    {
+      "id": "initiative_advisory",
+      "owner": "vera_runtime.protocol.initiative_kernel",
+      "input": [
+        "externally attested candidates",
+        "policy"
+      ],
+      "output": [
+        "PROPOSE_OR_ABSTAIN"
+      ],
+      "boundary": "no consent/authority/effects"
+    },
+    {
+      "id": "route_advisory",
+      "owner": "vera_core.portal_task_handoff / existing PORTAL",
+      "input": [
+        "task/head",
+        "capability",
+        "route_candidates"
+      ],
+      "output": [
+        "NO_PROTECTED_EFFECT route assessment"
+      ],
+      "boundary": "never dispatch or authenticate provider"
+    },
+    {
+      "id": "verified_provider_execution",
+      "owner": "installed host adapter through vera_core provider transport",
+      "input": [
+        "task/head/source/provider/loaded-process/session/nonce/route"
+      ],
+      "output": [
+        "authenticated receipt or HOLD"
+      ],
+      "boundary": "separate authorized host/trust; not implemented here"
+    },
+    {
+      "id": "durable_result_reconciliation",
+      "owner": "selected Pre-Active Store and vera_core task CAS",
+      "input": [
+        "DONE/COMPLETED/unique route/response bytes/transport proof"
+      ],
+      "output": [
+        "verified task-bound result or UNKNOWN"
+      ],
+      "boundary": "unknown outcome never redispatched"
+    },
+    {
+      "id": "critique_advisory",
+      "owner": "Cricket/Voss optional adapter",
+      "input": [
+        "bounded result and source IDs"
+      ],
+      "output": [
+        "review findings"
+      ],
+      "boundary": "review does not authenticate evidence"
+    },
+    {
+      "id": "task_result",
+      "owner": "vera_core TaskExecutionLedger",
+      "input": [
+        "current head",
+        "verified result"
+      ],
+      "output": [
+        "CAS task status"
+      ],
+      "boundary": "no fabricated closeout"
+    },
+    {
+      "id": "memory_proposal",
+      "owner": "vera_memory existing governed admission",
+      "input": [
+        "source IDs",
+        "referent",
+        "scope",
+        "privacy basis"
+      ],
+      "output": [
+        "proposal only"
+      ],
+      "boundary": "no automatic write/training"
+    }
+  ],
+  "offline_required": [
+    "canonical_intake",
+    "source_context",
+    "initiative_advisory",
+    "route_advisory",
+    "durable_result_reconciliation",
+    "task_result",
+    "memory_proposal"
+  ],
+  "host_matrix": {
+    "ChatGPT_Project": "interaction not proof of host runtime",
+    "Windows_Lappy_VN1": "exact-host adapters; model eligibility only with provider attestation",
+    "VeraOS_future": "Mono resident + no-provider HELD; real image/guest unqualified"
+  },
+  "provider_receipt_required": [
+    "task_id",
+    "request_id",
+    "accepted_task_journal_head",
+    "source_digest",
+    "provider_id",
+    "model_id",
+    "loaded_artifact_sha256",
+    "model_manifest_sha256",
+    "host_id",
+    "host_generation",
+    "process_id",
+    "session_id",
+    "endpoint",
+    "one_use_nonce",
+    "nonce_consumed_once",
+    "receiver_owned_verifier_id",
+    "current_trust_and_revocation",
+    "route_id",
+    "unique_durable_route_selection",
+    "transport_request_digest",
+    "transport_response_digest",
+    "response_sha256",
+    "preactive_done_event_id",
+    "preactive_completed_run_id",
+    "task_result_readback_digest"
+  ],
+  "source_not_enough": [
+    "GGUF_HEADER",
+    "FILE_EXISTS",
+    "OLLAMA_PROCESS",
+    "MODEL_SELF_REPORT",
+    "UNVERIFIED_ADMITTED_FLAG",
+    "SYNTHETIC_PASS",
+    "SAME_ORIGIN_AGREEMENT",
+    "REVIEWER_AGREEMENT",
+    "BUILD_PACKAGE"
+  ],
+  "hard_hold": [
+    "ABSENT_PREDECESSOR",
+    "STALE_HEAD",
+    "CHANGED_LITERAL",
+    "UNVERIFIED_SOURCE_ORIGIN",
+    "UNAVAILABLE_PROVIDER",
+    "REPLAYED_NONCE",
+    "UNKNOWN_TRANSPORT_OUTCOME",
+    "NONUNIQUE_ROUTE",
+    "MISSING_DURABLE_RESULT",
+    "UNAUTHORIZED_MEMORY_ADMISSION"
+  ],
+  "forbidden_promotions": [
+    "source_to_truth",
+    "source_to_installation",
+    "installation_to_route",
+    "route_to_effect",
+    "model_text_to_completion",
+    "critique_to_authentication",
+    "initiative_to_consent",
+    "memory_proposal_to_memory",
+    "GGUF_to_loaded_model",
+    "project_chat_to_runtime"
+  ],
+  "measured_source_evaluations": [
+    {
+      "name": "governed_predecessor",
+      "pr": 106,
+      "baseline_utility": "0/2",
+      "candidate_utility": "1/2",
+      "baseline_unsafe": "0/5",
+      "candidate_unsafe": "0/5",
+      "disposition": "SOURCE_UTILITY_ONLY"
+    },
+    {
+      "name": "rezon_guarded_auto",
+      "pr": 107,
+      "baseline_utility": "4/4",
+      "candidate_utility": "2/4",
+      "baseline_unsafe": "10/10",
+      "candidate_unsafe": "3/10",
+      "disposition": "REJECT_AUTO_ADMISSION"
+    }
+  ]
+}
