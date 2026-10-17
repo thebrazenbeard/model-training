@@ -140,6 +140,20 @@ def guard_prediction(observation: CognitiveObservation,
                 if s.referent==observation.referent and s.scope==observation.scope]
     if not candidates:
         return _held(prediction,"HOLD")
+    # A source cannot cancel another proposition by naming an arbitrary
+    # or differently scoped event. Only a typed, referent-matching
+    # correction with a present predecessor can supersede source evidence.
+    # This validates lineage, NOT the independent truth of either claim.
+    by_id={s.source_event_id:s for s in observation.sources}
+    for item in candidates:
+        if item.kind=="CORRECTION" and item.supersedes is None:
+            return _held(prediction,"HOLD")
+        if item.supersedes is not None:
+            parent=by_id.get(item.supersedes)
+            if (item.kind!="CORRECTION" or parent is None or
+                parent.referent!=item.referent or
+                parent.scope!=item.scope):
+                return _held(prediction,"HOLD")
     # Retractions and conflicts are scope-specific; unrelated sources
     # cannot cancel or support this proposition.
     superseded={s.supersedes for s in candidates if s.supersedes is not None}
@@ -154,6 +168,10 @@ def guard_prediction(observation: CognitiveObservation,
     cited=next((s for s in active
                 if s.source_event_id==prediction.source_event_id),None)
     if cited is None or prediction.claimed_value!=cited.value:
+        return _held(prediction,"HOLD")
+    if (cited.kind=="CORRECTION" and
+        observation.previous_interaction_id is not None and
+        cited.supersedes!=observation.previous_interaction_id):
         return _held(prediction,"HOLD")
     if correction and observation.previous_interaction_id and (
             cited.kind!="CORRECTION" or
