@@ -18,6 +18,10 @@ class ActualMonoProviderCurrentnessTests(unittest.TestCase):
             Path(mono)/"packages"/"vera_core"/"src"/"vera_core"/"outbound_trust.py"
         ).is_file():
             self.skipTest("pinned Mono source not installed in test sandbox")
+        try:
+            from jsonschema import Draft202012Validator
+        except ModuleNotFoundError:
+            self.skipTest("exact Mono full-package dependency jsonschema absent")
         for package_src in sorted((Path(mono)/"packages").glob("*/src")):
             sys.path.insert(0,str(package_src))
         from vera_core.outbound_trust import OutboundTrustRegistry

@@ -1,4 +1,5 @@
 """Exact PORTAL PR37 browser HTTP consumes a HELD Mono-bound gate, no model."""
+import ast
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,7 @@ import urllib.request
 
 from resident_os_composition_gate_v1 import make_held_resident_conversation_handler
 
-OS37_SHA="59a4d8f0d26c00104cf1ea6d87249d94fc5a58ad"
+OS37_SHA="52f244103e183d9883f5df23e4d87815dbcc57a8"
 DESKTOP_SHA="ee20af7fb5de2b48d179bdfa22f518b3b619202b"
 
 
@@ -74,3 +75,24 @@ class VeraOS37ActualSourceNoNetworkTests(unittest.TestCase):
             for action,args,kwargs in reversed(case._cleanups):
                 action(*args,**kwargs)
             case._cleanups.clear()
+
+    def test_current_source_main_has_offline_only_hook_not_legacy_model_url(self):
+        root=os.environ.get("VERAOS_GIT_ROOT")
+        if not root:
+            self.skipTest("exact PORTAL source unavailable on host")
+        source=subprocess.check_output(["git","-C",root,"show",
+            OS37_SHA+":src/veraos/resident.py"])
+        tree=ast.parse(source)
+        fn=next(n for n in tree.body
+            if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))
+            and n.name=="main")
+        keywords=[v.arg for v in fn.args.kwonlyargs]
+        self.assertEqual(keywords,["source_fixture_execute"])
+        # Source-only user code must not be a descriptor/network model gate.
+        self.assertNotIn(b"SYNTHETIC_SOURCE_FIXTURE_ONLY",source)
+        self.assertNotIn(b"conversation_template",source)
+        self.assertNotIn(b"host_admission_verifier",source)
+        self.assertNotIn(b"execute_cognition_fixture",source)
+        offline_blob=subprocess.check_output(["git","-C",root,"rev-parse",
+            OS37_SHA+":tests/source_only_offline_fixture.py"],text=True).strip()
+        self.assertEqual(offline_blob,"d3b0adc75e207735dff613a5ddfe340cc94580c1")

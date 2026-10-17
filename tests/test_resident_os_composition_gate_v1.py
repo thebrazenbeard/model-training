@@ -11,6 +11,7 @@ import unittest
 from resident_os_composition_gate_v1 import (
     QualifiedRuntimeModelGate, ScopedResidentTurn,
     ResidentSourceHold, canonical_turn, make_held_resident_conversation_handler,
+    make_held_pr37_offline_execute,
 )
 from resident_verifier_port_v1 import SignedHostEvidence
 from test_resident_verifier_port_v1 import LocalPort
@@ -223,6 +224,12 @@ class SourceOnlyNoNetworkCallbackIntegration(unittest.TestCase):
                              {"status":"BLOCKED","run_id":None,"final_text":None})
             self.assertEqual(len(case.runtime.tasks.events(case.request.task_id)),before+1)
             self.assertEqual(handler("Bounded local question?","ui:resident:1")["status"],"BLOCKED")
+            self.assertEqual(len(case.runtime.tasks.events(case.request.task_id)),before+1)
+            current_pr37=make_held_pr37_offline_execute(
+                case.gate,case.turn,case.signed,now_epoch_s=1800000010)
+            self.assertEqual(
+                current_pr37("Bounded local question?","ui:resident:1",object()),
+                {"status":"BLOCKED","run_id":None,"final_text":None})
             self.assertEqual(len(case.runtime.tasks.events(case.request.task_id)),before+1)
         finally:
             for cleanup in reversed(case._cleanups):

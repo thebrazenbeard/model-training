@@ -223,3 +223,26 @@ def make_held_resident_conversation_handler(
         return held
 
     return handle
+
+def make_held_pr37_offline_execute(
+    gate: QualifiedRuntimeModelGate,
+    turn: ScopedResidentTurn,
+    signed: SignedHostEvidence,
+    *,
+    now_epoch_s: int,
+):
+    """PORTAL current #37 resident.main(source_fixture_execute=...) ABI.
+
+    EXACT three-argument Python-only, production caller-unconfigured test
+    injection. This cannot invoke native_cognition, network Ollama, or any
+    test model adapter. A source checkpoint is NEVER a provider admission.
+    """
+    handler=make_held_resident_conversation_handler(
+        gate,turn,signed,now_epoch_s=now_epoch_s)
+
+    def execute(task: str, request_id: str, worker_store: object) -> dict:
+        # The OS owns this PreActive store; do NOT build a model target from it.
+        # No duck-typed callbacks, provider descriptor, URL or transport.
+        return handler(task,request_id)
+
+    return execute
