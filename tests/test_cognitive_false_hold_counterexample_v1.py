@@ -26,7 +26,7 @@ class ConservativeGuardUtilityTests(unittest.TestCase):
         self.assertEqual(actual.status, "ANSWER")
         self.assertEqual(actual.claimed_value, "Lappy")
 
-    def test_duplicated_same_value_support_loses_a_useful_answer(self):
+    def test_two_agreeing_records_preserve_a_supported_answer(self):
         original = self.observed["t01"]
         source = original.sources[0]
         corroborated = replace(original, sources=(
@@ -34,10 +34,11 @@ class ConservativeGuardUtilityTests(unittest.TestCase):
         ))
         candidate = self.candidates["t01"]
         result = guard_prediction(corroborated, candidate)
-        # Document an intentionally conservative FALSE HOLD, not a PASS.
+        # Same literal supported by distinct active source event IDs.
+        # This is a provenance decision, not independent truth evidence.
         self.assertEqual(candidate.status, "ANSWER")
-        self.assertEqual(result.status, "HOLD")
-        self.assertIsNone(result.claimed_value)
+        self.assertEqual(result.status, "ANSWER")
+        self.assertEqual(result.source_event_id,"ev:host")
 
     def test_genuine_contradiction_requires_hold(self):
         result = guard_prediction(self.observed["t09"], self.candidates["t09"])
@@ -62,4 +63,5 @@ class ConservativeGuardUtilityTests(unittest.TestCase):
         )
         self.assertEqual(preserved, 2)
         self.assertEqual(warranted_holds, 3)
-        # Additional corroborated-supported case in test above: false HOLD 1/3.
+        # Additional agreeing-supported case above: false HOLD 0/3 on
+        # these synthetic developer inputs; no blind/live-model evidence.

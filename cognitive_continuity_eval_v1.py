@@ -144,14 +144,20 @@ def guard_prediction(observation: CognitiveObservation,
     # cannot cancel or support this proposition.
     superseded={s.supersedes for s in candidates if s.supersedes is not None}
     active=[s for s in candidates if s.source_event_id not in superseded]
-    if (len({s.value for s in active})!=1 or
-        len(active)!=1 or
-        prediction.source_event_id!=active[0].source_event_id or
-        prediction.claimed_value!=active[0].value):
+    # Several distinct active records may support an identical *scoped*
+    # literal. This preserves a cited source without interpreting record
+    # count as confidence, truth, or independently authenticated support.
+    # Any contradictory active value, stale/superseded citation or missing
+    # provenance remains HOLD.
+    if len({s.value for s in active})!=1:
+        return _held(prediction,"HOLD")
+    cited=next((s for s in active
+                if s.source_event_id==prediction.source_event_id),None)
+    if cited is None or prediction.claimed_value!=cited.value:
         return _held(prediction,"HOLD")
     if correction and observation.previous_interaction_id and (
-            active[0].kind!="CORRECTION" or
-            active[0].supersedes!=observation.previous_interaction_id):
+            cited.kind!="CORRECTION" or
+            cited.supersedes!=observation.previous_interaction_id):
         return _held(prediction,"HOLD")
     return prediction
 
