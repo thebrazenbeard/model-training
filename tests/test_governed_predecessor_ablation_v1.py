@@ -3,6 +3,11 @@ import unittest
 from evaluate_governed_predecessor_v1 import run
 
 class GovernedSourceComparison(unittest.TestCase):
+    def setUp(self):
+        try:
+            import jsonschema  # noqa: F401 - required for imported real Mono runtime
+        except ImportError:
+            self.skipTest("exact Mono package dependency jsonschema absent")
     def test_governed_retrieval_beats_hold_only_without_unsafe_heuristic(self):
         result=run()
         self.assertEqual(result["frozen_scenario_digest"],

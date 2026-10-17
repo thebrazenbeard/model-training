@@ -31,3 +31,21 @@ class GGUFMetadataOnlyTests(unittest.TestCase):
         self.assertEqual(meta["gguf_architecture"],"qwen35")
         self.assertEqual(meta["declared_layers"],33)
         self.assertEqual(meta["scenarios"][1]["fp16_kv_mib"],528)
+
+class OfflineBadGGUFHeaderTests(unittest.TestCase):
+    def test_rejects_non_gguf_magic_without_loading_weights(self):
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="GGUF-source-negative-") as d:
+            p=Path(d)/"not_a_model.gguf"
+            p.write_bytes(b"FAKE"+b"\\0"*32)
+            with self.assertRaisesRegex(ValueError,"not GGUF"):
+                inspect(p)
+
+    def test_rejects_unbounded_metadata_counts_without_allocating(self):
+        import tempfile
+        import struct
+        with tempfile.TemporaryDirectory(prefix="GGUF-source-negative-") as d:
+            p=Path(d)/"impossible.gguf"
+            p.write_bytes(b"GGUF"+struct.pack("<IQQ",3,1_000_001,999_999))
+            with self.assertRaisesRegex(ValueError,"implausible header"):
+                inspect(p)

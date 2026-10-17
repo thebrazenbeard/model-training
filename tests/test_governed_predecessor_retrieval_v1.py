@@ -19,6 +19,10 @@ class GovernedPredecessorTests(TestCase):
         src=os.environ.get("VERA_MONO77_SOURCE_ROOT")
         if not src or not (Path(src)/"packages/vera_core/src/vera_core/local_conversation.py").is_file():
             self.skipTest("exact Mono77 source not present")
+        try:
+            import jsonschema  # noqa: F401 - actual composed Mono import requirement
+        except ImportError:
+            self.skipTest("exact Mono source present, but jsonschema runtime dependency absent")
         for pkg in (Path(src)/"packages").glob("*/src"):
             if str(pkg) not in sys.path:sys.path.insert(0,str(pkg))
         from vera_core.task_execution import TaskExecutionLedger
