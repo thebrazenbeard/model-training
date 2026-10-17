@@ -15,9 +15,10 @@ Mono #77 or Codex PORTAL #55. No second supervisor or task-memory authority.
   #108 ffc8e2c306cd1cb91cd2da320b5d8833512a2b13.
 - Canonical Mono main 16a2828dfa7fb7e6c0e19004f014bc68fc47badf;
   owner Mono #77 89ba1d18da78e7e38f015cf8d8ef4f528aae9df8.
-- Integration VeraOS #38 CURRENT beef4a6d6e6339e4da8bc89702b1f1882c1fb968;
-  src/veraos/resident.py blob 76c6e60b828a1ce386985f48f40e6387f5756662;
-  src/veraos/desktop.py blob fd3022706d14d013b7557323214e1644eb53ccb3.
+- Integration VeraOS #38 predecessor beef4a6d6e6339e4da8bc89702b1f1882c1fb968;
+  NEW current head c6837f6c2a357cc5fa5cec5836e79cb3d9dc4fb7.
+  src/veraos/resident.py NEW blob 3dae5a0e692e2068d353c228956243a45d1b3814;
+  src/veraos/desktop.py NEW blob 8a20d5f704083b3e1f51ba8f4fe2bfe444295c66.
 - Codex A1 PORTAL #55 NEW 2f42d494e46d9613cd2626da7c9fa6f0e8d7ec79;
   cold host test blob 72d64d1fc3fcb3acf6938630e19a82bd0a02e41f.
   Earlier VN1 found venv redirector PID mismatch; new source uses a child-owned
@@ -174,8 +175,12 @@ PENDING_NO_ADMITTED_PROVIDER, not different task truth. Do not share
 physical SQLite roots, locator-authentication or provider/session keys.
 A1 newest PID witness source fixes the specific redirector assumption
 in test source but needs exact-head independent Lappy/VN1 cold-host
-review. Existing OS #38 Cog fabricated BLOCKED/ui task acknowledgement
-P0 source RED remains an Integration-owned repair, not a Training change.
+review. The prior Integration #38 Cog fabricated BLOCKED/ui acknowledgement RED has a
+new owner repair at c6837f6c2a357cc5fa5cec5836e79cb3d9dc4fb7.
+Training independently ran the ACTUAL owner source Node tests: 12/12 PASS
+at Node v24.19.0 on Lappy against exact cloned source (0 skip).
+This is bounded source evidence, not independent new falsifier or installed
+Linux Cog pixels/guest proof; the authenticated host-origin question remains HOLD.
 Preserve an unresolved pending selector until exact original conversation
 ID, message ID, literal text, source digest and head have been verified
 by the server; do not accept plausible task IDs alone.
@@ -193,3 +198,27 @@ resource/negative transfer and absent-issuer HOLD to Bus #368.
 No new Codex session, real inference, GPU benchmark, provider/trust
 install, memory admission, production task/effect, Buildroot/QEMU or
 external publication is authorized or performed here.
+
+## Current PORTAL V1 graph and Integration source-repair addendum
+
+Private PORTAL typed dependency Draft #375 current exact head
+64d6b520dc50327ff8e6f17b3e41f449c4b7b044, independently fetched
+review doc blob 9b1b133b8896b1773194e8afb0e5430a024c5e21: 147
+PROPOSED_CONSUMER links, FOUR verified STAGED_SOURCE_SNAPSHOT edges for
+selected VeraOS source, ZERO independently verified HARD_RUNTIME_IMPORT
+edges. Empty hard graph is an evidence limit, not proof no target imports.
+This agrees with Training's experimental Mono-only task-cold-recovery
+counterexample and the distinction between source-selected #38 imports
+and necessary minimal-offline task/boot packages.
+
+Integration #38 newest c6837f6c2a357cc5fa5cec5836e79cb3d9dc4fb7
+supersedes the earlier Cog UI source RED: source now requires
+VERAOS_CANONICAL_NO_PROVIDER_ACK_V1, exact task/source/history matching
+and fail-closed pending selector on unknown/mismatch. Training reviewed
+the exact Git commit diff, fetched new desktop/resident/test Git blobs,
+then independently ran 12/12 owner-authored Node 24.19.0 source UI tests,
+zero failures/skips, including forged BLOCKED/ui, swapped source/head,
+missing/stale history and fixture pending invariance. This is a SOURCE
+reviewer rerun, NOT independently authored VN1 hostile review, real
+Chrome/Cog pixels, authenticated HTTP peer, compiled Linux guest or
+physical two-boot. No peer branch was edited by Training.
