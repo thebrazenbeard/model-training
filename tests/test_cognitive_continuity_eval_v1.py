@@ -18,6 +18,14 @@ class CognitiveContinuityTests(unittest.TestCase):
         cls.obs,cls.expected,cls.candidates=load_development_fixture(FIXTURE)
         cls.by_case={o.case_id:o for o in cls.obs}
 
+    def _mono_package_available(self):
+        # VN1 deliberately has no installed jsonschema. The exact Mono
+        # __init__ imports it through vera_identity; do not silently use
+        # system-installed alternate Mono code or install dependencies.
+        import importlib.util
+        if importlib.util.find_spec("jsonschema") is None:
+            self.skipTest("optional pinned Mono full-package closure lacks jsonschema")
+
     def test_suite_is_frozen_twelve_distinct_synthetic_domains(self):
         self.assertEqual(len(self.obs),12)
         self.assertEqual(len({x.case_id for x in self.obs}),12)
@@ -43,6 +51,7 @@ class CognitiveContinuityTests(unittest.TestCase):
         mono=os.getenv("VERA_MONO_SOURCE_ROOT")
         if not mono or not (Path(mono)/"packages"/"vera_core"/"src"/"vera_core"/"prequential_evaluation.py").is_file():
             self.skipTest("full pinned Mono source absent")
+        self._mono_package_available()
         report=evaluate(FIXTURE,Path(mono))
         self.assertEqual(report["baseline"]["case_count"],12)
         self.assertEqual(report["source_guard"]["case_count"],12)
@@ -104,7 +113,9 @@ class CognitiveContinuityTests(unittest.TestCase):
             self.assertEqual(observed,self.candidates)
             mono=os.getenv("VERA_MONO_SOURCE_ROOT")
             if mono and (Path(mono)/"packages").is_dir():
-                report=evaluate(FIXTURE,Path(mono),predictions=p)
+                import importlib.util
+                if importlib.util.find_spec("jsonschema") is not None:
+                    report=evaluate(FIXTURE,Path(mono),predictions=p)
                 self.assertEqual(report["source_guard"]["passes"],12)
                 self.assertEqual(report["prediction_origin"],"STRUCTURED_EXTERNAL_FILE")
             predictions[0]["case_id"]=predictions[1]["case_id"]
@@ -145,6 +156,7 @@ class CognitiveContinuityTests(unittest.TestCase):
             self.skipTest("full Mono source absent")
         for path in sorted((Path(mono)/"packages").glob("*/src")):
             sys.path.insert(0,str(path))
+        self._mono_package_available()
         substituted=dict(self.candidates)
         substituted["t01"]=replace(substituted["t01"],task_id="task:forged")
         evaluated=run_cognitive_evaluation(
@@ -166,6 +178,7 @@ class CognitiveContinuityTests(unittest.TestCase):
             self.skipTest("full pinned Mono source absent")
         for source in sorted((Path(mono)/"packages").glob("*/src")):
             sys.path.insert(0,str(source))
+        self._mono_package_available()
         inputs=[]
         def respond(observation):
             inputs.append(observation)
