@@ -111,3 +111,13 @@ The following were freshly retrieved using authenticated GitHub default-branch h
 - temporal c473850285eed69c1dc3e479fa59f379bbdf5c6d
 
 Next independent VN1 falsifier: demonstrate whether a structurally conforming source/proposal trace with forged issuer metadata can pass a host-owned real provider verifier at all. Also compare false-HOLD on a genuine yet externally verifiable ancestor; avoid treating developer-gold corrections as independently authenticated. Reviewer must bind exact new Training PR/head and keep OS #38 and PORTAL #55 as separate owner subjects.
+
+## Fresh Lappy capacity recheck after initial architecture cut
+
+Read-only Windows WMI and nvidia-smi at 2026-10-17T10:41:24.3159381-04:00:
+usable physical RAM 33,270,576 KiB; free physical RAM 4,782,524 KiB
+(about 4.56 GiB); RTX 3050 Laptop 4096 MiB VRAM total, 3962 MiB free.
+This supersedes the 7.10 GiB free-RAM snapshot for immediate resource
+planning, not the exact GGUF disk/header estimates. It is NOT a reserved
+allocation or loaded-model measurement. GLM24B and Codex-concurrent model
+loading remain HOLD; no model or GPU benchmark was executed.
