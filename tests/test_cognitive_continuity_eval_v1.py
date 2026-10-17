@@ -116,8 +116,8 @@ class CognitiveContinuityTests(unittest.TestCase):
                 import importlib.util
                 if importlib.util.find_spec("jsonschema") is not None:
                     report=evaluate(FIXTURE,Path(mono),predictions=p)
-                self.assertEqual(report["source_guard"]["passes"],12)
-                self.assertEqual(report["prediction_origin"],"STRUCTURED_EXTERNAL_FILE")
+                    self.assertEqual(report["source_guard"]["passes"],12)
+                    self.assertEqual(report["prediction_origin"],"STRUCTURED_EXTERNAL_FILE")
             predictions[0]["case_id"]=predictions[1]["case_id"]
             p.write_text(json.dumps({"schema":"VERAOS_COGNITIVE_STRUCTURED_PREDICTIONS_V1",
                                      "predictions":predictions}),"utf8")
