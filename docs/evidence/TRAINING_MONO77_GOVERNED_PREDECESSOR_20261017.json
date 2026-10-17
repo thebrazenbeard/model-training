@@ -1,0 +1,86 @@
+{
+  "baseline": {
+    "adverse": 5,
+    "correct_holds": 5,
+    "false_holds": 2,
+    "supported": 2,
+    "supported_answered": 0,
+    "unsafe_acceptances": 0
+  },
+  "canonical_memory_write": false,
+  "cases": [
+    {
+      "baseline_status": "HOLD",
+      "governed_status": "ANSWER",
+      "heuristic_status": "ANSWER",
+      "name": "present_exact_prior",
+      "supported_label": true
+    },
+    {
+      "baseline_status": "HOLD",
+      "governed_status": "HOLD",
+      "heuristic_status": "ANSWER",
+      "name": "claimed_legitimate_but_not_in_ledger",
+      "supported_label": true
+    },
+    {
+      "baseline_status": "HOLD",
+      "governed_status": "HOLD",
+      "heuristic_status": "ANSWER",
+      "name": "invented_missing_predecessor",
+      "supported_label": false
+    },
+    {
+      "baseline_status": "HOLD",
+      "governed_status": "HOLD",
+      "heuristic_status": "ANSWER",
+      "name": "foreign_conversation",
+      "supported_label": false
+    },
+    {
+      "baseline_status": "HOLD",
+      "governed_status": "HOLD",
+      "heuristic_status": "ANSWER",
+      "name": "altered_current_value",
+      "supported_label": false
+    },
+    {
+      "baseline_status": "HOLD",
+      "governed_status": "HOLD",
+      "heuristic_status": "ANSWER",
+      "name": "stale_current_task_head",
+      "supported_label": false
+    },
+    {
+      "baseline_status": "HOLD",
+      "governed_status": "HOLD",
+      "heuristic_status": "ANSWER",
+      "name": "fabricated_predecessor_id",
+      "supported_label": false
+    }
+  ],
+  "frozen_scenario_digest": "e6d5c65ff456f2a486da33d9ca2a692974fd764566b2c23cd391cc439d60426b",
+  "governed_retrieval": {
+    "adverse": 5,
+    "correct_holds": 5,
+    "false_holds": 1,
+    "supported": 2,
+    "supported_answered": 1,
+    "unsafe_acceptances": 0
+  },
+  "head": "mono77:89ba1d18da78e7e38f015cf8d8ef4f528aae9df8",
+  "independent_semantic_verification": false,
+  "model_weight_training": false,
+  "note": "one explicitly hypothetical legitimate-but-unavailable predecessor uses identical observable missing history as a fabricated orphan; no test may prove its truth",
+  "provider_admitted": false,
+  "real_model_inference": false,
+  "schema": "VERA_GOVERNED_PREDECESSOR_RETRIEVAL_ABLATION_V1",
+  "unsafe_heuristic": {
+    "adverse": 5,
+    "correct_holds": 0,
+    "false_holds": 0,
+    "supported": 2,
+    "supported_answered": 2,
+    "unsafe_acceptances": 5
+  }
+}
