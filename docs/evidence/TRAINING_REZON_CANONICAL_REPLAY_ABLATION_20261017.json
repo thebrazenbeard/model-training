@@ -1,0 +1,287 @@
+{
+  "baseline": {
+    "answer_supported": 4,
+    "cases": [
+      {
+        "correct": true,
+        "detected": [],
+        "gold": "ANSWER",
+        "id": "supported_single",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": true,
+        "detected": [],
+        "gold": "ANSWER",
+        "id": "supported_distinct_agreeing",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": true,
+        "detected": [],
+        "gold": "ANSWER",
+        "id": "supported_same_model_distinct_origin",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": true,
+        "detected": [],
+        "gold": "ANSWER",
+        "id": "supported_primary_correct_peer_disagrees",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "stale_source",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "unadmitted_source",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "missing_source_ref",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "task_substitution",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "effect_overclaim",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "hidden_failed_peer",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "correlated_worker_consensus",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "empty_source_refs",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "shared_underlying_origin",
+        "operations": 1,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "self_certified_admission",
+        "operations": 1,
+        "predicted": "ANSWER"
+      }
+    ],
+    "false_abstains": 0,
+    "false_rejects": 0,
+    "operation_count": 14,
+    "total_adverse": 10,
+    "total_supported": 4,
+    "unsafe_answers": 10
+  },
+  "candidate": {
+    "answer_supported": 2,
+    "cases": [
+      {
+        "correct": true,
+        "detected": [],
+        "gold": "ANSWER",
+        "id": "supported_single",
+        "operations": 7,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": true,
+        "detected": [],
+        "gold": "ANSWER",
+        "id": "supported_distinct_agreeing",
+        "operations": 14,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [
+          "INDEPENDENCE_CONTAMINATION"
+        ],
+        "gold": "ANSWER",
+        "id": "supported_same_model_distinct_origin",
+        "operations": 12,
+        "predicted": "ABSTAIN"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ANSWER",
+        "id": "supported_primary_correct_peer_disagrees",
+        "operations": 14,
+        "predicted": "ABSTAIN"
+      },
+      {
+        "correct": true,
+        "detected": [
+          "PROVENANCE_CURRENTNESS"
+        ],
+        "gold": "ABSTAIN",
+        "id": "stale_source",
+        "operations": 6,
+        "predicted": "ABSTAIN"
+      },
+      {
+        "correct": true,
+        "detected": [
+          "ADMISSION_INTEGRITY"
+        ],
+        "gold": "ABSTAIN",
+        "id": "unadmitted_source",
+        "operations": 6,
+        "predicted": "ABSTAIN"
+      },
+      {
+        "correct": true,
+        "detected": [
+          "ADMISSION_INTEGRITY"
+        ],
+        "gold": "ABSTAIN",
+        "id": "missing_source_ref",
+        "operations": 6,
+        "predicted": "ABSTAIN"
+      },
+      {
+        "correct": true,
+        "detected": [
+          "PROPOSITION_FIDELITY"
+        ],
+        "gold": "ABSTAIN",
+        "id": "task_substitution",
+        "operations": 6,
+        "predicted": "ABSTAIN"
+      },
+      {
+        "correct": true,
+        "detected": [
+          "AUTHORITY_EFFECT_BOUNDARY"
+        ],
+        "gold": "ABSTAIN",
+        "id": "effect_overclaim",
+        "operations": 6,
+        "predicted": "ABSTAIN"
+      },
+      {
+        "correct": true,
+        "detected": [
+          "FAILURE_VISIBILITY"
+        ],
+        "gold": "ABSTAIN",
+        "id": "hidden_failed_peer",
+        "operations": 7,
+        "predicted": "ABSTAIN"
+      },
+      {
+        "correct": true,
+        "detected": [
+          "INDEPENDENCE_CONTAMINATION"
+        ],
+        "gold": "ABSTAIN",
+        "id": "correlated_worker_consensus",
+        "operations": 12,
+        "predicted": "ABSTAIN"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "empty_source_refs",
+        "operations": 7,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "shared_underlying_origin",
+        "operations": 14,
+        "predicted": "ANSWER"
+      },
+      {
+        "correct": false,
+        "detected": [],
+        "gold": "ABSTAIN",
+        "id": "self_certified_admission",
+        "operations": 7,
+        "predicted": "ANSWER"
+      }
+    ],
+    "false_abstains": 2,
+    "false_rejects": 0,
+    "operation_count": 124,
+    "total_adverse": 10,
+    "total_supported": 4,
+    "unsafe_answers": 3
+  },
+  "canonical_task_written": false,
+  "case_count": 14,
+  "cost_baseline": {
+    "calls": 2100,
+    "ns_per_call": 5233,
+    "scope": "CPython synthetic evaluator only",
+    "tracemalloc_peak_bytes": 321
+  },
+  "cost_candidate": {
+    "calls": 2100,
+    "ns_per_call": 108818,
+    "scope": "CPython synthetic evaluator only",
+    "tracemalloc_peak_bytes": 1875
+  },
+  "frozen_cases_sha256": "5b116db93fc84d5e27a7cb818db47f46b4b550c709b5b1179a31f3b1333b7877",
+  "gpu_benchmark": false,
+  "live_behavior_qualification": false,
+  "memory_written": false,
+  "models_executed": false,
+  "receiver_owned_admission_verified": false,
+  "recommendation": "REJECT_AUTOMATIC_CANONICAL_ADMISSION",
+  "schema": "TRAINING_REZON_CANONICAL_REPLAY_ABLATION_V1",
+  "source_identity": "unverified self-described ReplaySource metadata"
+}
