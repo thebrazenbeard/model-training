@@ -30,6 +30,13 @@ class ActualMonoQualifiedRuntimeGateTests(unittest.TestCase):
         mono=os.getenv("VERA_MONO_SOURCE_ROOT")
         if not mono or not (Path(mono)/"packages/vera_core/src/vera_core/qualified_runtime.py").is_file():
             self.skipTest("exact Vera Mono source-only checkout absent")
+        # Exact Mono full-package closure imports jsonschema through
+        # vera_identity. On the independent VN1 review host this optional
+        # dependency is not installed. Do NOT install it just to claim PASS.
+        try:
+            from jsonschema import Draft202012Validator
+        except ModuleNotFoundError:
+            self.skipTest("pinned Mono full-package dependency jsonschema absent")
         for path in sorted((Path(mono)/"packages").glob("*/src")):
             sys.path.insert(0,str(path))
         from vera_core import VeraStateDirectory, QualifiedVeraRuntime
