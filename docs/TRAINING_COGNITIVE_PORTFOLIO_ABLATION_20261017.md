@@ -123,9 +123,16 @@ provider/model ID, signed metadata, host generation/session and
 Pre-Active DONE + unique route, but production loaded process/byte
 linkage, independently authenticated session/key/current revocation,
 durable global nonce and response transport provenance are still
-missing. Integration-owned OS38 selected Buildroot Mono/PORTAL pins and
-PORTAL OS37 terminal/health changes still require exact owner
-reconciliation. VN1 must attest actual Lappy serving selected loaded
-model bytes, rather than the /api/tags inventory or stored hash.
+missing. Integration-owned OS38 at a84dcfe037d35b162e3922ba770fce30d9f400cb
+has NOW updated both composition manifest (blob ee9109922b98b86dac0385169fa64e3708c29d54)
+and implementation plan (blob f0bc27e4ca128f641a44fae797282930bc2310fd):
+selected Mono 959211d0ad237fa62006840f075c76c01deafb28,
+selected PORTAL 36fa04da4e5eb383fecf463c72a43b94ca47d7e5.
+The historical stale-pin defect from the checkpoint is NOT current
+in those source documents. Full Buildroot stage/import-closure,
+normal graphical guest and reconciliation with the separately advanced
+PORTAL OS37 terminal/health changes are NOT proved by these manifests.
+VN1 must attest actual Lappy serving selected loaded model bytes,
+rather than the /api/tags inventory or stored hash.
 No model inference, QEMU trial, provider activation, train, key
 provisioning, deployment, canonical memory write or protected effect.
