@@ -154,8 +154,18 @@ message ID, no host-invented locator on missing input, persistent
 client-owned selector only, input literal forwarded unchanged or
 explicitly rejected under Mono #77 strip constraint, no-provider HELD
 with ZERO model dispatch, no legacy operational-history migration.
-Missing explicit Integration ABI approval still reported in saved
-a1-resume-gate-receipt.md. Recheck before Codex A1 resumes.
+The 09:33 saved a1-resume-gate-receipt.md said Mono ABI acknowledgment
+was missing. This is NOW SUPERSEDED by Integration's explicit source ABI
+ACK at Bus #368 comment 6234499327 / Mono #77 comment 6234501080.
+No Mono #77 API change is required. Source ABI compatibility is NOT
+Codex GREEN implementation or installed desktop qualification. New
+PORTAL-only adverse case from that ACK: FileBridge request ID grammar
+allows leading punctuation and 97-128-character IDs that Mono rejects.
+Require Mono's narrow [A-Za-z0-9][A-Za-z0-9._:-]{0,95} ID syntax
+BEFORE any request ledger/model work, do not widen Mono's contract.
+Integration VeraOS #38 advanced to exact
+46152a55393642ed2fc614abf177d6c2572a36c5 with additional
+static target-file/ELF dependency presence tests, still no guest boot.
 Training opinion: YES to literal identity and pre-route task open;
 preserve message ID on uncertain retry, return OUTCOME_UNKNOWN,
 do not treat CognitionLedger or a synthetic route as canonical
