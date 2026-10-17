@@ -190,6 +190,62 @@ class QualifiedRuntimeModelGate:
         except (ValueError,TypeError,KeyError,AttributeError,PermissionError) as exc:
             raise ResidentSourceHold("TRUST_TASK_OR_NONCE_VERIFICATION_FAILED") from exc
 
+
+def bind_mono77_opened_message(
+    runtime: Any,
+    intake: dict,
+    request: ResidentModelRequest,
+    *,
+    request_id: str,
+) -> ScopedResidentTurn:
+    """Bind VeraOS #38's already-open Mono #77 task, without model dispatch.
+
+    Do not create a task merely to verify an untrusted caller's locator.
+    The acceptance head is the original Mono per-task journal head.
+    """
+    from vera_core import QualifiedVeraRuntime
+    from vera_core.local_conversation import open_message, ConversationError
+    from vera_core.task_execution import TaskExecutionError
+
+    if (type(runtime) is not QualifiedVeraRuntime or
+        type(intake) is not dict or type(request) is not ResidentModelRequest or
+        type(request_id) is not str):
+        raise ResidentSourceHold("INVALID_CANONICAL_MONO_INTAKE")
+    keys = {"schema", "conversation_id", "message_id", "task_id", "text",
+            "source_digest", "packet_digest", "opened_head",
+            "origin_authenticated"}
+    if (set(intake) != keys or
+        intake.get("schema") != "VERAOS_LOCAL_TASK_INTAKE_V1" or
+        intake.get("origin_authenticated") is not False or
+        request_id != intake.get("message_id") or
+        request.task_id != intake.get("task_id") or
+        request.task_digest != intake.get("source_digest")):
+        raise ResidentSourceHold("MODEL_REQUEST_NOT_BOUND_TO_UI_MESSAGE")
+    ledger = runtime.tasks
+    try:
+        state = ledger.read(request.task_id)
+        if (state.closed or state.active_dependencies or
+            state.unresolved_correction_ids or state.active_delegations or
+            state.journal_head_digest != intake.get("opened_head")):
+            raise ResidentSourceHold("STALE_OR_UNRESOLVED_MONO_TASK")
+        checked = open_message(
+            ledger, intake["conversation_id"], intake["message_id"],
+            intake["text"])
+        if checked != intake:
+            raise ResidentSourceHold("MONO_INTAKE_DID_NOT_READ_BACK")
+        return ScopedResidentTurn(
+            model_request=request,
+            request_id=request_id,
+            task_text=checked["text"],
+            source_digest=checked["source_digest"],
+            expected_task_head=state.journal_head_digest,
+        )
+    except ResidentSourceHold:
+        raise
+    except (ConversationError, TaskExecutionError, ValueError, TypeError,
+            KeyError, AttributeError, PermissionError) as exc:
+        raise ResidentSourceHold("CANONICAL_MONO_TASK_NOT_VERIFIED") from exc
+
 def make_held_resident_conversation_handler(
     gate: QualifiedRuntimeModelGate,
     turn: ScopedResidentTurn,
