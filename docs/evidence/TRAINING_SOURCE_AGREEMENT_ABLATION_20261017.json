@@ -1,0 +1,106 @@
+{
+  "audit_note": "synthetic deterministic developer A/B with local interpreter microbenchmark; not model intelligence or independent review",
+  "candidate": {
+    "cases": [
+      {
+        "case": "single_source",
+        "status": "ANSWER",
+        "supported": true
+      },
+      {
+        "case": "agreeing_first",
+        "status": "ANSWER",
+        "supported": true
+      },
+      {
+        "case": "agreeing_second",
+        "status": "ANSWER",
+        "supported": true
+      },
+      {
+        "case": "conflict",
+        "status": "HOLD",
+        "supported": false
+      },
+      {
+        "case": "stale_head",
+        "status": "HOLD",
+        "supported": false
+      },
+      {
+        "case": "fabricated_source",
+        "status": "HOLD",
+        "supported": false
+      }
+    ],
+    "correct_holds": 3,
+    "false_holds": 0,
+    "preserved": 3,
+    "supported": 3,
+    "unsafe_acceptances": 0,
+    "unsupported": 3
+  },
+  "cost_baseline": {
+    "calls": 6000,
+    "iterations": 1000,
+    "nanoseconds_per_call": 20416,
+    "python_tracemalloc_peak_bytes": 1024,
+    "scope": "local CPython microbenchmark, not model latency/VRAM"
+  },
+  "cost_candidate": {
+    "calls": 6000,
+    "iterations": 1000,
+    "nanoseconds_per_call": 16887,
+    "python_tracemalloc_peak_bytes": 960,
+    "scope": "local CPython microbenchmark, not model latency/VRAM"
+  },
+  "fixture_sha256": "f5f363fe736c6d3384ec7c4832fda78709e31a93e6d9545b047b84014c3a0fc6",
+  "independent_heldout": false,
+  "independent_truth_assurance": false,
+  "machine_label": "LAPPY",
+  "model_inference": false,
+  "new_model_weight_training": false,
+  "previous_baseline": {
+    "cases": [
+      {
+        "case": "single_source",
+        "status": "ANSWER",
+        "supported": true
+      },
+      {
+        "case": "agreeing_first",
+        "status": "HOLD",
+        "supported": true
+      },
+      {
+        "case": "agreeing_second",
+        "status": "HOLD",
+        "supported": true
+      },
+      {
+        "case": "conflict",
+        "status": "HOLD",
+        "supported": false
+      },
+      {
+        "case": "stale_head",
+        "status": "HOLD",
+        "supported": false
+      },
+      {
+        "case": "fabricated_source",
+        "status": "HOLD",
+        "supported": false
+      }
+    ],
+    "correct_holds": 3,
+    "false_holds": 2,
+    "preserved": 1,
+    "supported": 3,
+    "unsafe_acceptances": 0,
+    "unsupported": 3
+  },
+  "python_version": "3.14.5",
+  "real_provider_admission": false,
+  "schema": "VERA_TRAINING_SOURCE_AGREEMENT_ABLATION_V1"
+}

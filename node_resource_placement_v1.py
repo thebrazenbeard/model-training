@@ -97,13 +97,68 @@ def advise_resource_fit(
     observed: NodeResourceObservation, task: CognitiveWorkload, *,
     expected_node_id: str, expected_generation: int, expected_session: str,
     now_epoch_s: int, freshness_seconds: int = 120,
+    verify_registry_observation=None, verify_model_artifact=None,
+    verify_resource_observation=None, verify_evidence_binding=None,
 ) -> ResourceFitReceipt:
-    """Only evaluates fresh measurements; cannot authorize a model or route."""
+    """Advisory resource fit only; no authentication, permit or reservation.
+
+    Independent registry/session, model-artifact and resource measurements are
+    separate receiver-owned verifier seams. Boolean fixtures do not attest
+    their origin or imply actual capacity.
+    """
     if not isinstance(observed,NodeResourceObservation) or not isinstance(task,CognitiveWorkload):
         raise ResourceError("Typed observation and workload required")
-    if type(now_epoch_s) is not int or type(freshness_seconds) is not int or not 1<=freshness_seconds<=300:
+    if (type(expected_node_id) is not str or _IDENT.fullmatch(expected_node_id) is None or
+        type(expected_session) is not str or _IDENT.fullmatch(expected_session) is None or
+        type(expected_generation) is not int or expected_generation < 1):
+        raise ResourceError("Invalid expected node/session reference")
+    if (type(now_epoch_s) is not int or now_epoch_s < 0 or
+        type(freshness_seconds) is not int or not 1<=freshness_seconds<=300):
         raise ResourceError("Invalid readback/freshness bound")
     reasons=[]
+    if verify_registry_observation is None:
+        reasons.append("REGISTRY_EVIDENCE_UNVERIFIED")
+    else:
+        try:
+            verified = verify_registry_observation(observed, expected_node_id, expected_generation, expected_session)
+        except Exception:
+            verified = False
+        if verified is not True:
+            reasons.append("REGISTRY_EVIDENCE_REJECTED")
+    if task.model_artifact_sha256 is not None:
+        if verify_model_artifact is None:
+            reasons.append("MODEL_ARTIFACT_UNVERIFIED")
+        else:
+            try:
+                verified_model = verify_model_artifact(observed, task.model_artifact_sha256)
+            except Exception:
+                verified_model = False
+            if verified_model is not True:
+                reasons.append("MODEL_ARTIFACT_REJECTED")
+    # Registry liveness is separate from independently measured resource
+    # capacity. The resource verifier receives the exact workload budget.
+    if verify_resource_observation is None:
+        reasons.append("RESOURCE_MEASUREMENT_UNVERIFIED")
+    else:
+        try:
+            measured = verify_resource_observation(observed,task)
+        except Exception:
+            measured = False
+        if measured is not True:
+            reasons.append("RESOURCE_MEASUREMENT_REJECTED")
+    # Three independently positive callbacks do not establish a single
+    # generation-scoped resource/artifact snapshot. Re-read all claims together
+    # under the receiver-owned session boundary before advisory fit.
+    if verify_evidence_binding is None:
+        reasons.append("EVIDENCE_BINDING_UNVERIFIED")
+    else:
+        try:
+            bound = verify_evidence_binding(observed,task,expected_node_id,
+                                            expected_generation,expected_session,now_epoch_s)
+        except Exception:
+            bound = False
+        if bound is not True:
+            reasons.append("EVIDENCE_BINDING_REJECTED")
     if (observed.node_id!=expected_node_id or
         observed.registry_generation!=expected_generation or
         observed.registry_session!=expected_session):
@@ -126,7 +181,13 @@ def advise_resource_fit(
             reasons.append("INSUFFICIENT_FREE_VRAM")
     return ResourceFitReceipt(
         node_id=observed.node_id,task_id=task.task_id,
-        status="HELD" if reasons else "RESOURCE_FIT_ONLY",
+        status=("RESOURCE_CLAIM_ONLY" if (
+                    "REGISTRY_EVIDENCE_UNVERIFIED" in reasons and
+                    set(reasons).issubset({
+                        "REGISTRY_EVIDENCE_UNVERIFIED",
+                        "RESOURCE_MEASUREMENT_UNVERIFIED",
+                        "EVIDENCE_BINDING_UNVERIFIED"})
+                ) else "HELD" if reasons else "RESOURCE_FIT_ONLY"),
         reasons=tuple(reasons),
         registry_generation=observed.registry_generation,
         registry_session=observed.registry_session,

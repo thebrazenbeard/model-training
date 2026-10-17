@@ -1,0 +1,202 @@
+{
+  "full_gguf_weight_hash_recomputed": false,
+  "gpu_allocated": false,
+  "hardware_read_only_snapshot": {
+    "disk_d_free_bytes": 152882036736,
+    "free_physical_ram_bytes": 3743600640,
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "gpu_free_vram_mib": 3954,
+    "gpu_total_vram_mib": 4096,
+    "host": "LAPPY",
+    "observed_local_time": "2026-10-17T09:34:11.6080894-04:00",
+    "physical_ram_installed_bytes": 34359738368,
+    "resource_slot_policy": "no concurrent model loading; Codex running; no offload tested",
+    "usable_ram_bytes": 34069069824
+  },
+  "inference_executed": false,
+  "limits": "tensor disk sizes are not live allocator weights; optimistic layer bound is not measured offload; KV FP16 no runtime allocations; CPU RAM availability varies",
+  "models": {
+    "glm24b_iq2xs": {
+      "declared_layers": 40,
+      "file_bytes": 7207034784,
+      "fp16_kv_estimate_only": true,
+      "gguf_architecture": "llama",
+      "gguf_file_type": 20,
+      "gguf_name": "Dolphin Mistral GLM 4.7 Flash 24B Venice Edition Thinking Uncensored",
+      "gguf_type": "model",
+      "gguf_version": 3,
+      "gpu_free_assumption_mib": 3954,
+      "observed_backend_offload_layers": null,
+      "parsed_layer_count": 40,
+      "path": "D:\\VERA\\models\\gguf\\vera-glm24b-iq2-xs\\Dolphin-Mistral-GLM-4.7-Flash-24B-Venice-Edition-Thinking-Uncensored.i1-IQ2_XS.gguf",
+      "provider_admitted": false,
+      "runtime_reserve_assumption_mib": 768,
+      "scenarios": [
+        {
+          "context_tokens": 2048,
+          "fp16_kv_mib": 320.0,
+          "full_weight_with_reserved_vram_budget": false,
+          "optimistic_layer_only_fit_of": 18,
+          "total_layers": 40,
+          "weight_budget_after_reserve_and_kv_mib": 2866.0
+        },
+        {
+          "context_tokens": 4096,
+          "fp16_kv_mib": 640.0,
+          "full_weight_with_reserved_vram_budget": false,
+          "optimistic_layer_only_fit_of": 16,
+          "total_layers": 40,
+          "weight_budget_after_reserve_and_kv_mib": 2546.0
+        },
+        {
+          "context_tokens": 8192,
+          "fp16_kv_mib": 1280.0,
+          "full_weight_with_reserved_vram_budget": false,
+          "optimistic_layer_only_fit_of": 12,
+          "total_layers": 40,
+          "weight_budget_after_reserve_and_kv_mib": 1906.0
+        }
+      ],
+      "tensor_count": 363,
+      "unlayered_disk_mib": 650.0,
+      "weight_gib": 6.712
+    },
+    "glm24b_q4km": {
+      "declared_layers": 40,
+      "file_bytes": 14333910944,
+      "fp16_kv_estimate_only": true,
+      "gguf_architecture": "llama",
+      "gguf_file_type": 15,
+      "gguf_name": "Dolphin Mistral GLM 4.7 Flash 24B Venice Edition Thinking Uncensored",
+      "gguf_type": "model",
+      "gguf_version": 3,
+      "gpu_free_assumption_mib": 3954,
+      "observed_backend_offload_layers": null,
+      "parsed_layer_count": 40,
+      "path": "D:\\VERA\\models\\gguf\\vera-glm24b-q4-k-m\\Dolphin-Mistral-GLM-4.7-Flash-24B-Venice-Edition-Thinking-Uncensored.i1-Q4_K_M.gguf",
+      "provider_admitted": false,
+      "runtime_reserve_assumption_mib": 768,
+      "scenarios": [
+        {
+          "context_tokens": 2048,
+          "fp16_kv_mib": 320.0,
+          "full_weight_with_reserved_vram_budget": false,
+          "optimistic_layer_only_fit_of": 8,
+          "total_layers": 40,
+          "weight_budget_after_reserve_and_kv_mib": 2866.0
+        },
+        {
+          "context_tokens": 4096,
+          "fp16_kv_mib": 640.0,
+          "full_weight_with_reserved_vram_budget": false,
+          "optimistic_layer_only_fit_of": 7,
+          "total_layers": 40,
+          "weight_budget_after_reserve_and_kv_mib": 2546.0
+        },
+        {
+          "context_tokens": 8192,
+          "fp16_kv_mib": 1280.0,
+          "full_weight_with_reserved_vram_budget": false,
+          "optimistic_layer_only_fit_of": 5,
+          "total_layers": 40,
+          "weight_budget_after_reserve_and_kv_mib": 1906.0
+        }
+      ],
+      "tensor_count": 363,
+      "unlayered_disk_mib": 885.0,
+      "weight_gib": 13.349
+    },
+    "qwen35_4b_q5ks": {
+      "declared_layers": 33,
+      "file_bytes": 3072993056,
+      "fp16_kv_estimate_only": true,
+      "gguf_architecture": "qwen35",
+      "gguf_file_type": 16,
+      "gguf_name": "Source_Model",
+      "gguf_type": "model",
+      "gguf_version": 3,
+      "gpu_free_assumption_mib": 3954,
+      "observed_backend_offload_layers": null,
+      "parsed_layer_count": 33,
+      "path": "D:\\VERA\\models\\gguf\\model_q5_k_s.gguf",
+      "provider_admitted": false,
+      "runtime_reserve_assumption_mib": 768,
+      "scenarios": [
+        {
+          "context_tokens": 2048,
+          "fp16_kv_mib": 264.0,
+          "full_weight_with_reserved_vram_budget": false,
+          "optimistic_layer_only_fit_of": 33,
+          "total_layers": 33,
+          "weight_budget_after_reserve_and_kv_mib": 2922.0
+        },
+        {
+          "context_tokens": 4096,
+          "fp16_kv_mib": 528.0,
+          "full_weight_with_reserved_vram_budget": false,
+          "optimistic_layer_only_fit_of": 33,
+          "total_layers": 33,
+          "weight_budget_after_reserve_and_kv_mib": 2658.0
+        },
+        {
+          "context_tokens": 8192,
+          "fp16_kv_mib": 1056.0,
+          "full_weight_with_reserved_vram_budget": false,
+          "optimistic_layer_only_fit_of": 29,
+          "total_layers": 33,
+          "weight_budget_after_reserve_and_kv_mib": 2130.0
+        }
+      ],
+      "tensor_count": 441,
+      "unlayered_disk_mib": 497.3,
+      "weight_gib": 2.862
+    },
+    "qwen3_4b_ollama": {
+      "declared_layers": 36,
+      "file_bytes": 2497280480,
+      "fp16_kv_estimate_only": true,
+      "gguf_architecture": "qwen3",
+      "gguf_file_type": 15,
+      "gguf_name": "Qwen3 4B Instruct 2507",
+      "gguf_type": "model",
+      "gguf_version": 3,
+      "gpu_free_assumption_mib": 3954,
+      "observed_backend_offload_layers": null,
+      "parsed_layer_count": 36,
+      "path": "D:\\VERA\\models\\ollama\\blobs\\sha256-85e4a5b7b8ef0e48af0e8658f5aaab9c2324c76c1641493f4d1e25fce54b18b9",
+      "provider_admitted": false,
+      "runtime_reserve_assumption_mib": 768,
+      "scenarios": [
+        {
+          "context_tokens": 2048,
+          "fp16_kv_mib": 288.0,
+          "full_weight_with_reserved_vram_budget": true,
+          "optimistic_layer_only_fit_of": 36,
+          "total_layers": 36,
+          "weight_budget_after_reserve_and_kv_mib": 2898.0
+        },
+        {
+          "context_tokens": 4096,
+          "fp16_kv_mib": 576.0,
+          "full_weight_with_reserved_vram_budget": true,
+          "optimistic_layer_only_fit_of": 36,
+          "total_layers": 36,
+          "weight_budget_after_reserve_and_kv_mib": 2610.0
+        },
+        {
+          "context_tokens": 8192,
+          "fp16_kv_mib": 1152.0,
+          "full_weight_with_reserved_vram_budget": false,
+          "optimistic_layer_only_fit_of": 35,
+          "total_layers": 36,
+          "weight_budget_after_reserve_and_kv_mib": 2034.0
+        }
+      ],
+      "tensor_count": 398,
+      "unlayered_disk_mib": 304.3,
+      "weight_gib": 2.326
+    }
+  },
+  "schema": "VERA_TRAINING_GGUF_PLACEMENT_METADATA_V1",
+  "source_only": true
+}

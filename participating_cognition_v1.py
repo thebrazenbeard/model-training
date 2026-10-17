@@ -6,7 +6,7 @@ selecting or invoking a live QualifiedVeraRuntime. No learned model, brain,
 external permission, global memory, or automatic authority transition.
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import json
 import re
@@ -118,22 +118,39 @@ def compose_episode(
     cricket_result: Mapping[str,Any],
     verify_evidence=None,
     verify_independence=None,
+    verify_participant_independence=None,
 ) -> ParticipationReceipt:
     """Requires reports computed *by* real source modules at the call site.
 
     Never infer that source 'PASS', model agreement, or a handoff is effect
     authority or same-process identity. Inputs are source-test observations.
+    A participant-level verifier must independently establish whether separate
+    claimed runtime instances are truly independent; a claim-only verifier is
+    insufficient. Both callbacks are untrusted until receiver-owned.
     """
     if not isinstance(first,Contribution) or not isinstance(second,Contribution):
         raise ParticipationError("Two typed contributions required")
     if first.task_id!=second.task_id or first.participant.identity!=second.participant.identity:
         raise ParticipationError("Cannot combine different task/shared identity")
-    if (first.participant.node_id,first.participant.agent_id)==(
-        second.participant.node_id,second.participant.agent_id):
+    if first.participant.agent_id == second.participant.agent_id:
         raise ParticipationError("Same logical agent cannot be counted twice by restarting it")
-    # No automatic assertion of source, model or *cognitive* independence.
-    dissent=review_pair(first.claim,second.claim,
-        verify_evidence=verify_evidence,verify_independence=verify_independence)
+    # A claim-only callback does not see node-bound participant runtime IDs.
+    # A reused declared runtime identity is correlation, NOT erasure of either
+    # logical participant and NOT a second independent piece of evidence.
+    if first.participant.runtime_instance_id == second.participant.runtime_instance_id:
+        dissent=review_pair(first.claim,second.claim)
+        if dissent.classification=="UNVERIFIED_DISSENT":
+            dissent=replace(dissent,classification="SELF_OR_CORRELATED_CLAIMS")
+    else:
+        def _verify_pair(a,b):
+            if verify_participant_independence is None or verify_independence is None:
+                return False
+            # Exceptions, missing verifiers, non-Boolean results fail closed
+            # through review_pair's callback guard.
+            return (verify_participant_independence(first,second) is True and
+                    verify_independence(a,b) is True)
+        dissent=review_pair(first.claim,second.claim,
+            verify_evidence=verify_evidence,verify_independence=_verify_pair)
     plan=_safe_receipt("Vera Core semantic plan",core_plan,{
         "source_profile","target_profile","required_capabilities",
         "native_capabilities","missing_capabilities","unresolved_capabilities",
@@ -156,6 +173,27 @@ def compose_episode(
         raise ParticipationError("Unresolved capabilities not tied to missing ones")
     if bool(unresolved)!=(plan["fidelity"]=="UNREPRESENTABLE"):
         raise ParticipationError("Unresolved semantic transfer falsely declared representable")
+    # An EXACT receipt with missing capabilities cannot omit their rewrites.
+    # Verify the entire source-plan inventory, not just its top-level label.
+    rewrites=plan["rewrites"]
+    rewrite_keys={"source_capability","rule_name","fidelity","description"}
+    if type(rewrites) is not list or any(
+        type(r) is not dict or set(r)!=rewrite_keys or
+        any(type(r[k]) is not str or not r[k] for k in rewrite_keys) or
+        r["fidelity"] not in _FIDELITY for r in rewrites
+    ):
+        raise ParticipationError("Invalid semantic rewrite entries")
+    rewrite_sources=[r["source_capability"] for r in rewrites]
+    if (len(rewrite_sources)!=len(set(rewrite_sources)) or
+        set(rewrite_sources)|set(unresolved)!=set(missing) or
+        set(rewrite_sources)&set(unresolved)):
+        raise ParticipationError("Semantic rewrite coverage contradicts missing capabilities")
+    severity={"EXACT":0,"CONSTRUCTIVE":1,"LOSSY":2,"UNREPRESENTABLE":3}
+    expected_fidelity=("UNREPRESENTABLE" if unresolved else
+        max(("EXACT", *(r["fidelity"] for r in rewrites)),
+            key=severity.__getitem__))
+    if plan["fidelity"]!=expected_fidelity:
+        raise ParticipationError("Semantic fidelity contradicts rewrite severity")
     handoff=_safe_receipt("Mosaic P1 result",mosaic_result,{
         "case_id","family","condition","answer","expected_value",
         "correct","stale_error","correction_burden","payload_bytes",
@@ -182,8 +220,22 @@ def compose_episode(
            f["severity"] not in ("NOTE","CHALLENGE","BLOCK")
            for f in review["findings"]):
         raise ParticipationError("Invalid Cricket finding content")
-    if plan["fidelity"]=="UNREPRESENTABLE":
+    # Cricket.review computes its disposition from the strongest finding.
+    # Reject stronger AND weaker claimed dispositions, including BLOCK with
+    # empty findings, so synthetic receipts cannot masquerade as real Cricket.
+    severities={finding["severity"] for finding in review["findings"]}
+    expected_disposition=("BLOCK" if "BLOCK" in severities else
+                          "CHALLENGE" if "CHALLENGE" in severities else "PASS")
+    if review["disposition"]!=expected_disposition:
+        raise ParticipationError("Contradictory Cricket disposition and findings")
+    # A blocking review must remain visible even when the semantic plan
+    # separately declares the transfer unrepresentable.
+    if review["disposition"]=="BLOCK":
+        status="CRICKET_BLOCKED"
+    elif plan["fidelity"]=="UNREPRESENTABLE":
         status="SEMANTIC_TRANSFER_UNREPRESENTABLE"
+    elif review["disposition"]=="CHALLENGE":
+        status="CRICKET_CHALLENGED"
     elif dissent.classification in ("DIFFERENT_PROPOSITION","DIFFERENT_SCOPE","DIFFERENT_REVISION"):
         status="UNRESOLVED_REFERENT_OR_SCOPE"
     else:

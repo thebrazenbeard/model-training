@@ -1,5 +1,8 @@
 """Synthetic resource-fit counterexamples for Training/VN1 paired L3 lane."""
 import dataclasses
+import hashlib
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from node_resource_placement_v1 import (
     NodeResourceObservation,CognitiveWorkload,ResourceError,advise_resource_fit
@@ -21,7 +24,11 @@ class PlacementTests(unittest.TestCase):
         opts=dict(expected_node_id=host.node_id,
                   expected_generation=host.registry_generation,
                   expected_session=host.registry_session,
-                  now_epoch_s=self.now)
+                  now_epoch_s=self.now,
+                  verify_registry_observation=lambda *args: True,
+                  verify_model_artifact=lambda *args: True,
+                  verify_resource_observation=lambda *args: True,
+                  verify_evidence_binding=lambda *args: True)
         opts.update(overrides)
         return advise_resource_fit(host,task,**opts)
 
@@ -99,6 +106,142 @@ class PlacementTests(unittest.TestCase):
         self.assertFalse(r.physical_identity_authenticated)
         self.assertFalse(r.model_qualified)
         self.assertFalse(r.capacity_reserved)
+
+    def test_fabricated_matching_registry_fields_cannot_attest_session(self):
+        fake=self.run_fit(self.vn,self.cpu,verify_registry_observation=None)
+        self.assertEqual(fake.status,"RESOURCE_CLAIM_ONLY")
+        self.assertIn("REGISTRY_EVIDENCE_UNVERIFIED",fake.reasons)
+        rejected=self.run_fit(self.vn,self.cpu,verify_registry_observation=lambda *args: False)
+        self.assertEqual(rejected.status,"HELD")
+        self.assertIn("REGISTRY_EVIDENCE_REJECTED",rejected.reasons)
+
+    def test_registry_proof_does_not_prove_model_artifact(self):
+        receipt=self.run_fit(self.vn,self.model_cpu,verify_model_artifact=None)
+        self.assertEqual(receipt.status,"HELD")
+        self.assertIn("MODEL_ARTIFACT_UNVERIFIED",receipt.reasons)
+        denied=self.run_fit(self.vn,self.model_cpu,verify_model_artifact=lambda *args: False)
+        self.assertIn("MODEL_ARTIFACT_REJECTED",denied.reasons)
+        self.assertFalse(denied.model_qualified)
+        self.assertFalse(denied.route_authorized)
+
+    def test_verifier_exception_fails_closed(self):
+        def broken(*args):
+            raise RuntimeError("gateway unavailable")
+        receipt=self.run_fit(self.vn,self.cpu,verify_registry_observation=broken)
+        self.assertIn("REGISTRY_EVIDENCE_REJECTED",receipt.reasons)
+
+    def test_boolean_expected_generation_rejected_before_verifier(self):
+        calls=[]
+        def verifier(*args):
+            calls.append(args)
+            return True
+        with self.assertRaises(ResourceError):
+            self.run_fit(self.vn,self.cpu,expected_generation=True,
+                         verify_registry_observation=verifier)
+        self.assertEqual(calls,[])
+
+    def test_invalid_expected_reference_types_and_ranges_fail_closed(self):
+        invalid=(
+            {"expected_node_id":True},
+            {"expected_node_id":"bad node"},
+            {"expected_session":[]},
+            {"expected_session":""},
+            {"expected_generation":0},
+            {"expected_generation":1.0},
+            {"now_epoch_s":True},
+            {"now_epoch_s":-1},
+            {"freshness_seconds":True},
+        )
+        for bad in invalid:
+            with self.subTest(bad=bad), self.assertRaises(ResourceError):
+                self.run_fit(self.vn,self.cpu,**bad)
+
+    def test_truthy_non_boolean_registry_verdict_is_rejected(self):
+        for verdict in ("PASS",1,["trusted"]):
+            with self.subTest(verdict=verdict):
+                out=self.run_fit(self.vn,self.cpu,
+                    verify_registry_observation=lambda *args: verdict)
+                self.assertEqual(out.status,"HELD")
+                self.assertIn("REGISTRY_EVIDENCE_REJECTED",out.reasons)
+
+    def test_registry_proof_does_not_attest_resource_measurement(self):
+        out=self.run_fit(self.vn,self.cpu,verify_resource_observation=None)
+        self.assertEqual(out.status,"HELD")
+        self.assertIn("RESOURCE_MEASUREMENT_UNVERIFIED",out.reasons)
+        self.assertFalse(out.capacity_reserved)
+        self.assertFalse(out.route_authorized)
+
+    def test_resource_verifier_must_explicitly_accept_bound_workload(self):
+        seen=[]
+        def verified(observed,task):
+            seen.append((observed.node_id,task.task_id,task.min_free_ram_mib))
+            return True
+        ok=self.run_fit(self.vn,self.cpu,verify_resource_observation=verified)
+        self.assertEqual(ok.status,"RESOURCE_FIT_ONLY")
+        self.assertEqual(seen,[("VERA-NODE-1","task:coord",512)])
+        for verdict in (False,1,"yes"):
+            out=self.run_fit(self.vn,self.cpu,
+                verify_resource_observation=lambda *args: verdict)
+            self.assertEqual(out.status,"HELD")
+            self.assertIn("RESOURCE_MEASUREMENT_REJECTED",out.reasons)
+        def boom(*args):
+            raise RuntimeError("untrusted measurement")
+        failed=self.run_fit(self.vn,self.cpu,verify_resource_observation=boom)
+        self.assertIn("RESOURCE_MEASUREMENT_REJECTED",failed.reasons)
+
+    def test_positive_individual_checks_do_not_establish_same_snapshot_binding(self):
+        out=self.run_fit(self.vn,self.cpu,verify_evidence_binding=None)
+        self.assertEqual(out.status,"HELD")
+        self.assertIn("EVIDENCE_BINDING_UNVERIFIED",out.reasons)
+        self.assertFalse(out.route_authorized)
+
+    def test_joint_verifier_binds_registered_generation_and_workload(self):
+        calls=[]
+        def recheck(observed,task,node,generation,session,now):
+            calls.append((observed.node_id,task.task_id,node,generation,session,now))
+            return generation==6 and session=="session:g6"
+        ok=self.run_fit(self.vn,self.cpu,verify_evidence_binding=recheck)
+        self.assertEqual(ok.status,"RESOURCE_FIT_ONLY")
+        self.assertEqual(calls,[("VERA-NODE-1","task:coord","VERA-NODE-1",6,"session:g6",self.now)])
+        for verdict in (0,"valid",False):
+            denied=self.run_fit(self.vn,self.cpu,
+                verify_evidence_binding=lambda *args: verdict)
+            self.assertEqual(denied.status,"HELD")
+            self.assertIn("EVIDENCE_BINDING_REJECTED",denied.reasons)
+        def broken(*args):
+            raise OSError("receiver unavailable")
+        self.assertIn("EVIDENCE_BINDING_REJECTED",
+            self.run_fit(self.vn,self.cpu,verify_evidence_binding=broken).reasons)
+        # A previously successful session fails a receiver's fresh generation readback.
+        latest={"generation":7}
+        result=self.run_fit(self.vn,self.cpu,
+            verify_evidence_binding=lambda obs,task,node,generation,session,now:
+                latest["generation"]==generation)
+        self.assertEqual(result.status,"HELD")
+        self.assertFalse(result.physical_identity_authenticated)
+
+    def test_local_nonmodel_artifact_byte_readback_is_not_model_qualification(self):
+        with TemporaryDirectory() as tmp:
+            artifact=Path(tmp)/"synthetic-not-a-model.bin"
+            artifact.write_bytes(b"source-only artifact test bytes")
+            expected=hashlib.sha256(artifact.read_bytes()).hexdigest()
+            task=CognitiveWorkload("task:sample","CPU_MODEL",2,512,0,expected)
+            def readback(observed,digest):
+                return hashlib.sha256(artifact.read_bytes()).hexdigest()==digest
+            def joint(observed,workload,node,generation,session,now):
+                return (observed.node_id==node and generation==6 and
+                        session=="session:g6" and workload.model_artifact_sha256==expected)
+            first=self.run_fit(self.vn,task,verify_model_artifact=readback,
+                               verify_evidence_binding=joint)
+            self.assertEqual(first.status,"RESOURCE_FIT_ONLY")
+            self.assertFalse(first.model_qualified)
+            self.assertFalse(first.route_authorized)
+            artifact.write_bytes(b"tampered file bytes")
+            changed=self.run_fit(self.vn,task,verify_model_artifact=readback,
+                                 verify_evidence_binding=joint)
+            self.assertEqual(changed.status,"HELD")
+            self.assertIn("MODEL_ARTIFACT_REJECTED",changed.reasons)
+            self.assertFalse(changed.capacity_reserved)
 
     def test_wrong_readback_host_is_a_hold(self):
         r=self.run_fit(self.vn,self.cpu,expected_node_id="Lappy")

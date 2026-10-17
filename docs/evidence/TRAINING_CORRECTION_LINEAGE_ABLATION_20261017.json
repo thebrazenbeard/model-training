@@ -1,0 +1,257 @@
+{
+  "baseline": {
+    "adverse_correct_holds": 6,
+    "adverse_total": 12,
+    "rows": [
+      {
+        "case": "valid_correction",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "valid_agreeing_sources",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "valid_uncorrected",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "personal"
+      },
+      {
+        "case": "valid_two_step",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "team"
+      },
+      {
+        "case": "valid_outscope_distractor",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "useful_pruned_ancestor",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "orphan_predecessor",
+        "observed_status": "ANSWER",
+        "should_answer": false,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "untyped_overwrite",
+        "observed_status": "ANSWER",
+        "should_answer": false,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "cross_scope_parent",
+        "observed_status": "ANSWER",
+        "should_answer": false,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "cross_referent_parent",
+        "observed_status": "ANSWER",
+        "should_answer": false,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "wrong_previous_id",
+        "observed_status": "ANSWER",
+        "should_answer": false,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "no_named_predecessor",
+        "observed_status": "ANSWER",
+        "should_answer": false,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "forged_citation",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "conflicting_third_record",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "duplicate_source_id",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "stale_task_head",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "changed_request",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "effect_escalation",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      }
+    ],
+    "supported_false_holds": 0,
+    "supported_preserved": 6,
+    "supported_total": 6,
+    "unsafe_answer_acceptances": 6
+  },
+  "candidate": {
+    "adverse_correct_holds": 12,
+    "adverse_total": 12,
+    "rows": [
+      {
+        "case": "valid_correction",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "valid_agreeing_sources",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "valid_uncorrected",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "personal"
+      },
+      {
+        "case": "valid_two_step",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "team"
+      },
+      {
+        "case": "valid_outscope_distractor",
+        "observed_status": "ANSWER",
+        "should_answer": true,
+        "visible_claim": "organizational"
+      },
+      {
+        "case": "useful_pruned_ancestor",
+        "observed_status": "HOLD",
+        "should_answer": true,
+        "visible_claim": null
+      },
+      {
+        "case": "orphan_predecessor",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "untyped_overwrite",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "cross_scope_parent",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "cross_referent_parent",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "wrong_previous_id",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "no_named_predecessor",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "forged_citation",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "conflicting_third_record",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "duplicate_source_id",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "stale_task_head",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "changed_request",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      },
+      {
+        "case": "effect_escalation",
+        "observed_status": "HOLD",
+        "should_answer": false,
+        "visible_claim": null
+      }
+    ],
+    "supported_false_holds": 1,
+    "supported_preserved": 5,
+    "supported_total": 6,
+    "unsafe_answer_acceptances": 0
+  },
+  "candidate_local_microseconds_per_guard_call": 12.387,
+  "frozen_developer_fixture_sha256": "3e1bd910dd44705e3d76e8b96e3c4f21f6fdcbc36cb99e312c20b872aef4b517",
+  "host": "Lappy",
+  "independent_fact_review": false,
+  "limitations": [
+    "public synthetic developer fixtures",
+    "source labels may be forged",
+    "context-pruned but legitimate predecessor would now HOLD",
+    "not an installed Mono/VeraOS guard",
+    "not Qwen/GLM cognition proof"
+  ],
+  "measurement_note": "low-resource source-only developer fixture, prior exact Git file; not model inference/review",
+  "model_inference": false,
+  "previous_training_source_git": "535dba1480fe59e92533248ee2badd0ae5e8711f",
+  "previous_training_source_sha256": "31193669c573c8ac23e1451df824db2bb8d3a181e34b7b073162dd60100067a0",
+  "python": "3.14.5",
+  "schema": "VERA_TRAINING_CORRECTION_LINEAGE_ABLATION_V1",
+  "source_only": true,
+  "weight_training": false
+}

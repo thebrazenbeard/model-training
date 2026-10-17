@@ -90,6 +90,77 @@ class ParticipantBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ParticipationError,"Same logical agent"):
             compose(first,restarted)
 
+    def test_migrated_logical_agent_is_not_a_second_participant(self):
+        first=source(node="VN1",agent="agent:one",inst="runtime:old")
+        migrated=source(node="Lappy",agent="agent:one",inst="runtime:new",value=False)
+        with self.assertRaisesRegex(ParticipationError,"Same logical agent"):
+            compose(first,migrated)
+
+    def test_distinct_agents_on_same_physical_node_remain_distinct(self):
+        first=source(node="VN1",agent="agent:one",inst="runtime:one")
+        second=source(node="VN1",agent="agent:two",inst="runtime:two",value=False)
+        out=compose(first,second).as_dict()
+        self.assertEqual(out["contributions"][0]["participant"]["agent_id"],"agent:one")
+        self.assertEqual(out["contributions"][1]["participant"]["agent_id"],"agent:two")
+
+    def test_same_runtime_distinct_agents_are_correlated_not_independent_conflict(self):
+        a=source(node="VN1",agent="agent:one",inst="runtime:shared",value=True)
+        b=source(node="Lappy",agent="agent:two",inst="runtime:shared",value=False)
+        checks=[]
+        def independent(*args):
+            checks.append(args)
+            return True
+        receipt=compose(a,b,verify_evidence=lambda *args: True,
+                        verify_independence=independent).as_dict()
+        self.assertEqual(receipt["dissent"]["classification"],"SELF_OR_CORRELATED_CLAIMS")
+        self.assertFalse(receipt["dissent"]["challenge_for_review"])
+        self.assertEqual(checks,[])
+        self.assertEqual(len(receipt["contributions"]),2)
+        self.assertEqual(receipt["authority_effect"],"NONE")
+
+    def test_claim_only_independence_does_not_prove_distinct_runtimes(self):
+        receipt=compose(verify_evidence=lambda *args: True,
+                        verify_independence=lambda *args: True).as_dict()
+        self.assertEqual(receipt["dissent"]["classification"],"UNVERIFIED_DISSENT")
+        self.assertFalse(receipt["dissent"]["challenge_for_review"])
+
+    def test_pair_verifier_receives_exact_participant_bindings(self):
+        seen=[]
+        def pair_check(a,b):
+            seen.append((a.participant.runtime_instance_id,
+                         b.participant.runtime_instance_id,
+                         a.participant.agent_id,b.participant.agent_id))
+            return True
+        receipt=compose(verify_evidence=lambda *args: True,
+                        verify_independence=lambda *args: True,
+                        verify_participant_independence=pair_check).as_dict()
+        self.assertEqual(receipt["dissent"]["classification"],"EVIDENCE_CONFLICT_FOR_REVIEW")
+        self.assertEqual(seen,[("runtime:one","runtime:two","agent:vn1","agent:lappy")])
+        self.assertFalse(receipt["dissent"]["independence_proven"])
+        self.assertEqual(receipt["authority_effect"],"NONE")
+
+    def test_pair_independence_verifier_errors_and_truthy_values_fail_closed(self):
+        def fail(*args):
+            raise RuntimeError("receiver verifier unavailable")
+        for verifier in (lambda *args: 1, lambda *args: "yes", fail):
+            receipt=compose(verify_evidence=lambda *args: True,
+                            verify_independence=lambda *args: True,
+                            verify_participant_independence=verifier).as_dict()
+            self.assertEqual(receipt["dissent"]["classification"],"UNVERIFIED_DISSENT")
+            self.assertFalse(receipt["dissent"]["challenge_for_review"])
+
+    def test_cricket_pass_with_block_finding_rejected(self):
+        finding=dict(rule_id="deny:effect",severity="BLOCK",title="Blocked",
+                     rationale="Protected effect",evidence="No permission",
+                     recommendation="Hold",source="Cricket")
+        with self.assertRaisesRegex(ParticipationError,"Contradictory Cricket"):
+            compose(cricket_result={"disposition":"PASS","findings":[finding]})
+        with self.assertRaisesRegex(ParticipationError,"Contradictory Cricket"):
+            compose(cricket_result={"disposition":"CHALLENGE","findings":[finding]})
+        blocked=compose(cricket_result={"disposition":"BLOCK","findings":[finding]}).as_dict()
+        self.assertEqual(blocked["status"],"CRICKET_BLOCKED")
+        self.assertEqual(blocked["authority_effect"],"NONE")
+
     def test_identity_node_model_substitution_rejected(self):
         a=source()
         b=source(node="Lappy",agent="agent:lappy",inst="runtime:two")
@@ -99,6 +170,48 @@ class ParticipantBoundaryTests(unittest.TestCase):
     def test_different_task_cannot_be_composed(self):
         with self.assertRaises(ParticipationError):
             compose(second=replace(source(node="Lappy",agent="agent:lappy",inst="runtime:two"),task_id="task:other"))
+
+    def test_cricket_block_status_survives_semantic_unrepresentability(self):
+        p=plan()
+        p.update(fidelity="UNREPRESENTABLE",
+                 required_capabilities=["typed:referent","latent:unknown"],
+                 missing_capabilities=["latent:unknown"],
+                 unresolved_capabilities=["latent:unknown"])
+        finding=dict(rule_id="deny:effect",severity="BLOCK",title="Blocked",
+                     rationale="Protected effect",evidence="No permission",
+                     recommendation="Hold",source="Cricket")
+        receipt=compose(core_plan=p,
+                        cricket_result={"disposition":"BLOCK","findings":[finding]}).as_dict()
+        self.assertEqual(receipt["status"],"CRICKET_BLOCKED")
+        self.assertEqual(receipt["core_semantic_plan"]["fidelity"],"UNREPRESENTABLE")
+        self.assertEqual(receipt["authority_effect"],"NONE")
+
+    def test_cricket_disposition_must_equal_actual_maximum_finding_severity(self):
+        def finding(severity):
+            return dict(rule_id="source:rule",severity=severity,title="Review",
+                        rationale="Source policy",evidence="Fixture",
+                        recommendation="Keep held",source="Cricket")
+        cases=(
+            ("BLOCK",[]),("CHALLENGE",[]),
+            ("BLOCK",[finding("CHALLENGE")]),
+            ("CHALLENGE",[finding("BLOCK")]),
+            ("PASS",[finding("CHALLENGE")]),
+            ("PASS",[finding("BLOCK")]),
+        )
+        for disposition,findings in cases:
+            with self.subTest(disposition=disposition,findings=findings):
+                with self.assertRaisesRegex(ParticipationError,"Cricket"):
+                    compose(cricket_result={"disposition":disposition,"findings":findings})
+        for disposition,findings in (
+            ("PASS",[]),("PASS",[finding("NOTE")]),
+            ("CHALLENGE",[finding("CHALLENGE")]),
+            ("BLOCK",[finding("BLOCK")]),
+        ):
+            with self.subTest(valid=disposition):
+                out=compose(cricket_result={
+                    "disposition":disposition,"findings":findings}).as_dict()
+                self.assertEqual(out["cricket_review"]["disposition"],disposition)
+                self.assertEqual(out["authority_effect"],"NONE")
 
     def test_cricket_pass_cannot_become_effect_or_identity_proof(self):
         out=compose(cricket_result={"disposition":"PASS","findings":[]}).as_dict()
@@ -114,6 +227,30 @@ class ParticipantBoundaryTests(unittest.TestCase):
             p[field]=value
             with self.subTest(field=field),self.assertRaises(ParticipationError):
                 compose(core_plan=p)
+
+    def test_semantic_missing_capabilities_require_exact_rewrite_coverage(self):
+        missing=plan()
+        missing.update(required_capabilities=["typed:referent","kv:layout"],
+                       missing_capabilities=["kv:layout"],rewrites=[],fidelity="EXACT")
+        with self.assertRaisesRegex(ParticipationError,"rewrite"):
+            compose(core_plan=missing)
+        covered=dict(missing)
+        covered["rewrites"]=[dict(source_capability="kv:layout",rule_name="replace:kv",
+                                  fidelity="LOSSY",description="Approximate")]
+        with self.assertRaisesRegex(ParticipationError,"fidelity"):
+            compose(core_plan=covered)
+        covered["fidelity"]="LOSSY"
+        out=compose(core_plan=covered).as_dict()
+        self.assertEqual(out["core_semantic_plan"]["fidelity"],"LOSSY")
+        self.assertEqual(out["authority_effect"],"NONE")
+        for edits in (
+            [dict(covered["rewrites"][0],source_capability="unknown")],
+            covered["rewrites"]+covered["rewrites"],
+            [dict(covered["rewrites"][0],fidelity="INVALID")],
+            [dict(covered["rewrites"][0],fidelity=["LOSSY"])],
+        ):
+            with self.subTest(rewrites=edits), self.assertRaises(ParticipationError):
+                compose(core_plan={**covered,"rewrites":edits})
 
     def test_mosaic_success_cannot_claim_cognitive_gain(self):
         out=compose(mosaic_result=mosaic()).as_dict()
@@ -227,6 +364,28 @@ class RealSourceAdapterTests(unittest.TestCase):
         self.assertTrue(receipt["mosaic_handoff"]["correct"])
         self.assertIn(receipt["cricket_review"]["disposition"],("PASS","CHALLENGE","BLOCK"))
         self.assertEqual(receipt["authority_effect"],"NONE")
+
+    def test_actual_core_lossy_rewrite_cannot_claim_exact_transfer(self):
+        SemanticCapabilityProfile,plan_semantic_transfer=self.core_semantic
+        import importlib
+        core=importlib.import_module(SemanticCapabilityProfile.__module__)
+        rule=core.SemanticTransferRule(
+            name="lossy:kv",source_capability="kv:layout",
+            target_capabilities=frozenset({"typed:referent"}),
+            fidelity=core.TransferFidelity.LOSSY,
+            description="Bounded non-equivalent rewrite")
+        sem=plan_semantic_transfer(
+            SemanticCapabilityProfile("vera-core",frozenset({"typed:referent","kv:layout"})),
+            SemanticCapabilityProfile("mosaic",frozenset({"typed:referent"})),
+            ["typed:referent","kv:layout"],rules=[rule])
+        out=compose(core_plan=sem.as_dict()).as_dict()
+        self.assertEqual(out["core_semantic_plan"]["missing_capabilities"],["kv:layout"])
+        self.assertEqual(out["core_semantic_plan"]["fidelity"],"LOSSY")
+        self.assertEqual(out["authority_effect"],"NONE")
+        falsified=sem.as_dict()
+        falsified["fidelity"]="EXACT"
+        with self.assertRaisesRegex(ParticipationError,"fidelity"):
+            compose(core_plan=falsified)
 
     def test_real_cricket_protected_effect_block_does_not_authorize(self):
         SemanticCapabilityProfile,plan_semantic_transfer=self.core_semantic
