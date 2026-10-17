@@ -16,10 +16,17 @@ an in-process caller supplies that endpoint. This is a source safety
 hazard, NOT observed installed access or real inference. Default
 resident CLI has no provider and remains HELD.
 
-PR37 also returns HTTP 200 status COMPLETED for an injected callback
-with run_id=None and final_text=None. Exact-source independent
-reproduction exists in test_veraos37_http_source_optional.py using
-only a synthetic ephemeral local HTTP server, not Ollama.
+Historical PR37 head e134dd7881a6 returned HTTP 200 status
+COMPLETED for an injected callback with run_id=None/final_text=None.
+Exact-source independent RED reproduction is in
+test_veraos37_http_source_optional.py with ephemeral fake HTTP, no
+model. PORTAL subsequently advanced PR37 to exact 59a4d8f0d26c00104cf1ea6d87249d94fc5a58ad.
+Its desktop.py blob ee20af7fb5de2b48d179bdfa22f518b3b619202b
+now rejects missing terminal run/text (HTTP 502 OUTCOME_UNKNOWN)
+and its resident worker cross-checks completed claims against the
+existing Pre-Active Store. Training independently tests the new exact
+HTTP source as GREEN in the same optional test file. Real transport
+authentication and injected fixture isolation remain separate HOLDS.
 Training source resident_http_completion_gate_v1.normalize_http_result
 rejects missing event/run IDs, empty/oversized text, wrong provider,
 tampered route, noncompleted result with text and attempted claimed
