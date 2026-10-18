@@ -1,0 +1,44 @@
+{
+  "schema": "TRAINING_PAIR_A_ATOMICITY_ADVERSE_EVIDENCE_V1",
+  "date": "2026-10-18",
+  "source_level_only": true,
+  "training_draft_parent": "model-training#113@51bd9749c2bf77b9b2b3f9d94f55a56e3ef29896",
+  "latest_mono": "vera-mono#77@a351d36274595cde26bc60df4c44c3b83a6d1f0a",
+  "exercised_mono_ledger_git_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+  "latest_os": "vera-os#38@4346971cedab05a771a3e6e70fa56a613cc47e06",
+  "independent_integration_abi_confirmation": "chat-communication-bus#368 comment 6250973911",
+  "integration_actual_adversarial_test": "chat-communication-bus#368 comment 6251047445",
+  "integration_attacker_script_sha256": "f85303e82db2dad593cedeaa2f736c11d8db2ebf95da8de97c860cc2f7a035f5",
+  "training_interleaving_test_blob": "9bc66dbb02a558431518ec48ce3f18409dfba185",
+  "selected_pytest_files": [
+    "tests/test_checkpoint_poison_v1.py",
+    "tests/test_receiver_nonce_lock_v1.py",
+    "tests/test_preflight_atomicity_interleaving_v1.py",
+    "tests/test_receiver_preflight_task_head_scope_v1.py",
+    "tests/test_receiver_bound_preflight_v1.py"
+  ],
+  "actual_lappy_windows_python": "3.14.5",
+  "focused_results": {
+    "passed": 27,
+    "failed": 0,
+    "skipped": 0,
+    "pytest_warning": 1
+  },
+  "controls": {
+    "unchanged_task_A_after_unrelated_B": "synthetic precheck ELIGIBLE",
+    "own_task_A_advanced_before_precheck": "synthetic precheck HOLD",
+    "own_task_A_advanced_after_events_snapshot_before_precheck_return": "stale precheck accepted UNSAFE RED",
+    "cross_task_marker_poisoning": "legitimate synthetic first claim falsely HOLD",
+    "independent_db_root_nonce_collision": "both roots can claim same scope",
+    "cold_exit_before_marker_commit": "subsequent first claim eligible",
+    "cold_exit_after_marker_commit": "subsequent first claim false HOLD",
+    "spoofed_generation": "same nonce reused in unauthenticated generation"
+  },
+  "no_actual_loaded_model": true,
+  "no_provider_issuer_authentication": true,
+  "no_production_nonce_admission": true,
+  "no_memory_write": true,
+  "no_protected_effect": true,
+  "current_production_decision": "HOLD",
+  "reviewer": "INTEGRATION source challenge observed; VN1 exact new Training Draft review pending"
+}

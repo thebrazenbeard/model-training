@@ -1,0 +1,59 @@
+{
+  "schema": "TRAINING_RECEIVER_CHECKPOINT_POISON_EVIDENCE_V1",
+  "date": "2026-10-18",
+  "evidence_class": "DISPOSABLE_WINDOWS_MONO_SOURCE_TEST",
+  "qualification_ceiling": "NO_RECEIVER_ISSUER_OR_REAL_PROVIDER_AUTHORITY",
+  "source_heads": {
+    "training_parent": "51bd9749c2bf77b9b2b3f9d94f55a56e3ef29896",
+    "mono_pr77": "a351d36274595cde26bc60df4c44c3b83a6d1f0a",
+    "mono_task_execution_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+    "os_pr38": "4346971cedab05a771a3e6e70fa56a613cc47e06",
+    "portal_arch385": "7ae82abe5a80a5d3f15d07052ad4eb0e3280b125"
+  },
+  "frozen_case_sha256": "963fea4466057e3d13f0f89c286c9820c16ad2ca44c7cc06d6656a26724e953e",
+  "scenario_count": 8,
+  "owner_environment": "Lappy Windows CPython 3.14.5, isolated temporary TaskExecutionLedger SQLite",
+  "test_command": "py -3.14 -B -m pytest -q -p no:cacheprovider tests/test_checkpoint_poison_v1.py tests/test_receiver_nonce_lock_v1.py",
+  "test_results": {
+    "passed": 12,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 1
+  },
+  "measured_cases": {
+    "clean_first_accepted": true,
+    "counterfeit_marker_blocks_legitimate_first": true,
+    "forged_marker_is_valid_task_history": true,
+    "forged_marker_is_foreign_task": true,
+    "poisoned_victim_stays_open": true,
+    "different_nonce_accepted": true,
+    "different_scope_accepted": true,
+    "foreign_root_same_nonce_accepted": true,
+    "crash_before_marker": {
+      "child_exit": 17,
+      "first_claim_accepted_after_crash": true
+    },
+    "crash_after_marker": {
+      "child_exit": 17,
+      "first_claim_rejected_after_crash": true,
+      "rejection": "DUPLICATE_SCOPE_NONCE"
+    },
+    "first_generation_accepted": true,
+    "spoofed_generation_reuse_accepted": true
+  },
+  "baseline_limitations": [
+    "Ordinary task checkpoint can counterfeit public nonce marker and falsely reject a legitimate synthetic first claim",
+    "Separate task database roots have no shared consume-once state",
+    "Forged unauthenticated host generation bypasses same-nonce uniqueness",
+    "Commit-time result is not actual provider result or independent host issuer"
+  ],
+  "actual_production_receiver_authenticated": false,
+  "real_loaded_model": false,
+  "authorized_provider_admitted": false,
+  "production_nonce_protocol_created": false,
+  "task_closed": false,
+  "memory_written": false,
+  "protected_effect": false,
+  "decision": "REJECT_TASK_CHECKPOINT_AS_NONCE_AUTHORITY",
+  "independent_VN1_review": "REQUESTED_NOT_RECEIVED"
+}
