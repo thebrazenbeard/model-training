@@ -5,9 +5,10 @@
   "authority": "Mono TaskExecutionLedger remains canonical task/source/CAS; receiver and nonce claim owner unverified",
   "source_pin": {
     "training_parent_pr115": "cd7de17a9e97d6d752da90d200a7555a295205c2",
-    "mono_pr77": "a351d36274595cde26bc60df4c44c3b83a6d1f0a",
+    "mono_pr77": "8fd64c97998a8d24943439a96409f2114646905e",
     "mono_task_execution_git_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
-    "veraos_pr38": "b388061414b3231ff7cf0caea913683e8b451b0d"
+    "veraos_pr38": "100886104587b5ee188cd320c5d313dc1a5a9f57",
+    "mono_local_conversation_git_blob": "fdc9b3d8398b43d620d487664931c0c4ebc18d1e"
   },
   "types": {
     "CanonicalTaskSourceV1": {
@@ -131,5 +132,14 @@
     "real_model_loaded": "UNVERIFIED",
     "host_selected_claim_authority": "UNVERIFIED"
   },
-  "disposition": "HOLD_ALL_PROVIDER_RESULT_MEMORY_AND_PROTECTED_EFFECTS"
+  "disposition": "HOLD_ALL_PROVIDER_RESULT_MEMORY_AND_PROTECTED_EFFECTS",
+  "partner_executable_feedback": {
+    "integration_mono_owner_test": "tests/test_receiver_task_head_external_writer.py@ae7251243e026eacf711fc1c81663d9d897b7c06",
+    "integration_veraos_owner_test": "tests/test_resident_external_task_checkpoint_scope.py@4220ad91d97917c032feb93a328cfd8edf6324d3",
+    "integration_mono_owner_evidence": "14PASS/1 preexisting SKIP, actual separate cold-process Task A/B checkpoint",
+    "integration_veraos_owner_evidence": "35PASS/1SKIP, distinct SQLite handles A/B ACK and cold replay, NOT guest target",
+    "training_Lappy_current_head_retest": "25PASS/0FAIL/0SKIP on Mono8fd, including Integration native test; one pytest warning",
+    "accepted_interface": "Native Mono task event CAS at checkpoint append rejects old A after A advance; unrelated B global journal change cannot stale A task event; read-only preflight remains advisory and racy",
+    "real_atomic_receiver_issuer_verified": false
+  }
 }
