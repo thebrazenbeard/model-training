@@ -58,10 +58,11 @@
       "TRAINING_MONO_ROOT": "detached exact Mono PR77 checkout at source_pins.mono_pr77",
       "TRAINING_PORTAL_ROOT": "detached exact PORTAL PR62 checkout at source_pins.portal_pr62"
     },
-    "new_pass": 0,
-    "new_fail": 0,
-    "new_skip": 0,
-    "outcomes": "NOT_EXECUTED_DO_NOT_INTERPRET_EXPECTATIONS_AS_OBSERVATIONS"
+    "new_pass": null,
+    "new_fail": null,
+    "new_skip": null,
+    "outcomes": "NOT_EXECUTED_DO_NOT_INTERPRET_EXPECTATIONS_AS_OBSERVATIONS",
+    "counters": "UNKNOWN_NOT_EXECUTED"
   },
   "contract_boundary": {
     "canonical_producer_owner": "Mono QualifiedVeraRuntime/TaskExecutionLedger local task and delegation",
