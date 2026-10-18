@@ -91,9 +91,14 @@ def forged_synthetic_witness():
         forged = make_receipt(original)
         forged.update({
             "provider_id": "attacker-claims-provider",
+            "model_id": "attacker-model",
+            "host_id": "attacker-host",
             "host_generation": "attacker-generation",
             "session_id": "attacker-session",
             "loaded_artifact_sha256": "9" * 64,
+            "route_id": "attacker-route",
+            "selected_routes": ["attacker-route"],
+            "unique_durable_route_selection": "attacker-route",
         })
         # The entire fixture key and synthetic receiver witness is author-owned.
         # Success here is deliberately a RED against "field equality == trust".
