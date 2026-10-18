@@ -1,0 +1,72 @@
+{
+  "admission_status": "HOLD_RESEARCH_TASK_CHECKPOINT_IS_NOT_NONCE_API",
+  "all_tasks_open": true,
+  "cold_replay": {
+    "accepted": false,
+    "elapsed_ns": 6129700,
+    "reason": "DUPLICATE_SCOPE_NONCE"
+  },
+  "different_nonce": {
+    "accepted": true,
+    "elapsed_ns": 15389400,
+    "reason": "SOURCE_CHECKPOINT_ONLY",
+    "task_closed": false
+  },
+  "different_session": {
+    "accepted": true,
+    "elapsed_ns": 17528600,
+    "reason": "SOURCE_CHECKPOINT_ONLY",
+    "task_closed": false
+  },
+  "different_task_replay": {
+    "accepted": false,
+    "elapsed_ns": 6276300,
+    "reason": "DUPLICATE_SCOPE_NONCE"
+  },
+  "effect_authorized": false,
+  "events_only_task_open_and_checkpoint": true,
+  "first": {
+    "accepted": true,
+    "elapsed_ns": 30201400,
+    "reason": "SOURCE_CHECKPOINT_ONLY",
+    "task_closed": false
+  },
+  "fixture_sha256": "718a7e28f2d0f7b888f36feb2e9c984117eab35c97c43aeda9ead69c9a3ea3f6",
+  "forged_generation": {
+    "accepted": true,
+    "elapsed_ns": 19942100,
+    "reason": "SOURCE_CHECKPOINT_ONLY",
+    "task_closed": false
+  },
+  "forged_source": {
+    "accepted": false,
+    "elapsed_ns": 4696200,
+    "reason": "CANONICAL_SOURCE_MISMATCH"
+  },
+  "memory_admitted": false,
+  "race": [
+    {
+      "accepted": true,
+      "elapsed_ns": 18557600,
+      "reason": "SOURCE_CHECKPOINT_ONLY",
+      "task_closed": false
+    },
+    {
+      "accepted": false,
+      "elapsed_ns": 22219300,
+      "reason": "DUPLICATE_SCOPE_NONCE"
+    }
+  ],
+  "race_accepts": 1,
+  "real_issuer_verified": false,
+  "real_loaded_model": false,
+  "real_provider_transport": false,
+  "schema": "TRAINING_RECEIVER_SCOPED_NONCE_SOURCE_ABLATION_V1",
+  "scope": "receiver_id|host_generation|provider_session|nonce",
+  "stale_head": {
+    "accepted": false,
+    "elapsed_ns": 8129600,
+    "error_type": "TaskExecutionError",
+    "reason": "MONO_TASK_CAS_REJECT"
+  }
+}
