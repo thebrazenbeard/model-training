@@ -1,0 +1,28 @@
+{
+  "cold_replay_ns": 3220000,
+  "cold_replay_rejected": true,
+  "concurrent_accept_count": 1,
+  "cross_task_same_nonce_accept_count": 2,
+  "decision": "TASK_LOCAL_CAS_SOURCE_UTILITY_ONLY_GLOBAL_NONCE_HOLD",
+  "event_types_only_open_and_checkpoint": true,
+  "first_reservation_ns": 11984100,
+  "fixture_sha256": "eea18014153e9de82b82138ab8d665fd54e877223999ee1005e9be2d9cda80fe",
+  "global_nonce_uniqueness": "RED_TWO_DISTINCT_TASKS_ACCEPT_SAME_NONCE",
+  "memory_written": false,
+  "new_reservation_ns": 13757900,
+  "next_case": {
+    "accepted": true,
+    "elapsed_ns": 13757900,
+    "journal_head": "12daa2f13eef11758f47ef0abf2f9522fa24a43707ce166b782db32b06186287",
+    "task_closed": false
+  },
+  "positive_first": true,
+  "positive_next": true,
+  "provider_effect_performed": false,
+  "real_guest_boot": false,
+  "real_model_loaded": false,
+  "real_provider_authenticated": false,
+  "schema": "TRAINING_CANONICAL_TASK_NONCE_SOURCE_PROBE_V1",
+  "stale_task_head_rejected": true,
+  "task_states_unclosed": true
+}
