@@ -100,10 +100,12 @@ def preflight(receipt, signature, key, witness, ledger, original, used_nonces,
     if receipt["accepted_task_journal_head"] != original["opened_head"]:
         return False
     state = ledger.read(original["task_id"])
-    if state.closed or state.journal_head_digest != original["opened_head"]:
-        return False
+    # A task-scoped receipt must not compare against the GLOBAL journal head.
+    # Other tasks can advance that head without changing this task.
     events = ledger.events(original["task_id"])
-    if len(events) != 1 or events[0].event_type != "TASK_OPENED":
+    if (state.closed or len(events) != 1 or
+            events[0].event_type != "TASK_OPENED" or
+            events[0].event_digest != original["opened_head"]):
         return False
     if receipt.get("synthetic") is not False:
         return False

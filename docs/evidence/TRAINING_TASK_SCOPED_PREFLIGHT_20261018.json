@@ -1,0 +1,62 @@
+{
+  "schema": "TRAINING_TASK_SCOPED_PREFLIGHT_ABLATION_V1",
+  "source_only": true,
+  "l2_partner": "Integration VN2",
+  "training_parent": "model-training#112@59b46ce3dd96807e888b6a018ee6ab2de88c9a38",
+  "current_mono": "vera-mono#77@a351d36274595cde26bc60df4c44c3b83a6d1f0a",
+  "exact_executed_task_ledger_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+  "current_veraos": "vera-os#38@4346971cedab05a771a3e6e70fa56a613cc47e06",
+  "updated_training_preflight_blob": "0196b0877aeb9adfaf078d705e636fd31d2c414a",
+  "new_test_blob": "a1cce7312e4556e08f8cb8c503ebea1016718ecb",
+  "host": "Lappy",
+  "python": "CPython 3.14.5 on Windows",
+  "prior_run": {
+    "tests_passed": 3,
+    "tests_failed": 1,
+    "setup_errors": 0,
+    "expectation": "A remains eligible after unrelated B opens",
+    "observed": "false HOLD"
+  },
+  "patched_new_tests": {
+    "tests_passed": 4,
+    "tests_failed": 0
+  },
+  "combined_final": {
+    "tests_passed": 17,
+    "tests_failed": 0,
+    "tests_skipped": 0,
+    "setup_errors": 0,
+    "pytest_warnings": 1
+  },
+  "intermediate_harness_issue": {
+    "tests_passed": 12,
+    "setup_errors": 5,
+    "reason": "subprocess PYTHONPATH missing vera_core",
+    "resolution": "disposable conftest PYTHONPATH"
+  },
+  "new_cases": [
+    "unrelated task B must not stale A",
+    "advance original A must HOLD",
+    "foreign source/scope/selected route must HOLD",
+    "synthetic fixture never closes task"
+  ],
+  "current_task_head_abi": {
+    "TaskState.journal_head_digest": "GLOBAL_CHAIN_HEAD",
+    "expected_task_head": "LATEST_TASK_EVENT_DIGEST",
+    "opened_head": "IMMUTABLE_TASK_OPENED_EVENT_DIGEST"
+  },
+  "known_surviving_failures": [
+    "no receiver-owned actual issuer trust",
+    "cold nonce process-local set replay",
+    "forged host generation or provider session in #112",
+    "separate read/verify/nonce race",
+    "no process-loaded artifact or authenticated route",
+    "no live memory or result acceptance"
+  ],
+  "selected_guest_stage_files": 431,
+  "real_loaded_model": false,
+  "installed_guest": false,
+  "provider_admitted": false,
+  "memory_written": false,
+  "independent_vn1_new_head_review": "PENDING"
+}
