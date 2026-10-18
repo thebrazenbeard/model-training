@@ -1,0 +1,83 @@
+{
+  "schema": "TRAINING_NATIVE_CAS_RECEIVER_CLAIM_BOUNDARY_V1",
+  "version": 1,
+  "status": "RESEARCH_DESIGN_ONLY_PROVIDER_HOLD",
+  "source_pins": {
+    "training_parent": "a5e457521b65369e10ba9994d04b30678be8b0df",
+    "mono_pr77": "8fd64c97998a8d24943439a96409f2114646905e",
+    "mono_ledger_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+    "veraos_pr38": "100886104587b5ee188cd320c5d313dc1a5a9f57"
+  },
+  "canonical_task": {
+    "producer": "Mono TaskExecutionLedger",
+    "opened_head": "TASK_OPENED EVENT digest",
+    "latest_task_head": "Latest event digest for the SAME task",
+    "global_journal_head": "Independent chain-integrity tip; not task CAS",
+    "verified_source": "Mono original literal/source digest, referent/scope",
+    "actual_native_cas": "SOURCE_VERIFIED_TASK_LOCAL",
+    "receiver_authority": "NOT_GRANTED"
+  },
+  "untrusted_receipt": {
+    "issuer": "CALLER_OWNED_UNTRUSTED",
+    "host_generation": "UNTRUSTED",
+    "provider_session": "UNTRUSTED",
+    "model_artifact_sha256": "UNTRUSTED",
+    "selected_route": "UNTRUSTED",
+    "nonce": "UNTRUSTED",
+    "checkpoint_payload": "GENERAL TASK EVIDENCE NOT RECEIVER CLAIM"
+  },
+  "receiver_observed_context": {
+    "producer": "Independent currently selected authenticated host/receiver process",
+    "observed_producer": "ABSENT_OR_UNVERIFIED",
+    "required": [
+      "Trust/revocation current issuer custody",
+      "Host generation/session verified separately from caller",
+      "Actual process PID/start/executable and process-loaded model artifact hash",
+      "One selected route and causal byte digests"
+    ],
+    "missing_result": "HOLD_NO_ADMITTED_PROVIDER"
+  },
+  "atomic_consume_once": {
+    "owner": "Existing authorized Mono/host receiver-only claim authority",
+    "current_status": "NOT_IMPLEMENTED_NOT_SELECTED",
+    "required": [
+      "Same transaction verifies task latest event head/source/issuer/route",
+      "Nonce unique across tasks/processes and explicitly participating roots",
+      "Only receiver-authorized typed claim affects nonce; not TASK_CHECKPOINT",
+      "Readback and crash recovery; after persisted claim but unknown result HOLD_UNKNOWN_NO_REDISPATCH"
+    ],
+    "source_task_checkpoint_not_equivalent": true
+  },
+  "adverse_source_cases": [
+    "Generic task CHECKPOINT accepts caller-supplied forged issuer/model/route while task CAS succeeds",
+    "Stale own-A latest task event head rejects native checkpoint CAS",
+    "Unrelated B changes GLOBAL chain without staling A task-event CAS",
+    "Same task old expected head replay rejects",
+    "Public same nonce on distinct tasks accepts twice",
+    "Independent physical SQLite roots accept nominal same nonce",
+    "Cold child exits before task checkpoint: task opened only",
+    "Cold child exits after task checkpoint: task open with checkpoint, no verified result"
+  ],
+  "source_cases_sha256": "df1400ad16c316c2aa1dcedffaf68cb90288a32f12ac3f7f0144b0987f3fee2a",
+  "observed_source_tests": {
+    "new_6": "6PASS",
+    "selected_combined": "31PASS_0FAIL_0SKIP_1WARNING",
+    "real_provider_admitted": false
+  },
+  "accepted_result": {
+    "producer": "Authorized Mono CAS after independently verified receiver/process/result",
+    "current": "HOLD_NO_PROVIDER",
+    "preactive": "Real DONE + COMPLETED run when execution pipeline selected",
+    "memory": "Separately consented/sourced/corrected proposal only"
+  },
+  "offline_minimum": "Mono canonical TASK_OPENED / HELD / no-provider cold recovery; no loaded model required",
+  "current_veraos_source_stage": {
+    "Mono": 316,
+    "PORTAL_advisory": 89,
+    "PreActive": 18,
+    "Volition": 8,
+    "total": 431,
+    "actual_linux_guest_qualified": false
+  },
+  "disposition": "REJECT_NATIVE_TASK_CAS_AS_RECEIVER_ISSUER_OR_GLOBAL_NONCE_AUTHORITY"
+}
