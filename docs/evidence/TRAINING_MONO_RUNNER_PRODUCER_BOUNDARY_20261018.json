@@ -1,0 +1,77 @@
+{
+  "schema": "TRAINING_MONO_RUNNER_SOURCE_PRODUCER_FALSIFICATION_V1",
+  "evidence_class": "GITHUB_SOURCE_INSPECTION_AND_COMMITTED_TESTS_NOT_EXECUTED",
+  "commit_date": "2026-10-18",
+  "source_pins": {
+    "training_parent_pr117": "a5f52c6fddb7c6daea8c29e489e060e23948d6b7",
+    "mono_pr77": "8fd64c97998a8d24943439a96409f2114646905e",
+    "mono_task_ledger_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+    "mono_runtime_blob": "48e00014b89adeb392102ef45849fbd49fc9dc29",
+    "veraos_pr38": "637ff4f4f9f7737d5075a3cc8fa9c74ee4201cb8",
+    "portal_pr62": "6ef585f36194a538a01b751d0802a9e876815f0a",
+    "portal_workunit_blob": "7c76c2b1f16b5e8aaf9522cc5d97adde53b0e721",
+    "portal_dispatch_blob": "5ca923567f1d4af6bfd997d7584d7c6255c8eed2",
+    "portal_proposal_blob": "0742d2e0dbfbfc09d49d9d7aafd38cba66e59ad2"
+  },
+  "existing_training_parent_provenance": {
+    "actual_lappy_pr117_focused_tests": 6,
+    "actual_lappy_pr117_combined_tests": 31,
+    "status": "HISTORICAL_VERIFIED_SOURCE_TEST_NOT_THIS_INCREMENT"
+  },
+  "new_tests": {
+    "tests/test_mono_runner_untrusted_producer_v1.py": {
+      "git_blob": "be2234eeaf002db1cc274c81750f135bac162a60",
+      "case_count": 6,
+      "expected": [
+        "Unmarked payload with forged issuer/model locally accepted, not authenticated",
+        "Mono A checkpoint before Runner local admission does not constrain unmarked claim",
+        "Unrelated B changes global journal only, not task-scoped head",
+        "Explicit UNAPPROVED producer marker rejects with exact Runner store readback unchanged",
+        "Two independent Runner SQLite roots can make same nominal claim",
+        "Caller issuer/session/generation/route substitutions alter fingerprint without source origin proof"
+      ]
+    },
+    "tests/test_mono_runner_claim_crash_v1.py": {
+      "git_blob": "9b28d57482cf5cace6dab21d21f0e56cbf920acc",
+      "case_count": 2,
+      "expected": [
+        "Cold child exit before local claim leaves no Runner durable attempt",
+        "Cold child exit after local claim preserves unresolved attempt and prevents local duplicate, no real Mono provider outcome"
+      ]
+    },
+    "tests/test_mono_runner_producer_claim_boundary_v1.py": {
+      "git_blob": "a09549ccf2d951e383c4d26a1bcc421fe12ec386",
+      "case_count": 3,
+      "expected": [
+        "Forged Mono task ID, task event head, source digest and nonce in unmarked payload do not authenticate producer",
+        "Remove known UNAPPROVED marker and recompute public fingerprint: normal unmarked local claim remains available, not producer permission",
+        "Cold independent Python writer advances actual Mono A after Runner initialization, before unmarked local admission"
+      ]
+    }
+  },
+  "execution": {
+    "status": "BLOCKED_UNAVAILABLE_EXECUTOR",
+    "owner_host": "Lappy",
+    "last_available_bridge_error": "Executor list_devices internal tool failure",
+    "requested_command": "py -3.14 -B -m pytest -q -p no:cacheprovider tests/test_mono_runner_untrusted_producer_v1.py tests/test_mono_runner_claim_crash_v1.py tests/test_mono_runner_producer_claim_boundary_v1.py",
+    "required_environment": {
+      "TRAINING_MONO_ROOT": "detached exact Mono PR77 checkout at source_pins.mono_pr77",
+      "TRAINING_PORTAL_ROOT": "detached exact PORTAL PR62 checkout at source_pins.portal_pr62"
+    },
+    "new_pass": 0,
+    "new_fail": 0,
+    "new_skip": 0,
+    "outcomes": "NOT_EXECUTED_DO_NOT_INTERPRET_EXPECTATIONS_AS_OBSERVATIONS"
+  },
+  "contract_boundary": {
+    "canonical_producer_owner": "Mono QualifiedVeraRuntime/TaskExecutionLedger local task and delegation",
+    "runner_owner": "PORTAL SqliteDispatchAdmissionStore local WorkUnit fingerprint/collision and attempt",
+    "selected_canonical_mono_to_runner_producer": "ABSENT_UNVERIFIED_AS_OF_CURRENT_INTEGRATION_SOURCE_REVIEW",
+    "physical_issuer_process_model_host_session": "NOT_ATTESTED",
+    "trusted_nonce_consume_once_across_roots": "NOT_IMPLEMENTED_NOT_SELECTED",
+    "user_effect_memory_model_admission": "HOLD",
+    "safe_result": "No production inference, provider result, memory or protected effect has been accepted"
+  },
+  "hostile_limit": "Existing unmarked Runner direct claim is a legitimate local control, not itself a bug or proof of issuer forgery as an external effect. Marker removal is a producer-authentication gap only if promoted as qualified Mono producer without an independent boundary.",
+  "notes": "No model/GPU/QEMU/credentials/trust/production memory/protected effects/merge/scheduling"
+}
