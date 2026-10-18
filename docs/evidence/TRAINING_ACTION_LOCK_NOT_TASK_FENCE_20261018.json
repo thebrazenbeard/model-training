@@ -1,0 +1,54 @@
+{
+  "schema": "TRAINING_MONO_ACTION_LOCK_FENCE_ABLATION_EVIDENCE_V1",
+  "date": "2026-10-18",
+  "original_training_parent": "7ad7088993249c00f718896c371eaa68c9013eb2",
+  "original_mono_pr77": "a351d36274595cde26bc60df4c44c3b83a6d1f0a",
+  "exercised_task_ledger_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+  "current_veraos_at_initial_read": "b388061414b3231ff7cf0caea913683e8b451b0d",
+  "source_classification": "DISPOSABLE_MONO_TASK_LEDGER_COLD_CHILD_PROCESS_PROBE",
+  "frozen_cases_sha256": "cbde3fb25b8849df26240d568b7fbe24a32c8c641b31307e810cac0a6e0124e6",
+  "five_frozen_cases": [
+    "unlocked_cold_checkpoint_succeeds",
+    "foreign_process_checkpoint_commits_while_action_lock_held",
+    "same_task_stale_cas_still_rejects",
+    "unrelated_task_global_head_cannot_stale_task_event",
+    "all_records_unclosed_no_provider"
+  ],
+  "machine": "Lappy Windows CPython3.14.5; disposable SQLite action-lock and task files",
+  "measured_results": {
+    "cold_unlocked_checkpoint_accepted": true,
+    "cold_writer_accepted_while_action_lock_held": true,
+    "writer_checkpoint_visible_before_unlock": true,
+    "stale_task_cas_rejected": true,
+    "stale_rejection_type": "TaskExecutionError",
+    "original_task_head_changed_by_writer": true,
+    "task_head_unchanged_by_unrelated_B": true,
+    "global_head_changed_by_unrelated_B": true,
+    "global_chain_verified": true,
+    "all_tasks_open": true,
+    "events_only_open_or_checkpoint": true
+  },
+  "pytest": {
+    "command": "py -3.14 -B -m pytest -q -p no:cacheprovider tests/test_action_lock_fence_v1.py tests/test_checkpoint_poison_v1.py tests/test_receiver_nonce_lock_v1.py tests/test_preflight_atomicity_interleaving_v1.py tests/test_receiver_preflight_task_head_scope_v1.py tests/test_receiver_bound_preflight_v1.py",
+    "passed": 32,
+    "failed": 0,
+    "skipped": 0,
+    "pytest_warnings": 1
+  },
+  "single_evaluate_run_elapsed_ns": 3202170400,
+  "interpretation": "action_lock() uses a separate action-lock SQLite file. Ordinary TaskExecutionLedger.checkpoint() writes task events through its own canonical journal SQLite transaction, without joining that action lock. One independently launched cold process committed a task CHECKPOINT and task event head changed while first process was still within the action_lock context; that same task's stale expected_task_head was later rejected. General action_lock alone is not task-mutator fence, nonce/issuer proof, or atomic provider admission.",
+  "known_other_adverse_evidence": {
+    "checkpoint_poison": "#114 counterfeit general task checkpoint falsely HOLDs synthetic first nonce",
+    "task_preflight_toctou": "#114 deterministic own-A writer after events snapshot still lets synthetic preflight stale ACCEPT",
+    "host_generation": "#112 self-certified new host generation accepts reused nonce",
+    "different_state_roots": "#114 unrelated SQLite roots do not share consumed nonce domain"
+  },
+  "real_provider_authenticated": false,
+  "loaded_model_observed": false,
+  "production_nonce_claim_authorized": false,
+  "canonical_task_completed": false,
+  "memory_written": false,
+  "protected_effect": false,
+  "decision": "REJECT_ACTION_LOCK_ALONE_AS_PRODUCTION_TASK_OR_NONCE_FENCE",
+  "independent_review": "PORTAL independently reran #114 old 9 adverse tests; new case is Training owner-only, VN1 not yet independently verified"
+}
