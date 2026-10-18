@@ -1,0 +1,145 @@
+{
+  "schema": "TRAINING_RECEIVER_CURRENTNESS_ABI_V1",
+  "version": 1,
+  "status": "SOURCE_DESIGN_ONLY_NOT_PRODUCTION_SELECTED",
+  "authority": "Mono TaskExecutionLedger remains canonical task/source/CAS; receiver and nonce claim owner unverified",
+  "source_pin": {
+    "training_parent_pr115": "cd7de17a9e97d6d752da90d200a7555a295205c2",
+    "mono_pr77": "8fd64c97998a8d24943439a96409f2114646905e",
+    "mono_task_execution_git_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+    "veraos_pr38": "100886104587b5ee188cd320c5d313dc1a5a9f57",
+    "mono_local_conversation_git_blob": "fdc9b3d8398b43d620d487664931c0c4ebc18d1e"
+  },
+  "types": {
+    "CanonicalTaskSourceV1": {
+      "producer": "Mono QualifiedVeraRuntime/TaskExecutionLedger; actual host selection separately observable",
+      "fields": [
+        "task_id",
+        "original_literal_source_digest",
+        "conversation_id_UNTRUSTED_CORRELATOR",
+        "request_id_UNTRUSTED_CORRELATOR",
+        "opened_task_event_digest",
+        "latest_task_event_digest",
+        "global_journal_chain_digest",
+        "referent_scope"
+      ],
+      "must_hold": [
+        "opened_task_event_digest != global chain head permitted",
+        "latest_task_event_digest must be task-specific",
+        "global chain must be verified separately",
+        "no source changes or own task checkpoint since snapshot"
+      ]
+    },
+    "UntrustedProviderReceiptV1": {
+      "producer": "Model/caller/transport: NOT TRUSTED",
+      "fields": [
+        "claimed_receiver_id",
+        "claimed_host_generation",
+        "claimed_provider_session",
+        "claimed_issuer",
+        "claimed_loaded_model_sha256",
+        "claimed_route",
+        "claimed_nonce",
+        "claimed_result_digest",
+        "claimed_preactive_done",
+        "claimed_task_head"
+      ],
+      "rule": "No field can authenticate its own producer, model, nonce custody, task source or result"
+    },
+    "ObservedReceiverIdentityV1": {
+      "producer": "Receiver-owned independent host observer with authenticated issuer custody; none currently selected",
+      "fields": [
+        "receiver_id",
+        "host_generation",
+        "provider_session",
+        "issuer_identity_and_active_revocation",
+        "pid_and_start_time",
+        "process_loaded_model_bytes_sha256",
+        "model_manifest_sha256",
+        "actual_endpoint",
+        "selected_route_id",
+        "request_and_response_digest"
+      ],
+      "qualified_source": "UNKNOWN_HOLD",
+      "acceptance_gate": "Independent observed producer, correct physical process, trust/revocation and exact executable/artifact bytes verified; not a synthetic witness"
+    },
+    "ClaimConsumptionV1": {
+      "producer": "Existing selected authoritative host/Mono receiver-only transaction owner; none verified",
+      "collision_scope": [
+        "receiver_id",
+        "verified_host_generation",
+        "verified_provider_session",
+        "receiver_minted_one_use_nonce"
+      ],
+      "atomic_preconditions": [
+        "current Mono task source + latest task EVENT head",
+        "receiver issuer and process-loaded artifact authenticated independently",
+        "one selected route",
+        "collision key unused across participating tasks/processes/roots",
+        "writer domain and physical roots bound explicitly"
+      ],
+      "atomic_effects": [
+        "durable receiver-only marker not writable by ordinary TASK_CHECKPOINT",
+        "consume-once CAS",
+        "task/source/head and route binding",
+        "readback and replay identity"
+      ],
+      "disallowed": [
+        "general TASK_CHECKPOINT as receiver nonce",
+        "action_lock as universal task writer fence",
+        "self-declared generation/session to rotate scope",
+        "new Training shadow trust database"
+      ],
+      "current_state": "NOT_IMPLEMENTED_NOT_SELECTED"
+    },
+    "AcceptedResultV1": {
+      "producer": "Canonical Mono authorized result CAS after independent run verification",
+      "required": [
+        "causal selected provider transport bytes",
+        "real Pre-Active DONE + COMPLETED run when execution route selected",
+        "exact route and task/source/CAS readback",
+        "receiver claim result identity"
+      ],
+      "current_state": "NO_ADMITTED_PROVIDER_HOLD"
+    },
+    "MemoryProposalV1": {
+      "producer": "Generated/provider/semantic source may PROPOSE only",
+      "authority": "Separate canonical-memory consent/privacy/retention/provenance and correction gate",
+      "automatic_admission": false
+    }
+  },
+  "crash_semantics": {
+    "before_atomic_claim": "Re-read exact original task and receiver claim domain; do not assume never dispatched",
+    "after_atomic_claim_before_result": "HOLD_UNKNOWN_NO_REDISPATCH pending authoritative result reconciliation",
+    "between_task_read_and_claim": "Must fail atomic current task-event head CAS",
+    "different_physical_ledger_roots": "HOLD unless one authenticated collision-domain owner is selected and observed"
+  },
+  "frozen_test_cases": [
+    "ordinary_TASK_CHECKPOINT_nonce_poison",
+    "own_task_A_checkpoint_during_preflight",
+    "unrelated_B_advances_GLOBAL_only",
+    "cross_task_and_cold_process_replay",
+    "split_SQLite_root_same_receiver_claim",
+    "forged_generation_session_loaded_model_route_with_matching_synthetic_witness",
+    "cold_crash_before_after_marker",
+    "action_lock_held_while_direct_CHECKPOINT_commits"
+  ],
+  "evidence_classes": {
+    "test_assertion_pass": "Observed source mechanism; REDs may be deliberately expected",
+    "source_owner_review": "Not independent trust verification",
+    "independent_vn1": "PENDING_NEW_HEAD",
+    "real_receiver_issuer": "UNVERIFIED",
+    "real_model_loaded": "UNVERIFIED",
+    "host_selected_claim_authority": "UNVERIFIED"
+  },
+  "disposition": "HOLD_ALL_PROVIDER_RESULT_MEMORY_AND_PROTECTED_EFFECTS",
+  "partner_executable_feedback": {
+    "integration_mono_owner_test": "tests/test_receiver_task_head_external_writer.py@ae7251243e026eacf711fc1c81663d9d897b7c06",
+    "integration_veraos_owner_test": "tests/test_resident_external_task_checkpoint_scope.py@4220ad91d97917c032feb93a328cfd8edf6324d3",
+    "integration_mono_owner_evidence": "14PASS/1 preexisting SKIP, actual separate cold-process Task A/B checkpoint",
+    "integration_veraos_owner_evidence": "35PASS/1SKIP, distinct SQLite handles A/B ACK and cold replay, NOT guest target",
+    "training_Lappy_current_head_retest": "25PASS/0FAIL/0SKIP on Mono8fd, including Integration native test; one pytest warning",
+    "accepted_interface": "Native Mono task event CAS at checkpoint append rejects old A after A advance; unrelated B global journal change cannot stale A task event; read-only preflight remains advisory and racy",
+    "real_atomic_receiver_issuer_verified": false
+  }
+}

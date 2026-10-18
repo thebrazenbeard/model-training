@@ -1,0 +1,100 @@
+{
+  "all_adverse_mechanisms_observed": true,
+  "case_results": [
+    {
+      "classification": "REJECT_CHECKPOINT_AUTHORITY",
+      "name": "counterfeit_checkpoint",
+      "observed": true
+    },
+    {
+      "classification": "UNSAFE_STALE_ACCEPT",
+      "name": "stale_A_during_preflight",
+      "observed": true
+    },
+    {
+      "classification": "SOURCE_TASK_SCOPE_CORRECT",
+      "name": "unrelated_B_current_A",
+      "observed": true
+    },
+    {
+      "classification": "REPLAY_GAP",
+      "name": "cold_and_cross_task_same_nonce",
+      "observed": true
+    },
+    {
+      "classification": "NO_SHARED_COLLISION_OWNER",
+      "name": "different_SQLite_roots",
+      "observed": true
+    },
+    {
+      "classification": "UNAUTHENTICATED_FIXTURE",
+      "name": "forged_generation_and_loaded_model",
+      "observed": true
+    },
+    {
+      "classification": "POSTCOMMIT_UNKNOWN_HOLD",
+      "name": "crash_cut_pre_post",
+      "observed": true
+    },
+    {
+      "classification": "NO_ALL_WRITER_LOCK",
+      "name": "action_lock_nonfence",
+      "observed": true
+    }
+  ],
+  "case_sha256": "8b8c989aa307964031fc3ba5524171876dd19fdf30b30c7b92ed1d5a722d789a",
+  "case_total": 8,
+  "classification_ceiling": "SOURCE_ONLY_ADVERSE_PROOF_NOT_TRUSTED_PROVIDER",
+  "coherent_fixture_forgery": {
+    "canonical_task_closed": false,
+    "coherent_forged_fixture_passes_preflight": true,
+    "real_issuer_authenticated": false,
+    "real_loaded_model_observed": false
+  },
+  "durable_host_cross_root_nonce_authority_verified": false,
+  "elapsed_ns": 16642225900,
+  "integration_owner_test_blob": "ae7251243e026eacf711fc1c81663d9d897b7c06",
+  "lappy_exact_current_mono_selected_pytest": {
+    "failed": 0,
+    "files": [
+      "Training/tests/test_receiver_authority_gap_v1.py",
+      "Training/tests/test_action_lock_fence_v1.py",
+      "Training/tests/test_checkpoint_poison_v1.py",
+      "Training/tests/test_preflight_atomicity_interleaving_v1.py",
+      "Mono/tests/test_receiver_task_head_external_writer.py"
+    ],
+    "host": "Lappy Windows",
+    "passed": 25,
+    "pytest_warning": 1,
+    "python": "3.14.5",
+    "seconds": 28.18,
+    "skipped": 0
+  },
+  "memory_admitted": false,
+  "mono_ledger_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+  "old_synthetic_preflight_adverse_accepted": 1,
+  "old_synthetic_preflight_false_holds": 0,
+  "old_synthetic_preflight_positives_retained": 2,
+  "partner_VeraOS_pr38": "100886104587b5ee188cd320c5d313dc1a5a9f57",
+  "production_disposition": "HOLD_NO_TRUSTED_RECEIVER_ATOMIC_AUTHORITY",
+  "protected_effect": false,
+  "provider_result_admitted": false,
+  "race": {
+    "actual_A_events": 2,
+    "canonical_task_closed": false,
+    "unsafe_stale_preflight_accepted": true
+  },
+  "real_issuer_verified": false,
+  "real_process_loaded_model_verified": false,
+  "schema": "TRAINING_RECEIVER_ATOMICITY_ADVERSE_MATRIX_V1",
+  "selected_receiver_and_collision_domain_verified": false,
+  "source_probe_elapsed_ns": {
+    "lock": 3867606400,
+    "nonce_scope": 9115227600,
+    "poison": 3014536500,
+    "preflight": 579093300
+  },
+  "tested_Mono_pr77": "8fd64c97998a8d24943439a96409f2114646905e",
+  "tested_Mono_task_ledger_git_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+  "training_parent": "cd7de17a9e97d6d752da90d200a7555a295205c2"
+}
