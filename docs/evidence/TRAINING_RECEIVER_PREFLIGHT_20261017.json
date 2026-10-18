@@ -1,0 +1,177 @@
+{
+  "adverse_total": 17,
+  "baseline_ns_per_call": 3955,
+  "baseline_positive": 2,
+  "baseline_unsafe": 17,
+  "bench_calls_each": 150,
+  "candidate_false_hold": 0,
+  "candidate_ns_per_call": 3061193,
+  "candidate_positive": 2,
+  "candidate_unsafe": 1,
+  "canonical_task_completed": false,
+  "disposition": "RESEARCH_ONLY_HOLD_REAL_PROVIDER",
+  "fixture_key_exported": false,
+  "frozen_sha256": "5523f12b8b3e761fa63bf38c9cbeb4bf68b1c92c4a524393cc071ffe0de77dd9",
+  "memory_admitted": false,
+  "positive_total": 2,
+  "real_issuer_trust": false,
+  "real_loaded_model": false,
+  "real_pre_active_event": false,
+  "real_provider_transport": false,
+  "rows": [
+    {
+      "baseline": true,
+      "candidate": true,
+      "correct": true,
+      "gold_precheck_eligible": true,
+      "id": "valid_alpha",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": true,
+      "correct": true,
+      "gold_precheck_eligible": true,
+      "id": "valid_beta",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "forged_origin",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "wrong_loaded_model",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "wrong_provider_identity",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "wrong_model_identity",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "wrong_host_identity",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "wrong_manifest",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "replayed_nonce",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": true,
+      "correct": false,
+      "gold_precheck_eligible": false,
+      "id": "cold_restart_nonce_replay",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "stale_task_head",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "foreign_conversation",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "two_selected_routes",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "synthetic_done",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "tampered_response",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "revoked_issuer",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "unobserved_session",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "missing_receiver_witness",
+      "no_canonical_close": true
+    },
+    {
+      "baseline": true,
+      "candidate": false,
+      "correct": true,
+      "gold_precheck_eligible": false,
+      "id": "missing_durable_run",
+      "no_canonical_close": true
+    }
+  ],
+  "schema": "TRAINING_RECEIVER_BOUND_PREFLIGHT_EVAL_V1",
+  "tracemalloc_peak_bytes": 19904
+}
