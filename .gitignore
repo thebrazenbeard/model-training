@@ -1,5 +1,8 @@
 local_probe_receipts/
 
+temp_auto_push.bat
 __pycache__/
 
 *.pyc
+.gitignore
+branch_structure.json
