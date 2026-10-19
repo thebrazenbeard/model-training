@@ -79,7 +79,7 @@ def test_portal63_inspected_local_claim_not_authenticated(api,tmp_path):
     import importlib.util
     import os
     from pathlib import Path
-    portal = Path(os.environ["TRAINING_PORTAL_ROOT"])
+    portal = Path(os.environ["TRAINING_PORTAL_CANDIDATE_ROOT"])\n    assert __import__("subprocess").check_output(\n        ["git","-C",str(portal),"rev-parse","HEAD"],text=True).strip() == (\n        "782e01052a05c94c6c5c7729d3b51c1db91975d2")
     spec=importlib.util.spec_from_file_location(
         "portal63_mono_proposal",
         portal/"tests"/"proposals"/"mono_runner_producer_contract.py")
