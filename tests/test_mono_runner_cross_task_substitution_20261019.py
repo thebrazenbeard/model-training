@@ -100,6 +100,18 @@ def test_consistent_proposal_stale_cold_A_then_stripped_rehash_is_local_only(api
     kwargs = dict(runtime=runtime, delegation=delegation,
                   actor_ref="TEST_ACTOR", expected_task_head=delegation.binding_event_digest)
     proposed = proposal_api.propose(**kwargs, work=item)
+    # The same true Mono A/ref admits TWO internally coherent proposal snapshots
+    # with distinct caller-chosen exact commits. Mono delegation has NO commit field.
+    alternate_item = replace(item, inputs=(api["ExactSubject"](
+        repository=delegation.repository, ref=delegation.ref, commit="b" * 40),))
+    alternate = proposal_api.propose(**kwargs, work=alternate_item)
+    assert alternate["fingerprint"] != proposed["fingerprint"]
+    assert alternate["association"]["task_packet_digest"] == proposed["association"]["task_packet_digest"]
+    assert alternate["association"]["target"]["exact_head"] == "b" * 40
+    alternate_receipt = proposal_api.revalidate(**kwargs, proposal=alternate)
+    assert alternate_receipt["state"] == "HOLD"
+    assert alternate_receipt["producer_authenticated"] is False
+    assert alternate_receipt["dispatch_authorized"] is False
     assert proposed["association"]["task_id"] == opened["task_id"]
     assert proposed["association"]["expected_task_head"] == delegation.binding_event_digest
     assert proposed["association"]["opened_lifecycle_evidence_digest"] == opened["source_digest"]
