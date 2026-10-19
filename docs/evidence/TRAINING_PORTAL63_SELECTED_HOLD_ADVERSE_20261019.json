@@ -1,0 +1,62 @@
+﻿{
+    "schema":  "TRAINING_PORTAL63_SELECTED_HOLD_ADVERSE_20261019_V1",
+    "evidence_class":  "OWNER_LAPPY_NATIVE_SOURCE_TEST_NOT_INDEPENDENT_VN1",
+    "recorded_utc":  "2026-10-19T18:56:15.7917557Z",
+    "source_heads":  {
+                         "training_120_before_fixture":  "9de15df6c36c1e7e692c8ac7a8536a83e844f261",
+                         "training_parent_119":  "101f893c699bd0eab96d748cc295518e5ca0ca67",
+                         "mono_77":  "8fd64c97998a8d24943439a96409f2114646905e",
+                         "portal_62_native_runner":  "6ef585f36194a538a01b751d0802a9e876815f0a",
+                         "portal_63_test_only_candidate":  "782e01052a05c94c6c5c7729d3b51c1db91975d2"
+                     },
+    "exact_git_blobs":  {
+                            "mono_task_execution":  "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+                            "portal_63_proposal":  "5ec404ba8cf4ef0e25f5b1e9f8b1a492ecd3ad2f",
+                            "training_new_test":  "10d4425b0e6a732a67c6927c9f678dfc2728b7b5"
+                        },
+    "native_test":  {
+                        "host":  "Lappy",
+                        "platform":  "Windows",
+                        "interpreter":  "CPython 3.14.5",
+                        "command":  "py -3.14 -B -m pytest -q -s -p no:cacheprovider tests/test_portal63_selected_hold_adverse_20261019.py tests/test_mono_runner_cross_task_substitution_20261019.py tests/test_mono_runner_untrusted_producer_v1.py tests/test_mono_runner_claim_crash_v1.py tests/test_mono_runner_producer_claim_boundary_v1.py tests/test_mono_runner_post_claim_task_drift_v1.py",
+                        "env_exact_portal_62_and_63_roots":  true,
+                        "pytest_disable_plugin_autoload":  true,
+                        "passed":  17,
+                        "failed":  0,
+                        "skipped":  0,
+                        "exit":  0,
+                        "log_sha256":  "5BEB75DAB0462C19373CC44AD00E3DF90CF202277D76C3F7DF045CC3074EC914",
+                        "portal63_falsifier_parent_pid":  17540,
+                        "portal63_cold_child_pid":  31024,
+                        "original_120_cold_child_pid":  28300
+                    },
+    "stronger_contract":  {
+                              "scope":  "ORIGINAL_UNCHANGED_PORTAL63_STRONGER_COLLISION_ASSERTIONS",
+                              "command":  "py -3.14 -B -m pytest -q -p no:cacheprovider tests/diagnostics/runner_claim_concurrency_probe.py -k explicit_collision_contract",
+                              "same_root":  "PASS_ONE_OWNER",
+                              "independent_sqlite_roots":  "RED_BOTH_LOCALLY_CLAIM",
+                              "passed":  1,
+                              "failed":  1,
+                              "deselected":  12,
+                              "exit":  1,
+                              "raw_log_sha256":  "F744B2453DD3A47BAEC7E138D35F53121D61696F46F99771488D1303280F1F0B"
+                          },
+    "case_findings":  {
+                          "real_canonical_mono_task_and_delegation":  true,
+                          "claimed_issuer_nonce_loaded_model_untrusted":  true,
+                          "sealed_exact_work_match_reports_hold":  true,
+                          "stripped_marker_rehashed_local_claim_succeeds":  true,
+                          "unrelated_B_global_advance_does_not_stale_A":  true,
+                          "actual_cold_checkpoint_A_invalidates_source_proposal":  true,
+                          "copied_active_delegation_ref_still_valid_after_A":  true,
+                          "unresolved_attempt_remains_without_redispatch":  true,
+                          "provider_dispatch_authorized":  false,
+                          "producer_authenticated":  false,
+                          "memory_admitted":  false,
+                          "canonical_task_done":  false,
+                          "current_selected_receiver_issuer_verified":  false,
+                          "global_nonce_authority_verified":  false,
+                          "independent_VN1_review":  false
+                      },
+    "conclusion":  "ACCEPT_TEST_ONLY_HOLD_CLASSIFICATION_CHALLENGE_GLOBAL_RECEIVER_AUTHORITY_HOLD_NO_EFFECT"
+}
