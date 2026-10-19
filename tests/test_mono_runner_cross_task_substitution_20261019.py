@@ -14,7 +14,7 @@ def test_cross_task_delegation_substitution_remains_local_only(api, tmp_path):
     delegated_b = runtime.delegate_task_work(
         opened_b["task_id"], "read",
         repository="thebrazenbeard/project-runner", ref="main",
-        subject="source-only", assignee_ref="TEST_ACTOR",
+        subject="source-only-independent-B", assignee_ref="TEST_ACTOR",
         allowed_effects=(), prohibited_effects=("protected",),
         return_shape=("receipt",), evidence_refs=("fixture",),
     )
