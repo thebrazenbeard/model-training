@@ -68,3 +68,88 @@ def test_counterfeit_latest_head_and_receiver_claim_remain_local(api, tmp_path):
         assert not runtime.provider_execution_transports
     finally:
         store.close()
+
+
+def test_consistent_proposal_stale_cold_A_then_stripped_rehash_is_local_only(api, tmp_path):
+    """Real source association can HOLD, go stale, then be stripped into LOCAL claim."""
+    import importlib.util
+    import os
+    from dataclasses import replace
+    from pathlib import Path
+    import pytest
+    from test_mono_runner_post_claim_task_drift_v1 import cold_checkpoint_A
+
+    runtime, opened, delegation = source(api, tmp_path)
+    item = work(
+        api, opened, delegation,
+        claimed_task_id=opened["task_id"],
+        claimed_event_head=delegation.binding_event_digest,
+        claimed_source_digest=opened["source_digest"],
+        claimed_issuer="receiver-selected-CLAIM-NOT-AUTHENTICATED",
+        claimed_nonce="scoped-on-paper-only",
+        claimed_host_generation="host-generation-claimed",
+        claimed_session="loaded-process-claimed",
+        claimed_model_sha256="c" * 64,
+        claimed_route="selected-model-claimed",
+    )
+    path = Path(os.environ["TRAINING_PORTAL_ROOT"]) / "tests" / "proposals" / "mono_runner_producer_contract.py"
+    spec = importlib.util.spec_from_file_location("training_portal_proposal", path)
+    assert spec is not None and spec.loader is not None
+    proposal_api = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(proposal_api)
+    kwargs = dict(runtime=runtime, delegation=delegation,
+                  actor_ref="TEST_ACTOR", expected_task_head=delegation.binding_event_digest)
+    proposed = proposal_api.propose(**kwargs, work=item)
+    assert proposed["association"]["task_id"] == opened["task_id"]
+    assert proposed["association"]["expected_task_head"] == delegation.binding_event_digest
+    assert proposed["association"]["opened_lifecycle_evidence_digest"] == opened["source_digest"]
+    assert proposed["association"]["producer_authenticated"] is False
+    assert proposed["fingerprint"] == api["work_unit_fingerprint"](proposed["work"])
+    first = proposal_api.revalidate(**kwargs, proposal=proposed)
+    assert first["state"] == "HOLD" and first["producer_authenticated"] is False
+    assert first["dispatch_authorized"] is False
+
+    global_before = runtime.tasks.verify_chain()
+    api["open_message"](runtime.tasks, "untrusted", "B", "independent B")
+    assert runtime.tasks.verify_chain() != global_before
+    assert runtime.tasks.events(opened["task_id"])[-1].event_digest == delegation.binding_event_digest
+    assert proposal_api.revalidate(**kwargs, proposal=proposed)["state"] == "HOLD"
+    advanced = cold_checkpoint_A(tmp_path, opened, delegation)
+    print(f"TRAINING_COLD_PROBE parent_pid={os.getpid()} child_pid={advanced['pid']} "
+          f"old_task_head={delegation.binding_event_digest} new_task_head={advanced['task_event_head']}")
+    assert advanced["task_event_head"] != delegation.binding_event_digest
+    # Canonical task-local CAS protects writes; the copied delegation actor label
+    # still validates, so delegation validation ALONE is not a freshness fence.
+    runtime.validate_task_delegation(delegation, actor_ref="TEST_ACTOR")
+    with pytest.raises(ValueError, match="stale task-scoped producer snapshot"):
+        proposal_api.revalidate(**kwargs, proposal=proposed)
+
+    marked = proposed["work"]
+    marked_store, marked_budget = seed(api, tmp_path / "marked.db", marked)
+    try:
+        with pytest.raises(ValueError, match="unapproved Mono producer"):
+            claim(api, marked_store, marked_budget, marked)
+        assert len(marked_store.unresolved_attempts()) == 0
+    finally:
+        marked_store.close()
+    stripped = replace(marked, payload={k: v for k, v in marked.payload.items()
+                                        if k != proposal_api.KEY})
+    assert api["work_unit_fingerprint"](stripped) != proposed["fingerprint"]
+    local_store, local_budget = seed(api, tmp_path / "stripped.db", stripped)
+    try:
+        local = claim(api, local_store, local_budget, stripped)
+        assert local.lease.holder == "untrusted-holder"
+        assert len(local_store.unresolved_attempts()) == 1
+        with pytest.raises(ValueError):
+            claim(api, local_store, local_budget, stripped)
+        assert len(local_store.unresolved_attempts()) == 1
+        assert not runtime.tasks.read(opened["task_id"]).closed
+        from vera_core.local_conversation import recover_conversation
+        history = recover_conversation(runtime.tasks, None, "untrusted")
+        assert len(history) == 2
+        assert all(not entry["memory_admitted"] and not entry["accepted_as_task_result"]
+                   and not entry["display_authorized"] for entry in history)
+        assert runtime.pc_execution_transport is None
+        assert not runtime.provider_execution_transports
+    finally:
+        local_store.close()
