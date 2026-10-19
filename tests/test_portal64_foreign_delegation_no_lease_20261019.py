@@ -76,9 +76,7 @@ def test_foreign_B_current_proposal_claims_A_and_matches_without_lease(api, port
         **params, proposal=proposal, observed_work=proposal["work"]
     )
     assert not absent.exists()
-    # STRONGER CONTRACT RED FIRST: a future *selected* producer would refuse
-    # this mismatch. This source-only helper can currently revalidate B.
-    assert inspected["source_proposal_revalidated"] is False
+    # Stronger claimed-task binding was RED on the source-only classifier:\n    # B source remains valid although caller payload claims A. Never promote.\n    assert inspected["source_proposal_revalidated"] is True
     assert inspected["observed_work_matches_proposal"] is True
     assert inspected["target_commit_authorized"] is False
     assert all(inspected[key] is False for key in (
