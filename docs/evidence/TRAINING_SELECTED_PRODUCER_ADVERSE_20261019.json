@@ -1,0 +1,58 @@
+﻿{
+    "schema":  "TRAINING_SELECTED_PRODUCER_ADVERSE_20261019_V1",
+    "evidence_class":  "TRAINING_OWNER_LAPPY_WINDOWS_NATIVE_SOURCE_TEST",
+    "recorded_utc":  "2026-10-19T18:51:59.5362672Z",
+    "source_heads":  {
+                         "training_parent_119":  "101f893c699bd0eab96d748cc295518e5ca0ca67",
+                         "training_candidate_120_before_new_test":  "b1c80dc361b4f42ccc0ca03862f5e5f30cfacd91",
+                         "mono_77":  "8fd64c97998a8d24943439a96409f2114646905e",
+                         "portal_62":  "6ef585f36194a538a01b751d0802a9e876815f0a"
+                     },
+    "source_blobs":  {
+                         "mono_task_execution":  "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+                         "portal_proposed_producer":  "0742d2e0dbfbfc09d49d9d7aafd38cba66e59ad2",
+                         "training_changed_test":  "60f20bfd5b6ce133071c3af1e022ce268b35b0db"
+                     },
+    "native_suite":  {
+                         "host":  "Lappy",
+                         "interpreter":  "Windows CPython 3.14.5",
+                         "command":  "py -3.14 -B -m pytest -q -s -p no:cacheprovider tests/test_mono_runner_cross_task_substitution_20261019.py tests/test_mono_runner_untrusted_producer_v1.py tests/test_mono_runner_claim_crash_v1.py tests/test_mono_runner_producer_claim_boundary_v1.py tests/test_mono_runner_post_claim_task_drift_v1.py",
+                         "pytest_disable_plugin_autoload":  true,
+                         "passed":  16,
+                         "failed":  0,
+                         "skipped":  0,
+                         "exit_code":  0,
+                         "raw_log_sha256":  "2E163D49F0F925743DC5407AB11C9D67769CF227419A273F59AF3FE257E8F5FC",
+                         "cold_parent_pid":  25148,
+                         "cold_child_pid":  16688,
+                         "cold_child_exit":  0
+                     },
+    "independent_root_stronger_contract":  {
+                                               "host":  "Lappy",
+                                               "scope":  "PORTAL_62_UNCHANGED_ORIGINAL_TEST",
+                                               "command":  "py -3.14 -B -m pytest -q -p no:cacheprovider tests/diagnostics/runner_claim_concurrency_probe.py -k explicit_collision_contract",
+                                               "passed":  1,
+                                               "failed":  1,
+                                               "deselected":  12,
+                                               "exit_code":  1,
+                                               "independent_root_successful_claims":  2,
+                                               "required_one_owner":  1,
+                                               "raw_log_sha256":  "28C18A38348FEB03EB09A65C73AE607A597642D243E1B5CC53A4B4D233B63E0A"
+                                           },
+    "adverse":  {
+                    "original_canonical_task_and_delegation_consistent":  true,
+                    "legitimate_proposal_revalidates_hold":  true,
+                    "unrelated_task_b_global_change_does_not_stale_a":  true,
+                    "cold_same_task_a_checkpoint_makes_proposal_stale":  true,
+                    "copied_delegation_remains_valid_without_current_task_head":  true,
+                    "stripped_marker_rehashed_local_claim_accepted":  true,
+                    "unresolved_attempt_no_redispatch":  true,
+                    "provider_transport_installed":  false,
+                    "canonical_producer_authenticated":  false,
+                    "memory_admitted":  false,
+                    "task_closed_done":  false,
+                    "independent_reviewer_execution":  false,
+                    "same_mono_task_delegation_two_different_caller_git_commits_still_hold":  true
+                },
+    "disposition":  "C_SOURCE_ONLY_HOLD_NO_EFFECT_GLOBAL_COLLISION_RED"
+}
