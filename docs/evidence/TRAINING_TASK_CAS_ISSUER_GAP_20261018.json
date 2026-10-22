@@ -1,0 +1,49 @@
+{
+  "actual_mono_head": "8fd64c97998a8d24943439a96409f2114646905e",
+  "all_tasks_unclosed": true,
+  "authoritative_receiver_nonce_consume_once": "NOT_IMPLEMENTED",
+  "cases_count": 8,
+  "cases_sha256": "df1400ad16c316c2aa1dcedffaf68cb90288a32f12ac3f7f0144b0987f3fee2a",
+  "classification": "SOURCE_TASK_CAS_VALID_AUTHENTICATED_PROVIDER_CLAIM_HOLD",
+  "current_veraos": "100886104587b5ee188cd320c5d313dc1a5a9f57",
+  "effect_performed": false,
+  "event_type_observed": "TASK_CHECKPOINT_ONLY",
+  "forged_payload_contains_untrusted_claim": true,
+  "forged_receiver_task_checkpoint_accepted": true,
+  "global_nonce_consume_once_proven": false,
+  "host": "Lappy Windows CPython3.14.5",
+  "memory_promoted": false,
+  "mono_ledger_blob": "b79504e5ec4cb12410e0ce6a1ed8c1e8da3a15de",
+  "old_head_replay_rejected": true,
+  "postcommit_claim_has_no_verified_result": true,
+  "postcommit_crash": {
+    "child_exit": 23,
+    "task_event_count": 2,
+    "task_still_open": true
+  },
+  "precommit_crash": {
+    "child_exit": 23,
+    "task_event_count": 1,
+    "task_still_open": true
+  },
+  "protected_effect": false,
+  "provider_result_admitted": false,
+  "real_loaded_artifact_verified": false,
+  "real_model_inference": false,
+  "real_provider_issuer": "ABSENT_UNVERIFIED",
+  "real_receiver_authenticated": false,
+  "same_nonce_distinct_tasks_both_accepted": true,
+  "same_nonce_other_root_accepted": true,
+  "schema": "TRAINING_NATIVE_TASK_CAS_NOT_RECEIVER_ISSUER_V1",
+  "selected_provider_route_verified": false,
+  "selected_regression": {
+    "failed": 0,
+    "passed": 31,
+    "seconds": 24.4,
+    "skipped": 0,
+    "warnings": 1
+  },
+  "stale_A_task_CAS_rejected": true,
+  "training_parent": "a5e457521b65369e10ba9994d04b30678be8b0df",
+  "unchanged_C_after_other_tasks_accepted": true
+}
