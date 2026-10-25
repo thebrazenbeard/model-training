@@ -3,4 +3,4 @@ PyYAML==6.0.3
 requests==2.34.2
 pytest==9.1.1
 # Keep the zero-cost source acquisition boundary aligned with the vetted Ingest revision.
-vera-ingest @ git+https://github.com/thebrazenbeard/ingest.git@285bd0b6e786f3f457856d66e9448898e5279836
+vera-ingest @ git+https://github.com/thebrazenbeard/ingest.git@595ec8cacfa8e1b2b92259e925a645a92d125508

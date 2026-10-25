@@ -81,6 +81,24 @@ def test_fetch_source_rejects_public_hostname_resolving_to_private_ip(monkeypatc
         bootcamp.fetch_source("https://public.example/training")
 
 
+@pytest.mark.parametrize(
+    "forbidden_address",
+    ["100.64.0.1", "::ffff:100.64.0.1", "224.0.0.1"],
+)
+def test_fetch_source_rejects_non_global_and_multicast_dns_answers(monkeypatch, forbidden_address):
+    """Keep CGNAT/mapped addresses and multicast out of a public source fetch."""
+    from ingest.adapters import http
+
+    monkeypatch.setattr(http, "_resolve_addresses", lambda host: (forbidden_address,))
+    monkeypatch.setattr(
+        http._PinnedOpener,
+        "open",
+        lambda *a, **kw: pytest.fail("forbidden network request attempted"),
+    )
+    with pytest.raises(http.PolicyRejected, match="private/loopback/link-local"):
+        bootcamp.fetch_source("https://public.example/training")
+
+
 def _stub_source_transport(monkeypatch, handler):
     from ingest.adapters import http
 
