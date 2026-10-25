@@ -70,67 +70,92 @@ def test_safe_source_url_rejects_loopback_and_non_https():
     assert bootcamp.safe_source_url("https://supabase.com/docs")
 
 
+def test_fetch_source_rejects_public_hostname_resolving_to_private_ip(monkeypatch):
+    """A public-looking hostname must not bypass the network destination gate."""
+    from ingest.adapters import http
+
+    monkeypatch.setattr(http, "_resolve_addresses", lambda host: ("127.0.0.1",))
+
+    monkeypatch.setattr(http._PinnedOpener, "open", lambda *a, **kw: pytest.fail("network request attempted"))
+    with pytest.raises(http.PolicyRejected, match="private/loopback/link-local"):
+        bootcamp.fetch_source("https://public.example/training")
+
+
+def _stub_source_transport(monkeypatch, handler):
+    from ingest.adapters import http
+
+    monkeypatch.setattr(http, "_resolve_addresses", lambda host: ("93.184.216.34",))
+
+    class Opener:
+        def __init__(self):
+            self.seen = []
+
+        def open(self, request, timeout):
+            self.seen.append((request.full_url, timeout))
+            return handler(request)
+
+    opener = Opener()
+    monkeypatch.setattr(bootcamp, "HttpAdapter", lambda: http.HttpAdapter(opener=opener))
+    return opener
+
+
 def test_fetch_source_does_not_follow_unvalidated_redirect(monkeypatch):
-    class Redirect:
-        status_code = 302
-        url = "https://public.example/source"
-        headers = {"location": "https://127.0.0.1/private"}
+    from urllib.error import HTTPError
+    from ingest.adapters.base import PolicyRejected
 
-        def raise_for_status(self):
-            return None
+    def redirect(request):
+        raise HTTPError(request.full_url, 302, "Moved", {"Location": "https://127.0.0.1/private"}, None)
 
-    requests_seen = []
-
-    def fake_get(url, **kwargs):
-        requests_seen.append((url, kwargs.get("allow_redirects")))
-        return Redirect()
-
-    monkeypatch.setattr(bootcamp.requests, "get", fake_get)
-    with pytest.raises(ValueError, match="redirect"):
+    opener = _stub_source_transport(monkeypatch, redirect)
+    with pytest.raises(PolicyRejected, match="redirect"):
         bootcamp.fetch_source("https://public.example/source")
-    assert requests_seen == [("https://public.example/source", False)]
+    assert opener.seen == [("https://public.example/source", 30.0)]
 
 
 def test_fetch_source_rejects_oversized_body_instead_of_sampling_it(monkeypatch):
+    from ingest.adapters.base import PolicyRejected
+
     class Response:
-        status_code = 200
-        url = "https://public.example/source"
-        headers = {"content-type": "text/plain"}
+        status = 200
+        headers = {"Content-Type": "text/plain"}
 
-        def raise_for_status(self):
-            return None
+        def geturl(self):
+            return "https://public.example/source"
 
-        def iter_content(self, chunk_size):
-            yield b"x" * (bootcamp.MAX_SOURCE_BYTES + 1)
+        def read(self, size):
+            return b"x" * size
 
-    monkeypatch.setattr(bootcamp.requests, "get", lambda *args, **kwargs: Response())
-    with pytest.raises(ValueError, match="source exceeds"):
+        def close(self):
+            pass
+
+    _stub_source_transport(monkeypatch, lambda request: Response())
+    with pytest.raises(PolicyRejected, match="exceeds"):
         bootcamp.fetch_source("https://public.example/source")
 
 
 def test_fetch_source_rejects_literal_loopback_before_request(monkeypatch):
-    monkeypatch.setattr(bootcamp.requests, "get", lambda *a, **kw: pytest.fail("network request attempted"))
+    monkeypatch.setattr(bootcamp, "HttpAdapter", lambda: pytest.fail("network request attempted"))
     with pytest.raises(ValueError, match="unsafe source URL"):
         bootcamp.fetch_source("https://127.0.0.1/private")
 
 
 def test_fetch_source_reads_bounded_nonredirect_text(monkeypatch):
     class Response:
-        status_code = 200
-        headers = {"content-type": "text/plain; charset=utf-8"}
+        status = 200
+        headers = {"Content-Type": "text/plain; charset=utf-8"}
         closed = False
 
-        def raise_for_status(self):
-            return None
+        def geturl(self):
+            return "https://public.example/source"
 
-        def iter_content(self, size):
-            yield b"source"
+        def read(self, size):
+            return b"source"
 
         def close(self):
             self.closed = True
 
     response = Response()
-    monkeypatch.setattr(bootcamp.requests, "get", lambda *a, **kw: response)
+    _stub_source_transport(monkeypatch, lambda request: response)
     assert bootcamp.fetch_source("https://public.example/source") == "source"
     assert response.closed
 
