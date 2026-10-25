@@ -71,8 +71,9 @@ For private/sensitive material, this public execution mode is not appropriate.
 ## Source and task guards
 
 - HTTPS sources only.
-- Literal loopback/private/link-local source addresses are rejected before fetch; HTTP redirects are refused before following any destination.
-- **Remaining network boundary:** the hostname DNS resolution is not pinned to a validated public address, so DNS rebinding/private-target resolution is not yet excluded. Do not treat the source acquisition path as an SSRF-proof crawler. A future integration should use Ingest's validated-address connection-pinning transport.
+- Literal loopback/private/link-local source addresses and DNS resolutions to private or other forbidden addresses are rejected before fetch. HTTP redirects are refused before following any destination.
+- Source requests use the exact-commit-pinned `vera-ingest` HTTPS transport: each accepted connection targets a validated public IP, while TLS hostname verification uses the original source hostname. The bootcamp continues to cap source bodies at 1,500,000 bytes, use a 30-second socket timeout, and reject redirects.
+- These controls reduce DNS-rebinding/private-target exposure; they do not authorize ingestion of private material, prove document truth, or make arbitrary internet content safe to execute. Acquired source text remains untrusted data.
 - Capabilities that lack lexical support in the bounded source material are removed before training.
 - Weak generic hidden rubrics are replaced with capability-specific and unsupported-claim checks.
 - Adversarial tasks receive an explicit false-premise/unsafe-shortcut check.
