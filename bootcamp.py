@@ -47,6 +47,18 @@ class Capability:
     observations: int = 0
 
 
+@dataclass(frozen=True)
+class SourceExcerpt:
+    """Immutable excerpt acquired from a real source, independent of prompt markup."""
+
+    url: str
+    sha256: str
+    text: str
+    # Exact contiguous source spans actually represented in the prompt.
+    # Generated sampling markers are never admissible quotation evidence.
+    segments: tuple[str, ...] = ()
+
+
 def die(msg: str, code: int = 2) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
     raise SystemExit(code)
@@ -226,11 +238,12 @@ def fetch_source(url: str) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def select_source_segments(text: str, limit: int = 3000) -> str:
+def source_sample_pieces(text: str, limit: int) -> tuple[tuple[bool, str], ...]:
+    """Return (is_acquired_text, piece) pairs without losing sample boundaries."""
     if len(text) <= limit:
-        return text
+        return ((True, text),)
     if limit < 300:
-        return text[:limit]
+        return ((True, text[:limit]),)
     sep1 = "\n...[middle sample]...\n"
     sep2 = "\n...[end sample]...\n"
     usable = max(3, limit - len(sep1) - len(sep2))
@@ -239,21 +252,66 @@ def select_source_segments(text: str, limit: int = 3000) -> str:
     mid_start = max(0, len(text) // 2 - third // 2)
     middle = text[mid_start:mid_start + third]
     tail = text[-third:]
-    return clamp(head + sep1 + middle + sep2 + tail, limit)
+    return (
+        (True, head), (False, sep1), (True, middle),
+        (False, sep2), (True, tail),
+    )
 
 
-def build_source_pack(function: str, sources: list[str]) -> tuple[str, list[dict[str, Any]]]:
+def select_source_segments(text: str, limit: int = 3000) -> str:
+    return clamp("".join(piece for _, piece in source_sample_pieces(text, limit)), limit)
+
+
+def escape_source_excerpt(text: str, limit: int) -> tuple[str, str]:
+    """Return escaped prompt text and the exact original characters represented."""
+    escaped: list[str] = []
+    shown: list[str] = []
+    size = 0
+    entities = {"&": "&amp;", "<": "&lt;", ">": "&gt;"}
+    for char in text:
+        rendered = entities.get(char, char)
+        if size + len(rendered) > limit:
+            break
+        escaped.append(rendered)
+        shown.append(char)
+        size += len(rendered)
+    return "".join(escaped), "".join(shown)
+
+
+def build_source_pack_with_provenance(
+    function: str, sources: list[str]
+) -> tuple[str, list[dict[str, Any]], tuple[SourceExcerpt, ...]]:
     budget_each = min(3200, max(1800, 27000 // len(sources)))
     blocks: list[str] = []
     evidence: list[dict[str, Any]] = []
+    excerpts: list[SourceExcerpt] = []
     for url in sources:
         try:
             text = fetch_source(url)
-            sample = select_source_segments(text, budget_each)
+            # A document is data: its literal tags must never become our prompt
+            # envelope delimiters or fabricated provenance records.
+            rendered_parts: list[str] = []
+            represented_parts: list[str] = []
+            source_spans: list[str] = []
+            remaining = budget_each
+            for acquired, piece in source_sample_pieces(text, budget_each):
+                rendered, represented = escape_source_excerpt(piece, remaining)
+                rendered_parts.append(rendered)
+                represented_parts.append(represented)
+                if acquired and represented:
+                    source_spans.append(represented)
+                remaining -= len(rendered)
+                if len(represented) < len(piece):
+                    break
+            sample = "".join(rendered_parts)
+            shown_text = "".join(represented_parts)
+            sha256 = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+            excerpts.append(SourceExcerpt(url=url, sha256=sha256, text=shown_text,
+                                          segments=tuple(source_spans)))
             blocks.append(f"<SOURCE url={json.dumps(url)}>\n{sample}\n</SOURCE>")
             evidence.append({
                 "url": url,
-                "sha256": hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest(),
+                "sha256": sha256,
                 "source_chars": len(text),
                 "sample_chars": len(sample),
                 "status": "ok",
@@ -262,7 +320,12 @@ def build_source_pack(function: str, sources: list[str]) -> tuple[str, list[dict
             evidence.append({"url": url, "status": "failed", "error": str(exc)})
     if not blocks:
         die("no sources could be acquired")
-    return clamp("\n\n".join(blocks), 30000), evidence
+    return clamp("\n\n".join(blocks), 30000), evidence, tuple(excerpts)
+
+
+def build_source_pack(function: str, sources: list[str]) -> tuple[str, list[dict[str, Any]]]:
+    pack, evidence, _ = build_source_pack_with_provenance(function, sources)
+    return pack, evidence
 
 
 def build_knowledge_pack(function: str, sources: list[str]) -> tuple[str, list[dict[str, Any]]]:

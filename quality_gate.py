@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import html
 import math
 import re
 from pathlib import Path
@@ -79,6 +80,36 @@ def capability_exact_evidence_supported(cap, source_pack: str) -> bool:
     if quote not in _normalize_ws(block):
         return False
     return capability_supported_by_sources(raw, block)
+
+
+def capability_evidence_in_acquired_excerpts(cap, excerpts) -> bool:
+    """Verify provenance against acquired records, never source markup in a prompt."""
+    raw = cap.__dict__ if hasattr(cap, "__dict__") else dict(cap)
+    url = str(raw.get("evidence_url", "")).strip()
+    quote = _normalize_ws(raw.get("evidence_quote", ""))
+    if not url or len(quote) < 24:
+        return False
+    for excerpt in excerpts:
+        if excerpt.url == url:
+            # A sampled page can have generated middle/end markers between
+            # non-contiguous original spans. No quoted anchor may cross them.
+            # The exact source spans exclude those generated marker tokens.
+            spans = tuple(_normalize_ws(piece) for piece in excerpt.segments)
+            if not spans:
+                return False
+            quoted = (quote, html.unescape(quote))
+            return (
+                any(candidate in span for span in spans for candidate in quoted)
+                and capability_supported_by_sources(raw, "\n".join(excerpt.segments))
+            )
+    return False
+
+
+def filter_acquired_source_supported_capabilities(caps, excerpts, minimum: int = 3):
+    supported = [cap for cap in caps if capability_evidence_in_acquired_excerpts(cap, excerpts)]
+    if len(supported) < minimum:
+        raise ValueError(f"insufficient source-grounded capability coverage: {len(supported)} < {minimum}")
+    return supported
 
 
 def filter_source_supported_capabilities(caps, source_pack: str, minimum: int = 3, require_exact: bool = False):
