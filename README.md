@@ -71,7 +71,8 @@ For private/sensitive material, this public execution mode is not appropriate.
 ## Source and task guards
 
 - HTTPS sources only.
-- Loopback/private/link-local source addresses are rejected.
+- Literal loopback/private/link-local source addresses are rejected before fetch; HTTP redirects are refused before following any destination.
+- **Remaining network boundary:** the hostname DNS resolution is not pinned to a validated public address, so DNS rebinding/private-target resolution is not yet excluded. Do not treat the source acquisition path as an SSRF-proof crawler. A future integration should use Ingest's validated-address connection-pinning transport.
 - Capabilities that lack lexical support in the bounded source material are removed before training.
 - Weak generic hidden rubrics are replaced with capability-specific and unsupported-claim checks.
 - Adversarial tasks receive an explicit false-premise/unsafe-shortcut check.

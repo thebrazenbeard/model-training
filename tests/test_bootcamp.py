@@ -1,3 +1,5 @@
+import pytest
+
 import bootcamp
 import fast_bootcamp
 import quality_gate
@@ -66,6 +68,71 @@ def test_safe_source_url_rejects_loopback_and_non_https():
     assert not bootcamp.safe_source_url("https://127.0.0.1/private")
     assert not bootcamp.safe_source_url("https://localhost/private")
     assert bootcamp.safe_source_url("https://supabase.com/docs")
+
+
+def test_fetch_source_does_not_follow_unvalidated_redirect(monkeypatch):
+    class Redirect:
+        status_code = 302
+        url = "https://public.example/source"
+        headers = {"location": "https://127.0.0.1/private"}
+
+        def raise_for_status(self):
+            return None
+
+    requests_seen = []
+
+    def fake_get(url, **kwargs):
+        requests_seen.append((url, kwargs.get("allow_redirects")))
+        return Redirect()
+
+    monkeypatch.setattr(bootcamp.requests, "get", fake_get)
+    with pytest.raises(ValueError, match="redirect"):
+        bootcamp.fetch_source("https://public.example/source")
+    assert requests_seen == [("https://public.example/source", False)]
+
+
+def test_fetch_source_rejects_oversized_body_instead_of_sampling_it(monkeypatch):
+    class Response:
+        status_code = 200
+        url = "https://public.example/source"
+        headers = {"content-type": "text/plain"}
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            yield b"x" * (bootcamp.MAX_SOURCE_BYTES + 1)
+
+    monkeypatch.setattr(bootcamp.requests, "get", lambda *args, **kwargs: Response())
+    with pytest.raises(ValueError, match="source exceeds"):
+        bootcamp.fetch_source("https://public.example/source")
+
+
+def test_fetch_source_rejects_literal_loopback_before_request(monkeypatch):
+    monkeypatch.setattr(bootcamp.requests, "get", lambda *a, **kw: pytest.fail("network request attempted"))
+    with pytest.raises(ValueError, match="unsafe source URL"):
+        bootcamp.fetch_source("https://127.0.0.1/private")
+
+
+def test_fetch_source_reads_bounded_nonredirect_text(monkeypatch):
+    class Response:
+        status_code = 200
+        headers = {"content-type": "text/plain; charset=utf-8"}
+        closed = False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, size):
+            yield b"source"
+
+        def close(self):
+            self.closed = True
+
+    response = Response()
+    monkeypatch.setattr(bootcamp.requests, "get", lambda *a, **kw: response)
+    assert bootcamp.fetch_source("https://public.example/source") == "source"
+    assert response.closed
 
 
 def test_transfer_exams_are_generated_independently(monkeypatch):

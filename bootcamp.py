@@ -198,19 +198,26 @@ def load_spec() -> dict[str, Any]:
 
 
 def fetch_source(url: str) -> str:
+    if not safe_source_url(url):
+        raise ValueError("unsafe source URL")
     headers = {"User-Agent": "ZeroCostIdentityBootcamp/2.0 (+https://github.com/thebrazenbeard/vera_model_training)"}
-    r = requests.get(url, headers=headers, timeout=30, stream=True, allow_redirects=True)
-    r.raise_for_status()
-    if not safe_source_url(r.url):
-        raise ValueError("source redirected to unsafe URL")
-    content = bytearray()
-    for chunk in r.iter_content(65536):
-        if chunk:
+    # Refuse redirects before the HTTP client can connect to their destinations.
+    # A future redirect-aware implementation must validate and pin every hop.
+    r = requests.get(url, headers=headers, timeout=30, stream=True, allow_redirects=False)
+    try:
+        if 300 <= r.status_code < 400:
+            raise ValueError("source redirect refused; use its canonical HTTPS URL")
+        r.raise_for_status()
+        content = bytearray()
+        for chunk in r.iter_content(65536):
+            if len(chunk) > MAX_SOURCE_BYTES - len(content):
+                raise ValueError("source exceeds maximum byte size")
             content.extend(chunk)
-        if len(content) > MAX_SOURCE_BYTES:
-            break
-    raw = bytes(content)
-    ctype = r.headers.get("content-type", "").lower()
+        raw = bytes(content)
+        ctype = r.headers.get("content-type", "").lower()
+    finally:
+        if callable(getattr(r, "close", None)):
+            r.close()
     if "html" in ctype or b"<html" in raw[:1000].lower():
         soup = BeautifulSoup(raw, "html.parser")
         for tag in soup(["script", "style", "noscript", "svg", "nav", "footer"]):
