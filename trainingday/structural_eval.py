@@ -170,7 +170,7 @@ def select_structural_cases(
 
 def score_answers(selection: dict, predictions: dict, *, mode: str) -> dict:
     """Score a complete result set; do not call this evidence of model execution."""
-    if mode not in ("zero", "correct", "corrupt"):
+    if mode not in ("frozen", "zero", "correct", "corrupt"):
         raise EvaluationGateError("invalid mode")
     cases = selection.get("cases")
     if not isinstance(cases, list) or not isinstance(predictions, dict):
@@ -191,22 +191,23 @@ def score_answers(selection: dict, predictions: dict, *, mode: str) -> dict:
 
 def compare_control_scores(scores: dict, *, min_gain_cases: int = 1) -> dict:
     """Check matched control advantage but never infer neural authenticity."""
-    if set(scores) != {"zero", "correct", "corrupt"}:
-        raise EvaluationGateError("missing control score arm")
+    if set(scores) != {"frozen", "zero", "correct", "corrupt"}:
+        raise EvaluationGateError("missing frozen/zero/correct/corrupt control score arm")
     if type(min_gain_cases) is not int or min_gain_cases < 1:
         raise EvaluationGateError("minimum gain invalid")
-    zero, correct, corrupt = [scores[mode] for mode in ("zero", "correct", "corrupt")]
-    for mode, item in zip(("zero", "correct", "corrupt"), (zero, correct, corrupt)):
+    frozen, zero, correct, corrupt = [scores[mode] for mode in ("frozen", "zero", "correct", "corrupt")]
+    for mode, item in zip(("frozen", "zero", "correct", "corrupt"), (frozen, zero, correct, corrupt)):
         if (item.get("mode") != mode
                 or item.get("status") != "SUBMITTED_PREDICTIONS_SCORED_NOT_MODEL_ATTESTED"
                 or item.get("manifest_sha256") != zero.get("manifest_sha256")
                 or item.get("selected_id_sha256") != zero.get("selected_id_sha256")
                 or item.get("total") != zero.get("total")):
             raise EvaluationGateError("unmatched control-score receipts")
-    if correct["correct"] < max(zero["correct"], corrupt["correct"]) + min_gain_cases:
+    if correct["correct"] < max(frozen["correct"], zero["correct"], corrupt["correct"]) + min_gain_cases:
         raise EvaluationGateError("candidate did not beat matched controls")
     return {"status": "SCORED_CANDIDATE_ADVANTAGE_NOT_MODEL_ATTESTED",
             "candidate_gain": True, "candidate_correct": correct["correct"],
-            "zero_correct": zero["correct"], "corrupt_correct": corrupt["correct"],
+            "frozen_correct": frozen["correct"], "zero_correct": zero["correct"],
+            "corrupt_correct": corrupt["correct"],
             "total": zero["total"], "manifest_sha256": zero["manifest_sha256"],
             "selected_id_sha256": zero["selected_id_sha256"]}
