@@ -20,6 +20,24 @@ def test_mask_only_assistant_completion():
     assert labels == [-100, -100, -100, -100, 91, 92, 99]
 
 
+class FakeBatchEncodingTokenizer:
+    def apply_chat_template(self, messages, tokenize=True,
+                            add_generation_prompt=False, enable_thinking=False):
+        assert tokenize and enable_thinking is False
+        ids = [11, 12, 13, 14]
+        if len(messages) == 2:
+            ids += [91, 92, 99]
+        return {"input_ids": ids, "attention_mask": [1] * len(ids)}
+
+
+def test_transformers_batch_encoding_and_qwen_no_think_mask():
+    ids, labels = _completion_tokens(
+        FakeBatchEncodingTokenizer(), "compute", "13", max_length=16,
+    )
+    assert ids == [11, 12, 13, 14, 91, 92, 99]
+    assert labels == [-100, -100, -100, -100, 91, 92, 99]
+
+
 def test_invalid_token_budget_rejected():
     with pytest.raises(ValueError, match="completion"):
         _completion_tokens(FakeTokenizer(), "p", "r", max_length=4)
