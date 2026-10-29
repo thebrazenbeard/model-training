@@ -20,8 +20,8 @@ RECIPE = "TRAININGDAY_QWEN35_CPU_BF16_QV_LORA_V1"
 
 
 def _check_cpu_memory(available_gib: float) -> bool:
-    if available_gib < 18:
-        raise RuntimeError("less than 18 GiB free system RAM for CPU-only 4B load")
+    if available_gib < 14:
+        raise RuntimeError("less than 14 GiB free system RAM for bounded CPU-only 4B load")
     return True
 
 
@@ -68,7 +68,10 @@ def train_cpu(args) -> dict:
         return preflight
 
     import psutil
-    _check_cpu_memory(psutil.virtual_memory().available / (2 ** 30))
+    memory = psutil.virtual_memory()
+    if memory.total < 30 * (2 ** 30):
+        raise RuntimeError("CPU-only 4B load requires at least 30 GiB physical system RAM")
+    _check_cpu_memory(memory.available / (2 ** 30))
 
     # No CUDA or bnb usage; BF16 frozen model + FP32 LoRA on CPU. The model
     # itself is read-only and will NEVER be saved/modified in this script.
