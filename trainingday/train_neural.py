@@ -154,8 +154,12 @@ def train(args) -> dict:
     if torch.cuda.get_device_properties(0).total_memory < 3900 * 2**20:
         raise RuntimeError("GPU capacity below the frozen 3900 MiB floor")
     free_gpu, _ = torch.cuda.mem_get_info(0)
-    if free_gpu < 3500 * 2**20:
-        raise RuntimeError("GPU not sufficiently free; pause only authorized workloads")
+    # Windows WDDM reports about 3306 MiB torch-visible free VRAM while
+    # nvidia-smi reports about 3962 MiB. An NF4 Qwen3.5-4B load bounded
+    # to 3300 MiB completed all 426 tensors on CUDA (2977 MiB allocated).
+    # This floor permits the zero arm; backward may still be OOM.
+    if free_gpu < 3200 * 2**20:
+        raise RuntimeError("less than 3200 MiB torch-visible free VRAM; do not disrupt other work")
 
     stack = load_training_stack()
     stack["transformers"].set_seed(args.seed)
