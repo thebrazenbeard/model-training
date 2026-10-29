@@ -52,7 +52,7 @@ jobs:
           echo "Zero-cost guard passed: public standard runner, no metered model API."
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v7.1.0
         with:
           python-version: "3.12"
 
