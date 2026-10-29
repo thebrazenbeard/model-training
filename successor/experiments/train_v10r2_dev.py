@@ -70,6 +70,7 @@ def effect_label(optimizer_name: str, steps: int) -> str:
         7: "SEVEN",
         8: "EIGHT",
         20: "TWENTY",
+        32: "THIRTY_TWO",
     }
     count = words.get(steps)
     if count is None:
@@ -603,6 +604,12 @@ def execute_dev_training(
 ) -> dict:
     root = Path(repo_root)
     spec = load_and_validate_dev_spec(spec_path)
+    # Fail before allocating the GPU if a requested step count cannot be
+    # represented in the eventual completion receipt.
+    receipt_effect = effect_label(
+        spec["trainer"]["optimizer"],
+        spec["trainer"]["max_optimizer_steps"],
+    )
 
     output_dir = Path(spec["output"]["namespace"])
     if output_dir.exists():
@@ -922,10 +929,7 @@ def execute_dev_training(
     receipt = {
         "schema": "V10R2_QWEN35_DEV_TRAINING_RECEIPT_V1",
         "status": "DEVELOPMENT_OPTIMIZER_STEP_COMPLETE",
-        "effect": effect_label(
-            requested_optimizer,
-            trainer_spec["max_optimizer_steps"],
-        ),
+        "effect": receipt_effect,
         "experiment_class": spec.get("experiment_class"),
         "spec_sha256": sha256_file(spec_path),
         "source_parent_revision": subject["parent_revision"],
