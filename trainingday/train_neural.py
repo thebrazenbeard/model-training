@@ -173,8 +173,10 @@ def train(args) -> dict:
         load_in_4bit=True, bnb_4bit_quant_type="nf4",
         bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16,
     )
+    # Force the entire 4-bit base onto CUDA for training: auto placement
+    # rejected a partial CPU/disk map even though capped CUDA-only load fit.
     model = stack["Qwen3_5ForCausalLM"].from_pretrained(
-        model_path, quantization_config=config, device_map="auto", dtype=torch.bfloat16,
+        model_path, quantization_config=config, device_map=0, dtype=torch.bfloat16,
     )
     model.config.use_cache = False
     model = stack["prepare_model_for_kbit_training"](
