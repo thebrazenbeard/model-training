@@ -59,6 +59,15 @@ def _required_base(binding: Path) -> tuple[dict, Path]:
     return data, directory
 
 
+def _check_cuda_free_memory(total_mib: float, free_mib: float) -> float:
+    """Legacy post-context VRAM guard, isolated for a regression test."""
+    if total_mib < 3900:
+        raise RuntimeError("GPU capacity below the frozen 3900 MiB floor")
+    if free_mib < 3500:
+        raise RuntimeError("GPU not sufficiently free; pause only authorized workloads")
+    return 3500
+
+
 def _control_rows(rows: list[dict], mode: str) -> list[dict]:
     if mode not in {"zero", "correct", "corrupt"}:
         raise AdmissionError("unknown neural-control mode")
@@ -151,11 +160,9 @@ def train(args) -> dict:
         raise RuntimeError("less than 9 GiB free system RAM; do not disrupt other work")
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise RuntimeError("native BF16 CUDA training unavailable")
-    if torch.cuda.get_device_properties(0).total_memory < 3900 * 2**20:
-        raise RuntimeError("GPU capacity below the frozen 3900 MiB floor")
+    gpu_total_mib = torch.cuda.get_device_properties(0).total_memory / (2**20)
     free_gpu, _ = torch.cuda.mem_get_info(0)
-    if free_gpu < 3500 * 2**20:
-        raise RuntimeError("GPU not sufficiently free; pause only authorized workloads")
+    _check_cuda_free_memory(gpu_total_mib, free_gpu / (2**20))
 
     stack = load_training_stack()
     stack["transformers"].set_seed(args.seed)
