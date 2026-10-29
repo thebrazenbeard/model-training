@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from successor.experiments import train_v10r2_dev as trainer_module
 
 from successor.experiments.train_v10r2_dev import (
     DevTrainingHold,
@@ -318,6 +319,7 @@ def test_effect_label_tracks_step_count_and_backend() -> None:
     assert effect_label("adamw_bnb_8bit", 4) == "FOUR_LOCAL_BNB_ADAMW_8BIT_OPTIMIZER_STEPS"
     assert effect_label("adamw_torch_8bit", 1) == "ONE_LOCAL_TORCHAO_ADAMW_8BIT_OPTIMIZER_STEP"
     assert effect_label("adamw_bnb_8bit", 20) == "TWENTY_LOCAL_BNB_ADAMW_8BIT_OPTIMIZER_STEPS"
+    assert effect_label("adamw_bnb_8bit", 32) == "THIRTY_TWO_LOCAL_BNB_ADAMW_8BIT_OPTIMIZER_STEPS"
 
 
 def test_effect_label_rejects_unknown_backend_or_count() -> None:
@@ -325,7 +327,28 @@ def test_effect_label_rejects_unknown_backend_or_count() -> None:
         effect_label("paged_adamw_8bit", 1)
     with pytest.raises(DevTrainingHold, match="effect label"):
         effect_label("adamw_bnb_8bit", 0)
+    with pytest.raises(DevTrainingHold, match="effect label"):
+        effect_label("adamw_bnb_8bit", 33)
 
+
+
+def test_effect_label_is_checked_before_dataset_or_gpu_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    validated = load_and_validate_dev_spec(_write_spec(tmp_path / "spec.json"))
+    validated["trainer"]["max_optimizer_steps"] = 33
+    monkeypatch.setattr(trainer_module, "load_and_validate_dev_spec", lambda _: validated)
+
+    def forbidden_loader():
+        raise AssertionError("GPU training stack must not initialize")
+
+    with pytest.raises(DevTrainingHold, match="effect label step count"):
+        trainer_module.execute_dev_training(
+            tmp_path,
+            train_jsonl=tmp_path / "unread-data.jsonl",
+            spec_path=tmp_path / "spec.json",
+            training_stack_loader=forbidden_loader,
+        )
 
 def test_continuation_spec_binds_prior_adapter_and_next_row(tmp_path: Path) -> None:
     path = _write_spec(tmp_path / "spec.json")
