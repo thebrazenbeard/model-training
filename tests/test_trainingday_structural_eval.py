@@ -107,12 +107,22 @@ def test_candidate_gain_requires_better_than_zero_and_corrupt(tmp_path):
     good = score_answers(selected, {row["id"]: "8"}, mode="correct")
     zero = score_answers(selected, {row["id"]: "7"}, mode="zero")
     corrupt = score_answers(selected, {row["id"]: "7"}, mode="corrupt")
-    result = compare_control_scores({"zero": zero, "correct": good, "corrupt": corrupt},
+    frozen = score_answers(selected, {row["id"]: "7"}, mode="frozen")
+    result = compare_control_scores({"frozen": frozen, "zero": zero, "correct": good, "corrupt": corrupt},
                                     min_gain_cases=1)
     assert result["candidate_gain"] is True
     assert result["status"] == "SCORED_CANDIDATE_ADVANTAGE_NOT_MODEL_ATTESTED"
     with pytest.raises(EvaluationGateError, match="matched"):
-        compare_control_scores({"zero": good, "correct": good, "corrupt": corrupt},
+        compare_control_scores({"frozen": frozen, "zero": good, "correct": good, "corrupt": corrupt},
                                min_gain_cases=1)
     with pytest.raises(EvaluationGateError, match="missing"):
-        compare_control_scores({"zero": zero, "correct": good}, min_gain_cases=1)
+        compare_control_scores({"zero": zero, "correct": good, "corrupt": corrupt}, min_gain_cases=1)
+
+
+def test_requires_frozen_base_beyond_initialized_zero_lora(tmp_path):
+    path, pin, row = _structural(tmp_path)
+    selection = select_structural_cases(path, expected_manifest_sha256=pin, max_cases=1)
+    wrong = score_answers(selection, {row["id"]: "7"}, mode="frozen")
+    assert wrong["correct"] == 0
+    with pytest.raises(EvaluationGateError, match="missing"):
+        compare_control_scores({"zero": wrong, "correct": wrong, "corrupt": wrong})
