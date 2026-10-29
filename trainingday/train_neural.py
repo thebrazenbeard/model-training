@@ -145,6 +145,7 @@ def train(args) -> dict:
     from successor.experiments.train_v10_qwen35_authorized import (
         load_training_stack, prepare_sft_rows, validate_lora_target_coverage,
     )
+    from successor.experiments.train_v10r2_dev import summarize_optimizer
 
     if psutil.virtual_memory().available < 9 * 2**30:
         raise RuntimeError("less than 9 GiB free system RAM; do not disrupt other work")
@@ -212,9 +213,18 @@ def train(args) -> dict:
             raise RuntimeError("control-arm initial FP32 adapter digest mismatch")
 
         training_result = None
+        optimizer_identity = None
         started = time.perf_counter()
         if args.mode != "zero":
+            optimizer_identity = summarize_optimizer(trainer.create_optimizer())
+            if (optimizer_identity["backend"] != "bitsandbytes"
+                    or optimizer_identity["is_paged"] is not False
+                    or optimizer_identity["optim_bits"] != 8):
+                raise RuntimeError("unexpected optimizer backend/precision/paging")
             training_result = trainer.train()
+        observed_steps = int(trainer.state.global_step)
+        if observed_steps != args.steps:
+            raise RuntimeError(f"optimizer step count mismatch:{observed_steps}!={args.steps}")
         after, count_after = _parameter_digest(trainer.model, torch)
         if count_after != count or ((before == after) != (args.mode == "zero")):
             raise RuntimeError("invalid LoRA tensor-change outcome")
@@ -228,7 +238,7 @@ def train(args) -> dict:
         receipt = {
             **preflight,
             "status": "ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED",
-            "new_optimizer_steps": args.steps,
+            "new_optimizer_steps": observed_steps,
             "elapsed_seconds": round(time.perf_counter() - started, 2),
             "seed": args.seed, "trainable_parameter_count": count,
             "trainable_digest_before": before, "trainable_digest_after": after,
@@ -238,6 +248,7 @@ def train(args) -> dict:
             "token_budget": tokens, "target_coverage": coverage,
             "fp32_before": precision, "fp32_after": precision_after,
             "training_loss": float(training_result.training_loss) if training_result else None,
+            "optimizer_identity": optimizer_identity,
             "runtime": {"torch": torch.__version__, "transformers": stack["transformers"].__version__},
         }
         (output / "training_receipt.json").write_text(
