@@ -26,9 +26,9 @@ def test_invalid_token_budget_rejected():
 
 
 def test_cpu_memory_gate_preserves_headroom():
-    assert _check_cpu_memory(22.3) is True
+    assert _check_cpu_memory(16.0) is True
     with pytest.raises(RuntimeError, match="system RAM"):
-        _check_cpu_memory(14.0)
+        _check_cpu_memory(13.0)
 
 
 def test_zero_and_updated_digest_guards():
