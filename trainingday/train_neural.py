@@ -60,12 +60,21 @@ def _required_base(binding: Path) -> tuple[dict, Path]:
 
 
 def _check_cuda_free_memory(total_mib: float, free_mib: float) -> float:
-    """Legacy post-context VRAM guard, isolated for a regression test."""
+    """Check post-CUDA-init free VRAM without demanding impossible free memory.
+
+    CUDA context creation consumes device memory before the first model tensor.
+    On a 4096 MiB GPU, keeping an unconditional 3500 MiB post-context floor
+    can reject an otherwise idle GPU. Retain the 3900 MiB physical-capacity
+    gate; require all but 800 MiB of VRAM on constrained devices, and the
+    original 3500 MiB floor on larger GPUs. Model load/optimizer can still
+    fail with a real OOM; this changes admission only, not training capacity.
+    """
     if total_mib < 3900:
         raise RuntimeError("GPU capacity below the frozen 3900 MiB floor")
-    if free_mib < 3500:
+    threshold_mib = min(3500, total_mib - 800)
+    if free_mib < threshold_mib:
         raise RuntimeError("GPU not sufficiently free; pause only authorized workloads")
-    return 3500
+    return threshold_mib
 
 
 def _control_rows(rows: list[dict], mode: str) -> list[dict]:
