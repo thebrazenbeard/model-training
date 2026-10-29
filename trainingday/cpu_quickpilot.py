@@ -28,13 +28,23 @@ def _check_cpu_memory(available_gib: float) -> bool:
 def _completion_tokens(tokenizer, prompt: str, answer: str, max_length: int):
     prefix = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt}], tokenize=True,
-        add_generation_prompt=True,
+        add_generation_prompt=True, enable_thinking=False,
     )
     full = tokenizer.apply_chat_template(
         [{"role": "user", "content": prompt},
          {"role": "assistant", "content": answer}], tokenize=True,
-        add_generation_prompt=False,
+        add_generation_prompt=False, enable_thinking=False,
     )
+    # Transformers 5.x returns BatchEncoding with input_ids rather than
+    # the plain List[int] returned by earlier chat-template integrations.
+    for_name = []
+    for value in (prefix, full):
+        if hasattr(value, "keys"):
+            value = value["input_ids"]
+        if isinstance(value, list) and value and isinstance(value[0], list):
+            value = value[0]
+        for_name.append(value)
+    prefix, full = for_name
     if (not isinstance(prefix, list) or not isinstance(full, list)
             or full[:len(prefix)] != prefix
             or len(prefix) >= max_length or len(full) > max_length
