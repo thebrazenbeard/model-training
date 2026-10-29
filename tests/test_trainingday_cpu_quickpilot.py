@@ -4,7 +4,7 @@ from trainingday.cpu_quickpilot import _check_cpu_memory, _completion_tokens, _c
 
 
 class FakeTokenizer:
-    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=False):
+    def apply_chat_template(self, messages, tokenize=True, add_generation_prompt=False, enable_thinking=False):
         assert tokenize
         if len(messages) == 1:
             assert add_generation_prompt
