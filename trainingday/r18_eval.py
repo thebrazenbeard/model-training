@@ -10,9 +10,12 @@ answers. This is a development benchmark, not independent model qualification.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
+import itertools
 import json
 import math
+import operator
 import os
 import re
 import stat
@@ -26,14 +29,11 @@ from trainingday.eval_structural_r16 import (
     _old_ids, _r16_adapter,
 )
 from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
-from trainingday.structural_eval import (
-    R15_SCORED_SIGNATURE_COUNT, preregister_r15_fresh_structural64,
-    select_structural_cases,
-)
+from trainingday.structural_eval import preregister_r15_fresh_structural64
 from trainingday.train_neural import _parameter_digest, _required_base
 
 
-PROTOCOL = "R18_NEW_STRUCTURAL64_AFTER_R15_16_AND_R16_64_SCORED_EXCLUSION_V1"
+PROTOCOL = "R18_EXTERNAL_LONG_CHAIN64_OOD_V1"
 PLAN_SCHEMA = "VERA_TRAININGDAY_R18_BENCHMARK_PLAN_V1"
 PRIVATE_BANK_SCHEMA = "VERA_TRAININGDAY_R18_PRIVATE_EVAL_BANK_V1"
 EXCLUSIONS_SCHEMA = "VERA_TRAININGDAY_R18_PRIVATE_EVAL_EXCLUSIONS_V1"
@@ -42,6 +42,9 @@ BASE_MODEL = "Qwen/Qwen3.5-4B"
 BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 R18_QLORA_SOURCE_HEAD = "9a6c3b72ef8ad425fa4df371ee10cf700972c8cd"
 EVAL_SOURCE = "R18_NEW_SEALED_NOT_R16_FRESH64"
+NOVEL_SOURCE_SCHEMA = "VERA_TRAININGDAY_R18_NOVEL_CHAIN6_EVAL_SOURCE_V1"
+NOVEL_SEED = 18041
+OPS = ("add", "subtract", "multiply")
 RECIPES = {
     "r18-mezo": "R18_MEZO_STYLE_FP32_LORA_ZO_ON_FROZEN_NF4_QWEN35_4B_V1",
     "r18-qlora": "VERA_R18_QLORA_NF4_ALL_LINEAR_FP32_ADAMW8BIT_V1",
@@ -55,6 +58,7 @@ PLAN_KEYS = frozenset({
     "selected_count", "train_content_sha256", "source_admission_status",
     "eval_bank_source", "eval_custody_sha256", "eval_index_sha256",
     "eval_examples", "r16_eval_custody_sha256", "r16_holdout_id_sha256",
+    "eval_source_manifest_sha256",
     "seed", "training_budget_seconds", "probe_budget_seconds", "fit_policy",
     "fit_candidates", "primary_training_config", "no_eval_access_before_arm_freeze",
     "preregistered_checkpoint_selection", "promotion_policy",
@@ -135,7 +139,171 @@ def _prompt_sha(prompt: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def _plan(path: Path, binding_path: Path, base: dict) -> tuple[dict, str]:
+def _replay_rendered_chain6(prompt: str) -> tuple[int, tuple[tuple[str, int], ...], int]:
+    """Separate prompt-text oracle, with no reliance on generator operation objects."""
+    match = re.fullmatch(
+        r"Start with (-?(?:0|[1-9][0-9]*))\. (.+) What is the final integer\?",
+        prompt,
+    )
+    if match is None or not match.group(2).endswith("."):
+        raise AdmissionError("R18 rendered numeric question contract invalid")
+    start = int(match.group(1))
+    clauses = match.group(2)[:-1].split(". ")
+    if len(clauses) != 6:
+        raise AdmissionError("R18 rendered case is not exactly six operators")
+    value = start
+    operations: list[tuple[str, int]] = []
+    states = {start}
+    peak_absolute = abs(start)
+    for clause in clauses:
+        parsed = re.fullmatch(r"(add|subtract|multiply) (-?(?:0|[1-9][0-9]*))", clause)
+        if parsed is None:
+            raise AdmissionError("R18 rendered operator malformed")
+        op, operand = parsed.group(1), int(parsed.group(2))
+        if (op in {"add", "subtract"} and not 1 <= abs(operand) <= 9
+                or op == "multiply" and operand not in (-3, -2, 2, 3)):
+            raise AdmissionError("R18 rendered operand violates no-reset bounds")
+        if op == "add":
+            result = value + operand
+        elif op == "subtract":
+            result = value - operand
+        else:
+            result = value * operand
+        if result in states or abs(result) > 100000:
+            raise AdmissionError("R18 rendered case has no-op/inverse/reset/overflow")
+        states.add(result)
+        peak_absolute = max(peak_absolute, abs(result))
+        value = result
+        operations.append((op, operand))
+    if len(prompt) > 220 or len(str(value)) > 8:
+        raise AdmissionError("R18 rendered answer/prompt exceeds bounds")
+    return value, tuple(operations), peak_absolute
+
+
+def generate_novel_r18_cases(*, seed: int = NOVEL_SEED,
+                             private_nonce_hex: str) -> list[dict]:
+    """Independently reconstruct the custodian's disjoint 6-op OOD holdout.
+
+    All pinned v2 reasoning chains have 2–5 operators; these 6-op *full*
+    signatures are outside that training/eval universe. This is out-of-
+    distribution compositional evaluation, not novel primitive operations.
+    """
+    if (type(seed) is not int or seed != NOVEL_SEED
+            or not isinstance(private_nonce_hex, str)
+            or not HEX64.fullmatch(private_nonce_hex)):
+        raise AdmissionError("R18 private 256-bit generation nonce or seed invalid")
+    rankings = []
+    for sig in itertools.product(OPS, repeat=6):
+        text = "\x1f".join(sig)
+        priority = hashlib.sha256(
+            f"R18_CH6_SIG_V2\x00{seed}\x00{private_nonce_hex}\x00{text}"
+            .encode("utf-8")).hexdigest()
+        rankings.append((priority, sig))
+    cases = []
+    start_values = (*range(-20, 0), *range(1, 21))
+    arithmetic_operands = (*range(-9, 0), *range(1, 10))
+    multiplication_operands = (-3, -2, 2, 3)
+    fn_by_op = {"add": operator.add, "subtract": operator.sub,
+                "multiply": operator.mul}
+    for _, signature in sorted(rankings):
+        sig_text = "\x1f".join(signature)
+
+        def draw(position: int) -> int:
+            value = hashlib.sha256(
+                f"R18_CH6_VAL_V2\x00{seed}\x00{private_nonce_hex}\x00{sig_text}\x00{position}"
+                .encode("utf-8")).digest()
+            return int.from_bytes(value, "big")
+
+        start = start_values[draw(0) % len(start_values)]
+        operands = [
+            (multiplication_operands if name == "multiply" else arithmetic_operands)[
+                draw(j) % (len(multiplication_operands) if name == "multiply"
+                           else len(arithmetic_operands))]
+            for j, name in enumerate(signature, start=1)
+        ]
+        intermediate = start
+        observed_states = {start}
+        acceptable = True
+        for name, operand in zip(signature, operands, strict=True):
+            next_value = fn_by_op[name](intermediate, operand)
+            if (next_value == intermediate or next_value in observed_states
+                    or abs(next_value) > 100000):
+                acceptable = False
+                break
+            observed_states.add(next_value)
+            intermediate = next_value
+        if not acceptable:
+            continue
+        # Different implementation from the loop above, using a functional
+        # reduce over immutable operator pairs as an independent integer oracle.
+        paired = tuple(zip(signature, operands, strict=True))
+        independent = functools.reduce(
+            lambda n, pair: fn_by_op[pair[0]](n, pair[1]), paired, start)
+        if independent != intermediate:
+            raise AdmissionError("R18 independent generated arithmetic oracle mismatch")
+        answer = str(intermediate)
+        prompt = (f"Start with {start}. " +
+                  " ".join(f"{name} {operand}." for name, operand in paired) +
+                  " What is the final integer?")
+        if len(prompt) > 220 or len(answer) > 8:
+            continue
+        replayed, rendered_ops, _ = _replay_rendered_chain6(prompt)
+        if replayed != intermediate or rendered_ops != paired:
+            raise AdmissionError("rendered R18 evaluation prompt disagrees with arithmetic")
+        case_sha = hashlib.sha256(
+            f'R18_CH6_CASE_V2\x00{seed}\x00{private_nonce_hex}\x00{sig_text}\x00{start}\x00'
+            f'{",".join(str(n) for n in operands)}\x00{answer}'.encode()).hexdigest()
+        cases.append({"id": "r18-reasoning-" + case_sha,
+                      "prompt": prompt, "expected": answer,
+                      "signature_sha256": hashlib.sha256(sig_text.encode()).hexdigest()})
+        if len(cases) == 64:
+            break
+    if (len(cases) != 64 or len({item["id"] for item in cases}) != 64
+            or len({item["signature_sha256"] for item in cases}) != 64):
+        raise AdmissionError("R18 generation did not yield 64 unique novel structures")
+    return cases
+
+
+def _source_manifest(path: Path, generator_source: Path) -> tuple[dict, str]:
+    """Pin separate public OOD corpus source without opening private labels."""
+    manifest = _json(path)
+    if not generator_source.is_file() or generator_source.is_symlink():
+        raise AdmissionError("R18 pinned six-chain generator source file missing")
+    # Do not generate any answer-bearing cases here: this source-only gate
+    # must also be safe for preflight before an adapter is frozen.
+    if (manifest.get("schema") != NOVEL_SOURCE_SCHEMA
+            or manifest.get("protocol") != PROTOCOL
+            or manifest.get("evaluation_distribution") !=
+            "EXTERNAL_OOD_SIX_OPERATOR_COMPOSITION_NOT_V2_HOLDOUT"
+            or manifest.get("algorithm") !=
+            "R18_SHA256_PRIORITY_SIX_STEP_PRIVATE_NONCE_DUAL_ORACLE_V2"
+            or not HEX64.fullmatch(str(manifest.get("private_nonce_sha256")))
+            or manifest.get("generator_code_sha256") != _hash_file(generator_source)
+            or not re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("producer_git_head")))
+            or manifest.get("seed") != NOVEL_SEED
+            or manifest.get("count") != 64
+            or manifest.get("chain_length") != 6
+            or manifest.get("operator_vocabulary") != list(OPS)
+            or manifest.get("start_values") != [-20, 20]
+            or manifest.get("add_sub_values") != [-9, 9]
+            or manifest.get("multiply_values") != [-3, -2, 2, 3]
+            or manifest.get("max_abs_intermediate") != 100000
+            or manifest.get("max_prompt_chars") != 220
+            or manifest.get("max_answer_chars") != 8
+            or manifest.get("older_v2_corpus_manifest_sha256") != CORPUS_SHA256
+            or manifest.get("older_v2_chain_length_range") != [2, 5]
+            or manifest.get("previously_scored_v2_signature_count") != 77
+            or manifest.get("older_v2_unseen_signatures_after_r16") != 0
+            or manifest.get("selected_unique_signature_count") != 64
+            or any(not HEX64.fullmatch(str(manifest.get(key))) for key in (
+                "selected_id_sha256", "selected_signature_sha256",
+                "private_case_content_sha256"))):
+        raise AdmissionError("R18 external OOD generator source or custody mismatch")
+    return manifest, canonical_sha(manifest)
+
+
+def _plan(path: Path, binding_path: Path, base: dict,
+          source_manifest_sha: str | None = None) -> tuple[dict, str]:
     plan = _json(path)
     if (plan.get("schema") != PLAN_SCHEMA
             or set(plan) != PLAN_KEYS
@@ -145,6 +313,7 @@ def _plan(path: Path, binding_path: Path, base: dict) -> tuple[dict, str]:
             or plan.get("promotion_policy") !=
             "NEVER_AUTOPROMOTE_R18_REQUIRES_INDEPENDENT_REPLICATION"
             or plan.get("eval_examples") != 64
+            or plan.get("eval_source_manifest_sha256") != source_manifest_sha
             or plan.get("selected_count") != 1024
             or plan.get("source_admission_status") !=
             "ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE"
@@ -164,6 +333,7 @@ def _plan(path: Path, binding_path: Path, base: dict) -> tuple[dict, str]:
             base["files"]["tokenizer_config.json"]
             or any(not HEX64.fullmatch(str(plan.get(key))) for key in (
                 "eval_index_sha256", "eval_custody_sha256", "r16_eval_custody_sha256",
+                "eval_source_manifest_sha256",
                 "r16_holdout_id_sha256", "selected_id_sha256", "train_content_sha256"))):
         raise AdmissionError("R18 preregistration/base/source contract changed")
     return plan, canonical_sha(plan)
@@ -260,8 +430,8 @@ def _adapter(args, plan: dict, plan_sha: str) -> tuple[dict | None, Path | None,
 
 
 def _bank(manifest: Path, old_base_eval: Path, exclusions_path: Path,
-          private_bank_path: Path, plan: dict) -> list[dict]:
-    """Re-derive all 80 prior cases and 64 new cases; fail on any signature reuse."""
+          private_bank_path: Path, plan: dict, source_manifest: dict) -> list[dict]:
+    """Verify 80 historic scores and rederive 64 new 6-op OOD structures."""
     if _hash_file(manifest) != CORPUS_SHA256 or manifest.is_symlink():
         raise AdmissionError("R18 pinned v2 manifest changed")
     old_ids = _old_ids(old_base_eval)  # pinned scored R15 16-row evaluation receipt
@@ -274,7 +444,8 @@ def _bank(manifest: Path, old_base_eval: Path, exclusions_path: Path,
     r16 = preregister_r15_fresh_structural64(
         manifest, previously_scored_16_ids=old_ids)
     if (r16.get("selected_count") != 64
-            or r16.get("selected_id_sha256") != BANK_ID_SHA256):
+            or r16.get("selected_id_sha256") != BANK_ID_SHA256
+            or r16.get("signature_count") != 64):
         raise AdmissionError("R16 previously scored 64 cases cannot be reconstructed")
     r16_ids = [row["id"] for row in r16["cases"]]
     if (exclusions.get("r16_fresh64_ids") != r16_ids
@@ -282,27 +453,40 @@ def _bank(manifest: Path, old_base_eval: Path, exclusions_path: Path,
             or plan["r16_eval_custody_sha256"] != canonical_sha({
                 "manifest": CORPUS_SHA256, "cases": r16["cases"]})):
         raise AdmissionError("R16 scored bank signature/ID custody mismatch")
-    excluded = old_ids + r16_ids
-    digest = hashlib.sha256("\n".join(excluded).encode()).hexdigest()
-    r18 = select_structural_cases(
-        manifest, expected_manifest_sha256=CORPUS_SHA256,
-        max_cases=64, previously_scored_ids=excluded,
-        expected_scored_ids_sha256=digest,
-        expected_scored_signature_count=R15_SCORED_SIGNATURE_COUNT + 64,
-    )
-    cases = r18["cases"]
-    if (len(cases) != 64 or len({row["id"] for row in cases}) != 64
-            or {row["id"] for row in cases}.intersection(excluded)):
-        raise AdmissionError("insufficient never-scored R18 unique structures")
+    # Earlier 2–5-op v2 signatures are exhausted, so an additional v2
+    # structure is impossible. The frozen external generator uses 6-op full
+    # signatures and never opens/trains on either the prior v2 eval or train.
+    # Historical `_replay` in the R16 selector independently verifies all
+    # v2 reasoning rows are 2–5-op chains, hence no six-op train overlap.
     private = _json(private_bank_path, private=True)
+    nonce = private.get("private_nonce_hex")
+    if (not isinstance(nonce, str) or not HEX64.fullmatch(nonce)
+            or hashlib.sha256(bytes.fromhex(nonce)).hexdigest() !=
+            source_manifest.get("private_nonce_sha256")):
+        raise AdmissionError("R18 private generation nonce differs from public commitment")
+    cases = generate_novel_r18_cases(private_nonce_hex=nonce)
+    if (source_manifest.get("selected_id_sha256") != hashlib.sha256(
+            "\n".join(case["id"] for case in cases).encode()).hexdigest()
+            or source_manifest.get("selected_signature_sha256") != hashlib.sha256(
+                "\n".join(case["signature_sha256"] for case in cases).encode()).hexdigest()
+            or source_manifest.get("private_case_content_sha256") != canonical_sha(cases)):
+        raise AdmissionError("R18 generated case content does not match public source commitment")
+    excluded = set(old_ids + r16_ids)
+    if (len(cases) != 64 or len({row["id"] for row in cases}) != 64
+            or len({row["signature_sha256"] for row in cases}) != 64
+            or {row["id"] for row in cases}.intersection(excluded)):
+        raise AdmissionError("R18 external long-chain source not fully fresh")
     index = sorted(({"id": row["id"], "prompt_sha256": _prompt_sha(row["prompt"])}
                     for row in cases), key=lambda item: item["id"])
     if (private.get("schema") != PRIVATE_BANK_SCHEMA
             or private.get("manifest_sha256") != CORPUS_SHA256
+            or private.get("eval_source_manifest_sha256") !=
+            plan["eval_source_manifest_sha256"]
             or private.get("cases") != cases
             or private.get("eval_custody_sha256") != plan["eval_custody_sha256"]
             or private.get("eval_index_sha256") != plan["eval_index_sha256"]
-            or canonical_sha({"manifest": CORPUS_SHA256, "cases": cases}) !=
+            or canonical_sha({"source_manifest_sha256":
+                              plan["eval_source_manifest_sha256"], "cases": cases}) !=
             plan["eval_custody_sha256"]
             or canonical_sha(index) != plan["eval_index_sha256"]):
         raise AdmissionError("R18 sealed evaluation bank differs from preregistration")
@@ -310,7 +494,13 @@ def _bank(manifest: Path, old_base_eval: Path, exclusions_path: Path,
 
 
 def _exact(generated: str, expected: str) -> bool:
+    """Primary metric: canonical decimal answer after whitespace strip."""
     return bool(re.fullmatch(r"-?(?:0|[1-9]\d*)", generated)) and generated == expected
+
+
+def _integer_semantic(generated: str, expected: str) -> bool:
+    """Secondary metric: mathematically equal integer, irrespective of +/zeros."""
+    return bool(re.fullmatch(r"[+-]?\d+", generated)) and int(generated) == int(expected)
 
 
 def _run_model(cases: list[dict], model_path: Path,
@@ -363,6 +553,7 @@ def _run_model(cases: list[dict], model_path: Path,
         original_ids = head["input_ids"][0].tolist()
         if (whole_ids[:prefix_size] != original_ids
                 or len(whole_ids) <= prefix_size
+                or len(whole_ids) > 1024
                 or whole_ids[-1] != tokenizer.eos_token_id):
             raise RuntimeError("answer+EOS token boundary changed under tokenizer")
         full = torch.tensor([whole_ids], dtype=torch.long, device="cuda:0")
@@ -375,8 +566,14 @@ def _run_model(cases: list[dict], model_path: Path,
         if not math.isfinite(nll_sum) or nll_sum < 0:
             raise RuntimeError("nonfinite answer+EOS NLL")
         blind = hashlib.sha256((plan_sha + "\x00" + case["id"]).encode()).hexdigest()
+        _, operations, peak_absolute = _replay_rendered_chain6(case["prompt"])
         results.append({"blind_case_sha256": blind,
-                        "exact": _exact(decoded, answer),
+                        "exact": _integer_semantic(decoded, answer),
+                        "canonical_format_exact": _exact(decoded, answer),
+                        "prompt_tokens": prefix_size,
+                        "multiply_count": sum(op == "multiply" for op, _ in operations),
+                        "peak_abs_intermediate": peak_absolute,
+                        "answer_digits": len(answer.lstrip("-")),
                         "nll_sum": nll_sum, "target_tokens": int(target.numel())})
     return results
 
@@ -415,7 +612,9 @@ def evaluate(args) -> dict:
     base, model_path = _required_base(args.base_binding)
     if base["model_id"] != BASE_MODEL or base["revision"] != BASE_REVISION:
         raise AdmissionError("not official pinned Qwen3.5-4B revision")
-    plan, plan_sha = _plan(args.plan, args.base_binding, base)
+    source_manifest, source_sha = _source_manifest(
+        args.eval_source_manifest, args.generator_source)
+    plan, plan_sha = _plan(args.plan, args.base_binding, base, source_sha)
     receipt, adapter, receipt_sha = _adapter(args, plan, plan_sha)
     if args.preflight_only:
         # Source-only path does not open the private evaluation bank or score.
@@ -427,10 +626,19 @@ def evaluate(args) -> dict:
     # Opening private answers is expressly AFTER the arm's immutable source
     # receipt was checked (frozen base has no mutable adapter state).
     cases = _bank(args.manifest, args.old_base_eval, args.exclusions,
-                  args.sealed_bank, plan)
+                  args.sealed_bank, plan, source_manifest)
     rows = _run_model(cases, model_path, adapter, receipt, plan_sha)
     if (len(rows) != 64 or len({r["blind_case_sha256"] for r in rows}) != 64
             or any(type(r["exact"]) is not bool
+                   or type(r["canonical_format_exact"]) is not bool
+                   or (r["canonical_format_exact"] and not r["exact"])
+                   or type(r["prompt_tokens"]) is not int or r["prompt_tokens"] < 1
+                   or type(r["multiply_count"]) is not int
+                   or not 0 <= r["multiply_count"] <= 6
+                   or type(r["peak_abs_intermediate"]) is not int
+                   or not 0 <= r["peak_abs_intermediate"] <= 100000
+                   or type(r["answer_digits"]) is not int
+                   or not 1 <= r["answer_digits"] <= 8
                    or type(r["target_tokens"]) is not int or r["target_tokens"] < 1
                    or not math.isfinite(r["nll_sum"]) or r["nll_sum"] < 0 for r in rows)):
         raise RuntimeError("incomplete or invalid physical R18 case scoring")
@@ -440,6 +648,15 @@ def evaluate(args) -> dict:
     count = sum(r["exact"] for r in rows)
     tokens = sum(r["target_tokens"] for r in rows)
     nll_sum = sum(r["nll_sum"] for r in rows)
+    strata = {}
+    for multiply_count in sorted({row["multiply_count"] for row in rows}):
+        selected = [row for row in rows if row["multiply_count"] == multiply_count]
+        strata[str(multiply_count)] = {
+            "cases": len(selected), "integer_semantic_correct": sum(r["exact"] for r in selected),
+            "canonical_format_correct": sum(r["canonical_format_exact"] for r in selected),
+            "nll_per_answer_eos_token": sum(r["nll_sum"] for r in selected) /
+            sum(r["target_tokens"] for r in selected),
+        }
     private = {"schema": "VERA_R18_PRIVATE_CASE_OUTCOMES_V1",
                "protocol": PROTOCOL, "plan_sha256": plan_sha,
                "eval_custody_sha256": plan["eval_custody_sha256"],
@@ -454,6 +671,10 @@ def evaluate(args) -> dict:
               "eval_custody_sha256": plan["eval_custody_sha256"],
               "eval_index_sha256": plan["eval_index_sha256"],
               "corpus_manifest_sha256": CORPUS_SHA256,
+              "eval_distribution": "EXTERNAL_OOD_SIX_OPERATION_COMPOSITION",
+              "full_operator_signature_novel": True,
+              "shorter_subchain_novelty": False,
+              "eval_source_manifest_sha256": source_sha,
               "excluded_previously_scored_cases": 80,
               "excluded_previously_scored_signatures": 77,
               "cases": 64, "source": args.source, "control": args.control,
@@ -461,8 +682,20 @@ def evaluate(args) -> dict:
               "adapter_training_receipt_sha256": receipt_sha,
               "fresh_adapter_fp32_reload_verified": adapter is not None,
               "greedy_exact_match": count, "greedy_accuracy": count / 64,
+              "greedy_integer_semantic_correct": count,
+              "greedy_canonical_format_correct": sum(r["canonical_format_exact"] for r in rows),
+              "greedy_exact_metric_contract":
+              "PARSED_SIGNED_INTEGER_VALUE_AFTER_WHITESPACE_STRIP_V1",
+              "format_metric_contract": "CANONICAL_SIGNED_DECIMAL_STRING_V1",
               "answer_eos_target_tokens": tokens, "answer_eos_nll_sum": nll_sum,
               "answer_eos_nll_per_token": nll_sum / tokens,
+              "multiplication_count_strata": strata,
+              "prompt_tokens_min": min(r["prompt_tokens"] for r in rows),
+              "prompt_tokens_max": max(r["prompt_tokens"] for r in rows),
+              "answer_digits_distribution": {
+                  str(d): sum(r["answer_digits"] == d for r in rows)
+                  for d in sorted({r["answer_digits"] for r in rows})},
+              "peak_abs_intermediate_max": max(r["peak_abs_intermediate"] for r in rows),
               "private_case_outcome_receipt_sha256": _hash_file(args.private_output),
               "private_blinded_case_outcomes_sha256": private["outcome_sha256"],
               "eval_unsealed_after_arm_freeze": True,
@@ -479,8 +712,10 @@ def evaluate(args) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("manifest", "old-base-eval", "exclusions", "sealed-bank",
-                   "plan", "base-binding", "output", "private-output"):
+                   "plan", "eval-source-manifest", "base-binding", "output", "private-output"):
         parser.add_argument("--" + option, type=Path, required=True)
+    parser.add_argument("--generator-source", type=Path, default=Path(__file__).with_name(
+        "r18_eval_source.py"))
     parser.add_argument("--source", choices=sorted(SOURCES), required=True)
     parser.add_argument("--control", choices=sorted(CONTROLS), required=True)
     parser.add_argument("--adapter-receipt", type=Path)
