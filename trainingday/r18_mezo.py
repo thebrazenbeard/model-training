@@ -572,11 +572,17 @@ def restore_checkpoint(tensors, torch, directory: Path, state: dict) -> None:
     values = load_file(str(directory / "lora-trainables.safetensors"), device="cpu")
     if set(values) != {name for name, _ in tensors}:
         raise AdmissionError("resume adapter tensor names do not match pinned base")
+    # Validate the entire adapter before changing *any* live parameter. A
+    # mismatch on a later tensor must not leave an earlier tensor restored.
+    # This protects against metadata rejection, not arbitrary copy_ failures.
+    for name, p in tensors:
+        value = values[name]
+        if (value.shape != p.shape or value.dtype != torch.float32
+                or p.dtype != torch.float32):
+            raise AdmissionError("resume FP32 LoRA tensor shape/dtype changed")
     with torch.no_grad():
         for name, p in tensors:
             value = values[name]
-            if value.shape != p.shape or value.dtype != torch.float32:
-                raise AdmissionError("resume FP32 LoRA tensor shape/dtype changed")
             p.copy_(value.to(device=p.device))
 
 
