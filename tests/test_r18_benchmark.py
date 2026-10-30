@@ -3,7 +3,9 @@
 import copy
 import hashlib
 import json
+import os
 import stat
+import subprocess
 import sys
 import types
 
@@ -13,6 +15,7 @@ from trainingday.r18_benchmark import (
     ARM_SCHEMA, EVAL_SOURCE, FIT_LENGTHS, PLAN_SCHEMA, PROBE_SCHEMA,
     BenchmarkError, canonical_sha256, compare_arms, fit_candidates,
     main, make_plan, preregister_from_corpus, selected_id_digest,
+    _protect_private_path, _windows_owner_sid, _windows_verify_owner_only,
     validate_arm_receipt, validate_fit_probes,
     validate_plan,
 )
@@ -388,8 +391,13 @@ def test_cpu_custodian_seals_fresh64_excluding_all_prior80_and_public_no_answers
     assert payload["cases"] == r18_cases
     assert payload["eval_custody_sha256"] == canonical_sha256({
         "manifest": plan["corpus_manifest_sha256"], "cases": r18_cases})
-    assert stat.S_IMODE(private.stat().st_mode) == 0o600
-    assert stat.S_IMODE(kwargs["private_output_dir"].stat().st_mode) == 0o700
+    if os.name == "nt":
+        owner_sid = _windows_owner_sid()
+        _windows_verify_owner_only(private, owner_sid, directory=False)
+        _windows_verify_owner_only(kwargs["private_output_dir"], owner_sid, directory=True)
+    else:
+        assert stat.S_IMODE(private.stat().st_mode) == 0o600
+        assert stat.S_IMODE(kwargs["private_output_dir"].stat().st_mode) == 0o700
 
 
 def test_cpu_custodian_wrong_historical_r16_pin_makes_no_artifacts(tmp_path, monkeypatch):
@@ -399,3 +407,68 @@ def test_cpu_custodian_wrong_historical_r16_pin_makes_no_artifacts(tmp_path, mon
         preregister_from_corpus(**kwargs)
     assert not kwargs["private_output_dir"].exists()
     assert not kwargs["plan_output"].exists()
+
+
+def test_windows_private_acl_owner_only_and_no_broad_inheritance(tmp_path, monkeypatch):
+    """Simulate Windows command receipts without treating NTFS st_mode as ACL."""
+    owner_sid = "S-1-5-21-286630441-271553882-1369355300-1001"
+    recorded = []
+
+    def windows_process(argv, **kwargs):
+        assert kwargs["capture_output"] and kwargs["text"]
+        assert kwargs["check"] is False
+        recorded.append(argv)
+        if argv[0] == "whoami":
+            return subprocess.CompletedProcess(argv, 0, f'"lappy\\patri","{owner_sid}"\n', "")
+        if argv[0] == "icacls":
+            return subprocess.CompletedProcess(
+                argv, 0, "Successfully processed 1 files; Failed processing 0 files", "")
+        assert argv[0] == "powershell.exe"
+        return subprocess.CompletedProcess(argv, 0, "R18_PRIVATE_ACL_OWNER_ONLY\n", "")
+
+    monkeypatch.setattr("trainingday.r18_benchmark.subprocess.run", windows_process)
+    path = tmp_path / "new-private-dir"
+    path.mkdir()
+    _protect_private_path(path, directory=True, is_windows=True)
+    assert [a[0] for a in recorded] == ["whoami", "icacls", "icacls", "icacls",
+                                           "powershell.exe"]
+    assert recorded[1][2:] == ["/inheritance:r"]
+    assert recorded[2][2:] == ["/grant:r", f"*{owner_sid}:(OI)(CI)F"]
+    assert recorded[3][2:] == ["/verify"]
+    assert all(isinstance(argv, list) for argv in recorded)
+
+
+def test_windows_private_acl_fails_closed_on_broad_access(tmp_path, monkeypatch):
+    def windows_process(argv, **kwargs):
+        if argv[0] == "whoami":
+            return subprocess.CompletedProcess(argv, 0, '"lappy\\patri","S-1-5-21-1-2-3-1001"', "")
+        if argv[0] == "powershell.exe":
+            return subprocess.CompletedProcess(argv, 21, "", "broad Authenticated Users ACE")
+        return subprocess.CompletedProcess(argv, 0, "Successfully processed 1 files", "")
+
+    monkeypatch.setattr("trainingday.r18_benchmark.subprocess.run", windows_process)
+    private = tmp_path / "private"
+    private.mkdir()
+    with pytest.raises(BenchmarkError, match="inherited/broad"):
+        _protect_private_path(private, directory=True, is_windows=True)
+
+
+def test_custodian_guards_private_dir_before_writing_eval_labels(tmp_path, monkeypatch):
+    kwargs, _ = _custodian_fixture(tmp_path, monkeypatch)
+    from trainingday import r18_benchmark as protocol
+
+    actual = protocol._protect_private_path
+    observed = []
+
+    def monitor(path, *, directory, **k):
+        if directory:
+            assert not list(path.iterdir())  # No sensitive file exists yet.
+        else:
+            assert observed and observed[0] == "directory-protected"
+        actual(path, directory=directory, **k)
+        observed.append("directory-protected" if directory else path.name)
+
+    monkeypatch.setattr(protocol, "_protect_private_path", monitor)
+    preregister_from_corpus(**kwargs)
+    assert observed[0] == "directory-protected"
+    assert "r18-evaluator-sealed-private.json" in observed
