@@ -15,8 +15,33 @@ from pathlib import Path
 from trainingday.admission import AdmissionError, _hash_file
 from trainingday.labyrinth_intake import admit_labyrinth
 from trainingday.reload_verify import validate_receipt
-from trainingday.train_neural import _required_base
-from trainingday.numeric_prompt import numeric_question
+from trainingday.train_neural import RECIPE, _required_base
+from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
+
+
+# This is an exact-corpus R15 development experiment. Do not accidentally
+# call a v1/v3 corpus a held-out v2 structural evaluation.
+R15_V2_MANIFEST_SHA256 = "90b55cf8742f9222c91f88e5727dcd0113322e4721e4fd3d1bdcdf65f40d0836"
+
+
+def _require_r15_v2_manifest(manifest_path: Path) -> str:
+    digest = _hash_file(manifest_path)
+    if digest != R15_V2_MANIFEST_SHA256:
+        raise AdmissionError("evaluator requires pinned v2 corpus manifest")
+    return digest
+
+
+def _eval_contract_metadata(protocol: str) -> dict:
+    if protocol not in {"v2", "v3"}:
+        raise AdmissionError("unknown heldout protocol")
+    # Deliberately preserve the R14 ID-selection namespace so comparisons
+    # address the exact same development cases. Those IDs are NOT fresh.
+    return {
+        "protocol": "R15_NUMERIC_ONLY_" + protocol.upper() + "_DEVELOPMENT",
+        "question_contract": NUMERIC_QUESTION_CONTRACT,
+        "selection_namespace": "r14-heldout-" + protocol + ":",
+        "bank_status": "REUSED_R14_DEVELOPMENT_NOT_FINAL",
+    }
 
 
 def _integer_oracle(row: dict) -> int:
@@ -93,6 +118,7 @@ def select_heldout(manifest_path: Path, count: int,
 def evaluate(args) -> dict:
     if args.output.exists() or not args.output.parent.is_dir():
         raise AdmissionError("output must be a new file under an existing directory")
+    manifest_sha256 = _require_r15_v2_manifest(args.manifest)
     corpus, _ = admit_labyrinth(
         args.manifest, args.work_root, sample_size=1,
         producer_git_head=args.producer_git_head,
@@ -101,9 +127,17 @@ def evaluate(args) -> dict:
     binding, base_path = _required_base(args.base_binding)
     adapter_dir = None
     if args.adapter_receipt:
-        receipt, adapter_dir = validate_receipt(args.adapter_receipt, args.base_binding)
+        receipt, adapter_dir = validate_receipt(
+            args.adapter_receipt, args.base_binding,
+            expected_recipe=RECIPE,
+            expected_question_contract=NUMERIC_QUESTION_CONTRACT,
+            expected_manifest_sha256=manifest_sha256,
+            expected_producer_git_head=args.producer_git_head,
+        )
         if receipt["base_revision"] != binding["revision"]:
             raise AdmissionError("trained adapter base revision mismatch")
+        if receipt.get("base_model") != binding["model_id"]:
+            raise AdmissionError("trained adapter base model mismatch")
 
     import torch
     from transformers import AutoTokenizer, BitsAndBytesConfig, Qwen3_5ForCausalLM
@@ -158,12 +192,12 @@ def evaluate(args) -> dict:
             ).item())
         results.append(scored)
     result = {"status": "HELDOUT_DIAGNOSTIC_NOT_FINAL_QUALIFICATION",
-              "protocol": "R14_NUMERIC_ONLY_" + args.protocol.upper() + "_FRESH",
+              **_eval_contract_metadata(args.protocol),
               "case_ids_sha256": digest, "cases": len(results),
               "exact_match": sum(x["correct"] for x in results),
               "mode": "adapter" if adapter_dir else "base",
               "adapter_receipt": str(args.adapter_receipt) if adapter_dir else None,
-              "corpus_manifest_sha256": _hash_file(args.manifest),
+              "corpus_manifest_sha256": manifest_sha256,
               "base_revision": binding["revision"], "results": results,
               "provenance": corpus.get("status")}
     if args.teacher_force_nll:
