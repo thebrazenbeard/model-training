@@ -121,6 +121,28 @@ def may_start_full_step(remaining_seconds: float,
     return remaining_seconds >= next_step_guard_seconds(completed_step_seconds)
 
 
+def effective_batch_token_loss_scale(items: list[dict],
+                                     effective_batch: list[dict]) -> float:
+    """Weight a microbatch mean by its share of supervised completion tokens.
+
+    The model's causal-LM loss is the mean over supervised target tokens in
+    this microbatch. The paired MeZO arm uses the mean across *all* target
+    tokens in the effective eight-example update. Scaling each microbatch
+    loss by this fraction produces the same objective independent of GA size.
+    """
+    if not items or not effective_batch:
+        raise ValueError("R18 target token counts require nonempty batches")
+    counts = [row.get("target_tokens") for row in effective_batch]
+    selected_counts = [row.get("target_tokens") for row in items]
+    if any(type(n) is not int or n <= 0 for n in counts + selected_counts):
+        raise ValueError("R18 target token counts must be positive integers")
+    denominator = sum(counts)
+    numerator = sum(selected_counts)
+    if numerator > denominator:
+        raise ValueError("R18 target token microbatch exceeds effective batch")
+    return numerator / denominator
+
+
 def _initial_adapter_custody(args) -> dict:
     directory = getattr(args, "initial_adapter", None)
     model_sha = getattr(args, "initial_adapter_model_sha256", None)
@@ -231,6 +253,7 @@ def preflight(args) -> tuple[dict, list[dict], Path, dict]:
         "lora_r": 4, "lora_alpha": 16, "lora_dropout": 0,
         "lora_target_modules": "all-linear", "quantization": "NF4_DOUBLE_BF16",
         "model_training_mode": True, "gradient_update_objective": "completion_only_causal_lm",
+        "effective_batch_loss_weighting": "SUPERVISED_TARGET_TOKEN_MEAN",
         "activation_checkpointing": True, "cpu_offload": False,
         "disk_offload": False, "truncation_allowed": False,
         "eval_accuracy": None, "eval_nll": None,
@@ -539,6 +562,9 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                     break
                 step_started_ns = time.perf_counter_ns()
                 optimizer.zero_grad(set_to_none=True)
+                effective_rows = converted[offset:offset + EFFECTIVE_BATCH]
+                if len(effective_rows) != EFFECTIVE_BATCH:
+                    raise RuntimeError("R18 effective batch is incomplete")
                 for index in range(offset, offset + EFFECTIVE_BATCH, batch_size):
                     items = converted[index:index + batch_size]
                     if len(items) != batch_size or any(r["id"] in unique for r in items):
@@ -547,7 +573,10 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                     loss = model(**batch).loss
                     if not torch.isfinite(loss):
                         raise RuntimeError("non-finite R18 completion-only loss")
-                    (loss / accumulation).backward()
+                    # Exactly match MeZO's completion-token-weighted objective.
+                    # Unweighted 1/GA would overemphasize short completions.
+                    scale = effective_batch_token_loss_scale(items, effective_rows)
+                    (loss * scale).backward()
                     for item in items:
                         unique.add(item["id"])
                         presentations += 1
@@ -612,6 +641,9 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
             or (args.control in {"correct", "corrupt"} and steps == 0)):
         raise RuntimeError("R18 no actual FP32 LoRA delta or invalid zero control")
     after_precision = verify_trainable(model, torch, permit_cast=False)
+    # CUDA's peak counters were reset after model/optimizer setup above.
+    # These are the primary training process's counters, never the peaks
+    # from the earlier isolated synthetic fit-frontier workers.
     allocated, reserved = _cuda_peak(torch)
     receipt.update(status="TRAINED_UNSCORED",
                    fit_status="FIT", optimizer_steps=steps,
@@ -619,9 +651,14 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                    fp32_delta_l2=delta_squared ** 0.5,
                    fp32_delta_max_abs=delta_max,
                    fp32_changed_elements=delta_elements,
-                   peak_cuda_allocated_bytes=max(allocated, receipt["peak_cuda_allocated_bytes"]),
-                   peak_cuda_reserved_bytes=max(reserved, receipt["peak_cuda_reserved_bytes"]),
-                   peak_cpu_rss_bytes=max(_cpu_peak(), receipt["peak_cpu_rss_bytes"]),
+                   peak_cuda_allocated_bytes=allocated,
+                   peak_cuda_reserved_bytes=reserved,
+                   peak_cuda_metric_scope="PRIMARY_TRAIN_PROCESS_AFTER_SETUP_RESET",
+                   # Windows peak_wset is process lifetime, not a resettable
+                   # optimizer-window CPU RSS measurement.
+                   peak_cpu_rss_bytes=_cpu_peak(),
+                   peak_cpu_rss_metric_scope="PROCESS_LIFETIME_PEAK_OR_CURRENT_RSS",
+                   peak_nvml_metric_scope="UNAVAILABLE_NOT_ESTIMATED",
                    adapter_delta_observed=(before != after),
                    runtime={"torch": torch.__version__})
     adapter_path = output / "adapter"
@@ -661,12 +698,13 @@ def run(args) -> dict:
                        fit_status=fit_status, secondary_max_fit=chosen,
                        selected_fit_config=primary,
                        primary_fit_observed=primary_fit,
-                       peak_cuda_allocated_bytes=max((p.get("peak_cuda_allocated_bytes", 0)
-                                                       for p in probes), default=0),
-                       peak_cuda_reserved_bytes=max((p.get("peak_cuda_reserved_bytes", 0)
-                                                      for p in probes), default=0),
-                       peak_cpu_rss_bytes=max((p.get("peak_cpu_rss_bytes", 0)
-                                               for p in probes), default=0))
+                       fit_probe_peak_cuda_allocated_bytes=max(
+                           (p.get("peak_cuda_allocated_bytes", 0) for p in probes), default=0),
+                       fit_probe_peak_cuda_reserved_bytes=max(
+                           (p.get("peak_cuda_reserved_bytes", 0) for p in probes), default=0),
+                       fit_probe_peak_cpu_rss_bytes=max(
+                           (p.get("peak_cpu_rss_bytes", 0) for p in probes), default=0),
+                       fit_probe_memory_scope="ISOLATED_SYNTHETIC_FRESH_PROCESSES")
         if not primary_fit:
             receipt["status"] = "OOM_NO_TRAINING" if "OOM" in fit_status else "NOT_TRAINED_FIT_INCOMPLETE"
             receipt["fit_status"] = "PRIMARY_CONFIG_NOT_FIT"

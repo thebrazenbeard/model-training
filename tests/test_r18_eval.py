@@ -1,12 +1,15 @@
 """R18 independent source-only evaluator tests; no CUDA or model required."""
 
 import hashlib
+import gc
 import json
 import os
+import sys
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 from trainingday.admission import AdmissionError, _hash_file
@@ -16,7 +19,7 @@ from trainingday.r18_eval import (
     BASE_MODEL, BASE_REVISION, EVAL_SOURCE, FREEZE_SCHEMA, PRIVATE_BANK_SCHEMA,
     PROTOCOL, RECIPES, _adapter, _bank, _exact, _json, _paired, _plan,
     _integer_semantic, _preunseal_inventory, _prompt_sha, _replay_rendered_chain6,
-    _source_manifest,
+    _source_manifest, _load_model,
     canonical_sha, evaluate,
     generate_novel_r18_cases,
 )
@@ -243,7 +246,11 @@ class R18EvaluatorTests(unittest.TestCase):
                     "supervised_target_tokens": 320 if trained else 0,
                     "peak_cuda_allocated_bytes": 500000,
                     "peak_cuda_reserved_bytes": 600000,
-                    "peak_nvml_used_bytes": 700000, "peak_cpu_rss_bytes": 800000,
+                    "peak_cuda_metric_scope": "PRIMARY_TRAIN_PROCESS_AFTER_SETUP_RESET",
+                    "peak_nvml_used_bytes": 0,
+                    "peak_nvml_metric_scope": "UNAVAILABLE_NOT_ESTIMATED",
+                    "peak_cpu_rss_bytes": 800000,
+                    "peak_cpu_rss_metric_scope": "PROCESS_LIFETIME_PEAK_OR_CURRENT_RSS",
                     "trainable_digest_before": "a" * 64,
                     "trainable_digest_after": "b" * 64 if trained else "a" * 64,
                     "train_start_monotonic_ns": 100_000_000_000,
@@ -322,12 +329,28 @@ class R18EvaluatorTests(unittest.TestCase):
         with self.assertRaisesRegex(AdmissionError, "adapter bytes"):
             _preunseal_inventory(args, plan, inventory["plan_sha256"])
 
+    def test_r19_memory_scopes_required_even_with_repinned_freeze(self):
+        """An independently repinned R20 inventory still obeys R19 receipt scope rules."""
+        plan, inventory, path = self.make_freeze_inventory()
+        arm = inventory["arms"][0]
+        rec_path = Path(arm["receipt_path"])
+        receipt = json.loads(rec_path.read_text(encoding="utf-8"))
+        del receipt["peak_nvml_metric_scope"]
+        rec_path.write_text(json.dumps(receipt), encoding="utf-8")
+        arm["receipt_sha256"] = _hash_file(rec_path)
+        path.write_text(json.dumps(inventory), encoding="utf-8")
+        args = self.change(freeze_inventory=path,
+                           expected_freeze_inventory_sha256=_hash_file(path))
+        with self.assertRaisesRegex(AdmissionError, "independent contract"):
+            _preunseal_inventory(args, plan, inventory["plan_sha256"])
+
     def test_cuda_rejection_happens_before_private_bank_unseal(self):
         with patch("trainingday.r18_eval._required_base", return_value=(self.base, self.root)), \
              patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
                    CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
              patch("trainingday.r18_eval._preunseal_inventory",
                    return_value=("a" * 64, {}, {})), \
+             patch("trainingday.r18_eval._require_independent_preunseal_attestation"), \
              patch("trainingday.r18_eval._cuda_preflight",
                    side_effect=RuntimeError("CUDA unavailable")), \
              patch("trainingday.r18_eval._bank", side_effect=AssertionError(
@@ -341,6 +364,7 @@ class R18EvaluatorTests(unittest.TestCase):
                    CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
              patch("trainingday.r18_eval._preunseal_inventory",
                    return_value=("a" * 64, {}, {})), \
+             patch("trainingday.r18_eval._require_independent_preunseal_attestation"), \
              patch("trainingday.r18_eval._cuda_preflight"), \
              patch("trainingday.r18_eval._load_model", create=True,
                    side_effect=RuntimeError("full model OOM")), \
@@ -348,6 +372,50 @@ class R18EvaluatorTests(unittest.TestCase):
                    "private bank opened before full-model load")):
             with self.assertRaisesRegex(RuntimeError, "full model OOM"):
                 evaluate(self.change(preflight_only=False))
+
+    def test_partial_adapter_preload_failure_releases_cuda_model(self):
+        """An adapter-load exception must not strand the already loaded NF4 base."""
+        torch = ModuleType("torch")
+        torch.bfloat16 = object()
+        torch.cuda = Mock()
+        tokenizer = Mock(chat_template="pinned-template", eos_token_id=1)
+        transformers = ModuleType("transformers")
+        transformers.AutoTokenizer = SimpleNamespace(
+            from_pretrained=lambda *_args, **_kwargs: tokenizer)
+        transformers.BitsAndBytesConfig = lambda **_kwargs: object()
+        base_ref = []
+
+        class Base:
+            pass
+
+        def load_base(*_args, **_kwargs):
+            base = Base()
+            base_ref.append(weakref.ref(base))
+            return base
+
+        transformers.Qwen3_5ForCausalLM = SimpleNamespace(from_pretrained=load_base)
+        peft = ModuleType("peft")
+
+        def fail_adapter(*_args, **_kwargs):
+            raise RuntimeError("synthetic adapter OOM")
+
+        peft.PeftModel = SimpleNamespace(from_pretrained=fail_adapter)
+        with patch.dict(sys.modules, {"torch": torch, "transformers": transformers,
+                                      "peft": peft}), \
+             patch("trainingday.r18_eval._cuda_preflight"):
+            with self.assertRaisesRegex(RuntimeError, "synthetic adapter OOM"):
+                _load_model(self.root, self.root / "adapter", {})
+            # Cache cleanup itself may fail, but cannot replace the original
+            # load failure or let the caller proceed to the sealed bank.
+            torch.cuda.empty_cache.side_effect = RuntimeError("cache cleanup failed")
+            with self.assertRaisesRegex(RuntimeError, "synthetic adapter OOM"):
+                _load_model(self.root, self.root / "adapter", {})
+
+        gc.collect()
+        self.assertEqual(len(base_ref), 2)
+        self.assertTrue(all(ref() is None for ref in base_ref),
+                        "failed adapter preload retained the NF4 base")
+        self.assertEqual(torch.cuda.empty_cache.call_count, 2)
 
     def test_loaded_model_identity_and_cleanup_on_scoring_failure(self):
         order = []
@@ -358,8 +426,9 @@ class R18EvaluatorTests(unittest.TestCase):
             order.append("preload")
             return loaded
 
-        def bank(*_args):
+        def bank(*_args, on_unseal):
             order.append("bank")
+            on_unseal(12345)
             return [{}] * 64
 
         def score(_cases, session, _plan_sha):
@@ -372,6 +441,7 @@ class R18EvaluatorTests(unittest.TestCase):
                    CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
              patch("trainingday.r18_eval._preunseal_inventory",
                    return_value=("a" * 64, {}, {})), \
+             patch("trainingday.r18_eval._require_independent_preunseal_attestation"), \
              patch("trainingday.r18_eval._cuda_preflight"), \
              patch("trainingday.r18_eval._load_model", create=True, side_effect=preload), \
              patch("trainingday.r18_eval._bank", side_effect=bank), \
@@ -385,7 +455,7 @@ class R18EvaluatorTests(unittest.TestCase):
         loaded = Mock()
         loaded.close.side_effect = lambda: order.append("close")
 
-        def bank(*_args):
+        def bank(*_args, **_kwargs):
             order.append("bank")
             raise AdmissionError("sealed bank integrity failure")
 
@@ -394,6 +464,7 @@ class R18EvaluatorTests(unittest.TestCase):
                    CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
              patch("trainingday.r18_eval._preunseal_inventory",
                    return_value=("a" * 64, {}, {})), \
+             patch("trainingday.r18_eval._require_independent_preunseal_attestation"), \
              patch("trainingday.r18_eval._cuda_preflight"), \
              patch("trainingday.r18_eval._load_model", return_value=loaded), \
              patch("trainingday.r18_eval._bank", side_effect=bank), \
@@ -402,6 +473,25 @@ class R18EvaluatorTests(unittest.TestCase):
             with self.assertRaisesRegex(AdmissionError, "sealed bank integrity"):
                 evaluate(self.change(preflight_only=False))
         self.assertEqual(order, ["bank", "close"])
+
+    def test_bank_without_observed_open_cannot_score_or_emit_receipts(self):
+        loaded = Mock()
+        with patch("trainingday.r18_eval._required_base", return_value=(self.base, self.root)), \
+             patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
+                   CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
+             patch("trainingday.r18_eval._preunseal_inventory",
+                   return_value=("a" * 64, {}, {})), \
+             patch("trainingday.r18_eval._require_independent_preunseal_attestation"), \
+             patch("trainingday.r18_eval._cuda_preflight"), \
+             patch("trainingday.r18_eval._load_model", return_value=loaded), \
+             patch("trainingday.r18_eval._bank", return_value=[{}] * 64), \
+             patch("trainingday.r18_eval._run_model", side_effect=AssertionError(
+                   "no scoring without observed bank open")):
+            with self.assertRaisesRegex(RuntimeError, "without an open timestamp"):
+                evaluate(self.change(preflight_only=False))
+        loaded.close.assert_called_once_with()
+        self.assertFalse(self.args.output.exists())
+        self.assertFalse(self.args.private_output.exists())
 
     def test_pinned_plan_detects_hash_or_policy_change(self):
         validated, sha = _plan(self.plan_path, self.binding, self.base, self.source_sha)
@@ -487,6 +577,35 @@ class R18EvaluatorTests(unittest.TestCase):
                 _json(path, private=True)
             path.chmod(0o600)
         self.assertEqual(_json(path, private=True), {})
+
+    def test_private_json_unseal_clock_is_sampled_after_actual_file_open(self):
+        path = self.root / "private-clock.json"
+        path.write_text('{"case": 1}', encoding="utf-8")
+        path.chmod(0o600)
+        if os.name == "nt":
+            from trainingday.r18_benchmark import _protect_private_path
+            _protect_private_path(path, directory=False)
+
+        events = []
+        original_open = Path.open
+
+        def opened(candidate, *args, **kwargs):
+            if candidate == path:
+                events.append("actual_file_open")
+            return original_open(candidate, *args, **kwargs)
+
+        with patch.object(Path, "open", opened), \
+             patch("trainingday.r18_eval.time.time_ns", return_value=24681357):
+            observed = _json(path, private=True,
+                             on_open=lambda ns: events.append(("unsealed_at", ns)))
+        self.assertEqual(observed, {"case": 1})
+        self.assertEqual(events, ["actual_file_open", ("unsealed_at", 24681357)])
+
+        events.clear()
+        with self.assertRaises(AdmissionError):
+            _json(self.root / "missing-bank.json", private=True,
+                  on_open=lambda ns: events.append(("unsealed_at", ns)))
+        self.assertEqual(events, [])
 
     def test_selection_rederives_old16_r16_64_and_external_long_chain64(self):
         old_ids = [f"reasoning-{i:064x}" for i in range(16)]
@@ -586,14 +705,21 @@ class R18EvaluatorTests(unittest.TestCase):
                  "nll_sum": 1.5 + i / 100,
                  "target_tokens": 3} for i in range(64)]
         loaded = Mock()
+        def bank_at_known_unseal_time(*_args, on_unseal):
+            # Simulate the only valid source of this clock: private-bank access.
+            on_unseal(123456789)
+            return [{}] * 64
+
         with patch("trainingday.r18_eval._required_base", return_value=(self.base, self.root)), \
              patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
                    CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
              patch("trainingday.r18_eval._preunseal_inventory",
                    return_value=(_hash_file(self.plan_path), {}, {})), \
+             patch("trainingday.r18_eval._require_independent_preunseal_attestation"), \
              patch("trainingday.r18_eval._cuda_preflight"), \
              patch("trainingday.r18_eval._load_model", return_value=loaded), \
-             patch("trainingday.r18_eval._bank", return_value=[{}] * 64), \
+             patch("trainingday.r18_eval._bank", side_effect=bank_at_known_unseal_time), \
+             patch("trainingday.r18_eval.time.time_ns", return_value=999999999), \
              patch("trainingday.r18_eval._run_model", return_value=rows) as run:
             report = evaluate(self.change(preflight_only=False,
                                           freeze_inventory=self.plan_path))
@@ -605,6 +731,7 @@ class R18EvaluatorTests(unittest.TestCase):
                                sum(r["nll_sum"] for r in rows) / 192)
         self.assertEqual(report["protocol"], PROTOCOL)
         self.assertFalse(report["automatic_promotion"])
+        self.assertEqual(report["eval_unsealed_at_utc_ns"], 123456789)
         if os.name == "nt":
             from trainingday.r18_benchmark import _windows_owner_sid, _windows_verify_owner_only
             _windows_verify_owner_only(self.args.private_output, _windows_owner_sid(),

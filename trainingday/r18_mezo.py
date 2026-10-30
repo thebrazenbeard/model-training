@@ -8,6 +8,11 @@ applies an actual weight update. No autograd/gradient surrogate is used.
 
 Import/preflight is CPU-only. A CUDA run requires explicit operator authority;
 this module does not pause services, reserve GPUs, or invoke evaluation.
+
+Checkpoint custody for this strict single-window experiment is FINAL-ONLY:
+periodic saving and cross-process resume are intentionally unsupported. The
+deprecated --checkpoint-every option accepts only 0, refusing to promise
+recoverability that the optimizer loop cannot provide.
 """
 
 from __future__ import annotations
@@ -121,7 +126,8 @@ def validate_source(args) -> tuple[dict, list[dict], Path]:
         raise AdmissionError("examples per update must divide into complete microbatches")
     _positive_int(args.max_seq_length, "sequence length", 2048)
     _positive_int(args.seed, "seed", 2**31 - 1)
-    _positive_int(args.checkpoint_every, "checkpoint interval", 4096)
+    if type(args.checkpoint_every) is not int or args.checkpoint_every != 0:
+        raise AdmissionError("periodic MeZO checkpoints unsupported; use --checkpoint-every 0 (final-only)")
     if (not math.isfinite(args.budget_seconds) or not 0 < args.budget_seconds <= 86400):
         raise AdmissionError("time budget must be 0–86400 seconds")
     if (not math.isfinite(args.learning_rate) or not 0 < args.learning_rate <= 1.0
@@ -131,16 +137,12 @@ def validate_source(args) -> tuple[dict, list[dict], Path]:
             or args.output_root.is_symlink() or not args.work_root.is_dir()
             or args.work_root.is_symlink()):
         raise AdmissionError("unsafe run ID or output/work root")
-    if (args.resume_checkpoint is None) != (args.resume_receipt_sha256 is None):
-        raise AdmissionError("resume checkpoint and pinned receipt SHA must be supplied together")
-    if args.resume_receipt_sha256 and not HEX64.fullmatch(args.resume_receipt_sha256):
-        raise AdmissionError("resume receipt SHA malformed")
-    if args.fit_sweep_only and args.resume_checkpoint:
-        raise AdmissionError("fit sweep never resumes weights")
+    if args.resume_checkpoint is not None or args.resume_receipt_sha256 is not None:
+        raise AdmissionError("R18 MeZO resume unsupported for strict single-window budget; start a new run ID")
     if args.preflight_only and args.fit_sweep_only:
         raise AdmissionError("choose source preflight or GPU fit sweep")
     if not args.resume_checkpoint and (args.output_root / args.run_id).exists():
-        raise AdmissionError("run output exists; never silently overwrite")
+        raise AdmissionError("run output exists: INCOMPLETE_OR_UNVERIFIED; never silently overwrite")
     if not args.resume_checkpoint and (args.output_root / args.run_id).is_symlink():
         raise AdmissionError("symlinked run output")
     if (args.expected_initial_digest is not None
@@ -272,11 +274,36 @@ def may_begin_paired_update(now_monotonic_ns: int, deadline_monotonic_ns: int,
     return remaining >= required, required, remaining
 
 
+def step_timing_integrity_failure(monotonic_seconds: float, wall_seconds: float,
+                                  admitted_reserve_seconds: float) -> str | None:
+    """Classify a suspicious *completed* step; cannot preempt a blocked step.
+
+    The prior synthetic/physical-step reserve is a strict comparison bound,
+    not an assertion that a Windows sleep transition has been identified.
+    A wall/monotonic divergence may also reflect OS clock adjustment, which
+    invalidates clock custody for this run rather than proving a power event.
+    """
+    if any(type(value) not in (int, float) or not math.isfinite(value)
+           for value in (monotonic_seconds, wall_seconds, admitted_reserve_seconds)) \
+            or admitted_reserve_seconds <= 0:
+        raise AdmissionError("invalid step timing or admitted reserve")
+    if monotonic_seconds < 0 or wall_seconds < 0:
+        return "CLOCK_DISCONTINUITY_SUSPECTED"
+    if abs(wall_seconds - monotonic_seconds) > max(2.0, .05 * monotonic_seconds):
+        return "CLOCK_DISCONTINUITY_SUSPECTED"
+    if monotonic_seconds > admitted_reserve_seconds:
+        return "STEP_EXCEEDED_ADMITTED_RESERVE"
+    return None
+
+
 def training_budget_status(mode: str, completed_steps: int, initial_step: int,
-                           overrun_seconds: float) -> str:
+                           overrun_seconds: float,
+                           timing_integrity_failure: bool = False) -> str:
     """An overrun can be preserved as forensic evidence, never a valid arm."""
     if overrun_seconds > 0:
         return "TIME_BUDGET_OVERRUN_INVALID"
+    if timing_integrity_failure:
+        return "TIME_BUDGET_INTEGRITY_INVALID"
     if mode != "zero" and completed_steps <= initial_step:
         return "NOT_TRAINED_INSUFFICIENT_SAFE_WINDOW"
     return "TRAINED_UNSCORED"
@@ -480,7 +507,7 @@ def prepare_run(args, preflight: dict) -> tuple[Path, dict, int, float, dict | N
     contract_path = output / "run-contract.json"
     if not args.resume_checkpoint:
         if output.exists() or output.is_symlink():
-            raise AdmissionError("run output already occupied")
+            raise AdmissionError("run output already occupied: INCOMPLETE_OR_UNVERIFIED")
         output.mkdir(exist_ok=False)
         with contract_path.open("x", encoding="utf-8") as stream:
             json.dump(contract, stream, sort_keys=True, indent=2)
@@ -947,6 +974,8 @@ def run(args) -> dict:
     peak_nvml, nvml_supported = _nvml_used_bytes()
     directional_log = []
     completed_step_durations = []
+    completed_step_wall_durations = []
+    step_timing_failures = []
     last_guard_required_seconds = None
     stop_reason = "ZERO_CONTROL" if args.mode == "zero" else "STEP_CAP_REACHED"
     if args.mode != "zero":
@@ -965,14 +994,26 @@ def run(args) -> dict:
             selected = step_rows(prepared, step, args.examples_per_update)
             loss_fn = lambda: paired_batch_loss(model, torch, tokenizer, selected,
                                                 args.micro_batch_size, args.max_seq_length)
+            step_started_wall_ns = time.time_ns()
             step_started_ns = time.monotonic_ns()
             plus, minus, derivative = paired_zo_step(
                 tensors, torch, seed=direction_seed(args.seed, step + 1),
                 epsilon=args.epsilon, learning_rate=args.learning_rate, loss_fn=loss_fn,
             )
             torch.cuda.synchronize(0)
-            step_duration = (time.monotonic_ns() - step_started_ns) / 1e9
+            step_finished_ns = time.monotonic_ns()
+            step_finished_wall_ns = time.time_ns()
+            step_duration = (step_finished_ns - step_started_ns) / 1e9
+            wall_duration = (step_finished_wall_ns - step_started_wall_ns) / 1e9
+            timing_failure = step_timing_integrity_failure(
+                step_duration, wall_duration, reserve)
             completed_step_durations.append(step_duration)
+            completed_step_wall_durations.append(wall_duration)
+            if timing_failure is not None:
+                step_timing_failures.append({"step": step + 1, "reason": timing_failure,
+                                             "monotonic_seconds": step_duration,
+                                             "wall_seconds": wall_duration,
+                                             "admitted_reserve_seconds": reserve})
             completed = step + 1
             counters["example_presentations"] += len(selected)
             counters["input_tokens_presented"] += sum(r["input_tokens"] for r in selected)
@@ -995,6 +1036,9 @@ def run(args) -> dict:
             # stopping; cross-process resume is not admitted for comparison.
             if time.monotonic_ns() > train_deadline_ns:
                 stop_reason = "UNEXPECTED_MONOTONIC_DEADLINE_OVERRUN_INVALID"
+                break
+            if timing_failure is not None:
+                stop_reason = timing_failure
                 break
     train_stop_ns = time.monotonic_ns()
     elapsed = (train_stop_ns - train_start_ns) / 1e9
@@ -1021,7 +1065,7 @@ def run(args) -> dict:
     if not adapter_weights.is_file() or not adapter_config.is_file():
         raise RuntimeError("LoRA checkpoint was not saved")
     outcome_status = training_budget_status(args.mode, completed, resumed_step,
-                                            overrun_seconds)
+                                            overrun_seconds, bool(step_timing_failures))
     receipt = {**preflight,
                "status": outcome_status, "zero_update": args.mode == "zero",
                "fit_status": "fits", "optimizer_steps": completed,
@@ -1036,6 +1080,9 @@ def run(args) -> dict:
                "deadline_respected": overrun_seconds == 0.0,
                "first_step_probe_reference_seconds": first_step_reference_seconds,
                "completed_step_durations_seconds": completed_step_durations,
+               "completed_step_wall_durations_seconds": completed_step_wall_durations,
+               "step_timing_integrity_failures": step_timing_failures,
+               "budget_integrity_passed": not step_timing_failures and overrun_seconds == 0.0,
                "last_required_next_step_reserve_seconds": last_guard_required_seconds,
                "guard_rule": "1.5x_slowest_completed_step_plus_2s; first=physical_fit_probe_step",
                "train_start_monotonic_ns": train_start_ns,
@@ -1043,9 +1090,13 @@ def run(args) -> dict:
                "train_deadline_monotonic_ns": train_deadline_ns,
                "peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated(0),
                "peak_cuda_reserved_bytes": torch.cuda.max_memory_reserved(0),
+               "peak_cuda_metric_scope": "PRIMARY_TRAIN_PROCESS_AFTER_SETUP_RESET",
                "peak_nvml_used_bytes": peak_nvml,
+               "peak_nvml_metric_scope": ("SAMPLED_NVML" if nvml_supported
+                                          else "UNAVAILABLE_NOT_ESTIMATED"),
                "nvml_available": nvml_supported,
                "peak_cpu_rss_bytes": sampled_peak_rss,
+               "peak_cpu_rss_metric_scope": "TRAINING_WINDOW_SAMPLED_RSS",
                "max_prepared_example_tokens": token_report["max_input_tokens"],
                "cold_start_and_diagnostic_seconds": cold_start_seconds,
                "unperturbed_loss": unperturbed_loss,
@@ -1124,7 +1175,8 @@ def main() -> None:
     parser.add_argument("--examples-per-update", type=int, default=8)
     parser.add_argument("--max-seq-length", type=int, default=512)
     parser.add_argument("--budget-seconds", type=float, required=True)
-    parser.add_argument("--checkpoint-every", type=int, default=8)
+    parser.add_argument("--checkpoint-every", type=int, default=0,
+                        help="Deprecated; only 0 (final-only) accepted. Periodic checkpoints unsupported")
     parser.add_argument("--expected-initial-digest", default=None)
     parser.add_argument("--fit-probe-sha256", default=None)
     parser.add_argument("--fit-probes-file", type=Path)
@@ -1138,8 +1190,10 @@ def main() -> None:
     parser.add_argument("--initial-adapter-sha256", help="Exact SHA256 of its adapter_model.safetensors")
     parser.add_argument("--initial-adapter-config-sha256",
                         help="Exact SHA256 of R16 zero adapter_config.json")
-    parser.add_argument("--resume-checkpoint", type=Path)
-    parser.add_argument("--resume-receipt-sha256")
+    parser.add_argument("--resume-checkpoint", type=Path,
+                        help="Unsupported in strict single-window R18; rejected before GPU load")
+    parser.add_argument("--resume-receipt-sha256",
+                        help="Unsupported in strict single-window R18; rejected before GPU load")
     args = parser.parse_args()
     if args.probe_child:
         if (not args.probe_result or not 0 <= args.probe_index < 14

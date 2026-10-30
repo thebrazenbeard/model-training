@@ -23,6 +23,7 @@ import re
 import stat
 import time
 import unicodedata
+from collections.abc import Callable
 from pathlib import Path
 
 from trainingday.admission import AdmissionError, _hash_file
@@ -98,14 +99,19 @@ def _private_custody(path: Path, *, directory: bool) -> None:
         raise AdmissionError("private evaluation custody is not owner-only")
 
 
-def _json(path: Path, *, private: bool = False) -> dict:
+def _json(path: Path, *, private: bool = False,
+          on_open: Callable[[int], None] | None = None) -> dict:
     if (not path.is_file() or path.is_symlink() or
             any(parent.is_symlink() for parent in path.parents)):
         raise AdmissionError("missing/symlinked custody file")
     if private:
         _private_custody(path.parent, directory=True)
         _private_custody(path, directory=False)
-    value = json.loads(path.read_text(encoding="utf-8"))
+    with path.open("r", encoding="utf-8") as reader:
+        # Observe the actual file-open boundary, before private JSON parsing.
+        if on_open is not None:
+            on_open(time.time_ns())
+        value = json.load(reader)
     if not isinstance(value, dict):
         raise AdmissionError("custody JSON must be an object")
     return value
@@ -530,6 +536,25 @@ def _preunseal_inventory(args, plan: dict, plan_sha: str) -> tuple[str, dict, di
     return expected, pinned, saved_files
 
 
+def _require_independent_preunseal_attestation() -> None:
+    """Hold the private bank shut until a real host-attester is integrated.
+
+    Local SHA pins, arm receipts, and an evaluator-supplied freeze inventory
+    prove internal byte consistency only. They cannot establish which trainer
+    produced those bytes, that the eight runs occurred, or which principal
+    will read the sealed bank. No independent attester, trust anchor, or
+    bank-access audit is wired into this source-only evaluator yet.
+
+    In particular, an environment flag, CLI-provided digest, self-signed
+    document, or mockable source receipt must not authorize unsealing.
+    The trusted host integration must replace this fail-closed boundary and
+    qualify it independently before any real private evaluation is run.
+    """
+    raise AdmissionError(
+        "independent pre-unseal attestation unavailable: "
+        "R18 source receipt custody cannot authorize private evaluation")
+
+
 def _cuda_preflight() -> None:
     """Reject an ineligible CUDA host before private answers are opened."""
     try:
@@ -542,7 +567,8 @@ def _cuda_preflight() -> None:
 
 
 def _bank(manifest: Path, old_base_eval: Path, exclusions_path: Path,
-          private_bank_path: Path, plan: dict, source_manifest: dict) -> list[dict]:
+          private_bank_path: Path, plan: dict, source_manifest: dict, *,
+          on_unseal: Callable[[int], None] | None = None) -> list[dict]:
     """Verify 80 historic scores and rederive 64 new 6-op OOD structures."""
     if _hash_file(manifest) != CORPUS_SHA256 or manifest.is_symlink():
         raise AdmissionError("R18 pinned v2 manifest changed")
@@ -570,7 +596,7 @@ def _bank(manifest: Path, old_base_eval: Path, exclusions_path: Path,
     # signatures and never opens/trains on either the prior v2 eval or train.
     # Historical `_replay` in the R16 selector independently verifies all
     # v2 reasoning rows are 2–5-op chains, hence no six-op train overlap.
-    private = _json(private_bank_path, private=True)
+    private = _json(private_bank_path, private=True, on_open=on_unseal)
     nonce = private.get("private_nonce_hex")
     if (not isinstance(nonce, str) or not HEX64.fullmatch(nonce)
             or hashlib.sha256(bytes.fromhex(nonce)).hexdigest() !=
@@ -636,24 +662,42 @@ def _load_model(model_path: Path, adapter: Path | None,
     import torch
     from transformers import AutoTokenizer, BitsAndBytesConfig, Qwen3_5ForCausalLM
 
-    _cuda_preflight()
-    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
-    if not tokenizer.chat_template or type(tokenizer.eos_token_id) is not int:
-        raise RuntimeError("pinned tokenizer lacks chat or EOS contract")
-    quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                               bnb_4bit_use_double_quant=True,
-                               bnb_4bit_compute_dtype=torch.bfloat16)
-    model = Qwen3_5ForCausalLM.from_pretrained(
-        model_path, quantization_config=quant, device_map=0,
-        dtype=torch.bfloat16, local_files_only=True)
-    if adapter is not None:
-        from peft import PeftModel
-        model = PeftModel.from_pretrained(model, adapter, is_trainable=True)
-        digest, count = _parameter_digest(model, torch)
-        if (digest != receipt["trainable_digest_after"]
-                or count != receipt["trainable_parameter_count"]):
-            raise RuntimeError("freshly loaded FP32 adapter digest/count mismatch")
-    model.eval()
+    model = tokenizer = None
+    try:
+        _cuda_preflight()
+        tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+        if not tokenizer.chat_template or type(tokenizer.eos_token_id) is not int:
+            raise RuntimeError("pinned tokenizer lacks chat or EOS contract")
+        quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                   bnb_4bit_use_double_quant=True,
+                                   bnb_4bit_compute_dtype=torch.bfloat16)
+        model = Qwen3_5ForCausalLM.from_pretrained(
+            model_path, quantization_config=quant, device_map=0,
+            dtype=torch.bfloat16, local_files_only=True)
+        if adapter is not None:
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(model, adapter, is_trainable=True)
+            digest, count = _parameter_digest(model, torch)
+            if (digest != receipt["trainable_digest_after"]
+                    or count != receipt["trainable_parameter_count"]):
+                raise RuntimeError("freshly loaded FP32 adapter digest/count mismatch")
+        model.eval()
+    except BaseException:
+        # A failed model/PEFT load occurs before closing() has a session to
+        # manage. Drop partially loaded tensors and release unoccupied cache;
+        # cleanup must not replace the original fail-closed load exception.
+        model = tokenizer = None
+        try:
+            gc.collect()
+        except Exception:
+            # GC is an optimization during a failed load, not the failure to
+            # report. Preserve the original tokenizer/model/adapter error.
+            pass
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        raise
     return _InferenceSession(torch, tokenizer, model)
 
 
@@ -757,13 +801,25 @@ def evaluate(args) -> dict:
         raise AdmissionError("peer must be a previously frozen private score")
     freeze_sha, pinned_receipts, pinned_adapters = _preunseal_inventory(
         args, plan, plan_sha)
+    _require_independent_preunseal_attestation()
     _cuda_preflight()
     # Preload the actual pinned NF4 model and saved adapter (including physical
     # tensor digest) BEFORE private answers. Reuse this same session to score;
     # full-load failure cannot reach _bank(). This is not host attestation.
+    unsealed_at_utc_ns = None
+
+    def record_private_bank_open(observed_ns: int) -> None:
+        nonlocal unsealed_at_utc_ns
+        if unsealed_at_utc_ns is not None:
+            raise RuntimeError("private evaluation bank was opened more than once")
+        unsealed_at_utc_ns = observed_ns
+
     with closing(_load_model(model_path, adapter, receipt)) as session:
         cases = _bank(args.manifest, args.old_base_eval, args.exclusions,
-                      args.sealed_bank, plan, source_manifest)
+                      args.sealed_bank, plan, source_manifest,
+                      on_unseal=record_private_bank_open)
+        if unsealed_at_utc_ns is None:
+            raise RuntimeError("private bank read occurred without an open timestamp")
         rows = _run_model(cases, session, plan_sha)
     if (len(rows) != 64 or len({r["blind_case_sha256"] for r in rows}) != 64
             or any(type(r["exact"]) is not bool
@@ -843,7 +899,7 @@ def evaluate(args) -> dict:
               "private_case_outcome_receipt_sha256": _hash_file(args.private_output),
               "private_blinded_case_outcomes_sha256": private["outcome_sha256"],
               "eval_unsealed_after_arm_freeze": True,
-              "eval_unsealed_at_utc_ns": time.time_ns(),
+              "eval_unsealed_at_utc_ns": unsealed_at_utc_ns,
               "automatic_promotion": False}
     if args.peer_private is not None:
         public["pairwise_digest_private_only"] = True
