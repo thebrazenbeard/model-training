@@ -10,6 +10,8 @@ answers. This is a development benchmark, not independent model qualification.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
+import gc
 import functools
 import hashlib
 import itertools
@@ -613,17 +615,28 @@ def _integer_semantic(generated: str, expected: str) -> bool:
     return bool(re.fullmatch(r"[+-]?\d+", generated)) and int(generated) == int(expected)
 
 
-def _run_model(cases: list[dict], model_path: Path,
-               adapter: Path | None, receipt: dict | None,
-               plan_sha: str) -> list[dict]:
-    """Only heavy path; compare physical FP32 LoRA tensors after disk reload."""
+class _InferenceSession:
+    """One successfully loaded model/adapter, reused for scoring and then released."""
+
+    def __init__(self, torch, tokenizer, model):
+        self.torch = torch
+        self.tokenizer = tokenizer
+        self.model = model
+
+    def close(self) -> None:
+        self.model = None
+        self.tokenizer = None
+        self.torch = None
+        gc.collect()
+
+
+def _load_model(model_path: Path, adapter: Path | None,
+                receipt: dict | None) -> _InferenceSession:
+    """Load the full pinned NF4 base and adapter BEFORE any private bank access."""
     import torch
     from transformers import AutoTokenizer, BitsAndBytesConfig, Qwen3_5ForCausalLM
 
-    if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
-        raise RuntimeError("BF16 CUDA inference unavailable")
-    if torch.cuda.mem_get_info(0)[0] < 3200 * 2**20:
-        raise RuntimeError("less than 3200 MiB free CUDA memory")
+    _cuda_preflight()
     tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
     if not tokenizer.chat_template or type(tokenizer.eos_token_id) is not int:
         raise RuntimeError("pinned tokenizer lacks chat or EOS contract")
@@ -641,6 +654,15 @@ def _run_model(cases: list[dict], model_path: Path,
                 or count != receipt["trainable_parameter_count"]):
             raise RuntimeError("freshly loaded FP32 adapter digest/count mismatch")
     model.eval()
+    return _InferenceSession(torch, tokenizer, model)
+
+
+def _run_model(cases: list[dict], session: _InferenceSession,
+               plan_sha: str) -> list[dict]:
+    """Score with the exact model object loaded before private bank unseal."""
+    torch, tokenizer, model = session.torch, session.tokenizer, session.model
+    if model is None or tokenizer is None or torch is None:
+        raise RuntimeError("model session was released before scoring")
     results = []
     for case in cases:
         question = numeric_question(case["prompt"])
@@ -736,11 +758,13 @@ def evaluate(args) -> dict:
     freeze_sha, pinned_receipts, pinned_adapters = _preunseal_inventory(
         args, plan, plan_sha)
     _cuda_preflight()
-    # All eight unscored arms and CUDA eligibility are now checked BEFORE
-    # opening private answers. This is not independent reload attestation.
-    cases = _bank(args.manifest, args.old_base_eval, args.exclusions,
-                  args.sealed_bank, plan, source_manifest)
-    rows = _run_model(cases, model_path, adapter, receipt, plan_sha)
+    # Preload the actual pinned NF4 model and saved adapter (including physical
+    # tensor digest) BEFORE private answers. Reuse this same session to score;
+    # full-load failure cannot reach _bank(). This is not host attestation.
+    with closing(_load_model(model_path, adapter, receipt)) as session:
+        cases = _bank(args.manifest, args.old_base_eval, args.exclusions,
+                      args.sealed_bank, plan, source_manifest)
+        rows = _run_model(cases, session, plan_sha)
     if (len(rows) != 64 or len({r["blind_case_sha256"] for r in rows}) != 64
             or any(type(r["exact"]) is not bool
                    or type(r["canonical_format_exact"]) is not bool
