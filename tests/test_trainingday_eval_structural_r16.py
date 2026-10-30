@@ -22,6 +22,7 @@ from trainingday.eval_structural_r16 import (
     evaluate,
     preflight,
 )
+from trainingday.r16_reload_verify import verify_r16_reload
 
 
 GOOD_SELECTION = {
@@ -91,6 +92,7 @@ class StructuralR16Tests(unittest.TestCase):
             "base_binding_sha256": _hash_file(base),
             "r16_run_contract_sha256": canonical_sha(contract),
             "trainable_digest_before": before, "trainable_digest_after": after,
+            "trainable_parameter_count": 42,
             "adapter_model_sha256": _hash_file(adapter / "adapter_model.safetensors"),
             "adapter_config_sha256": _hash_file(adapter / "adapter_config.json"),
             "new_optimizer_steps": steps, "resumed_from_step": 0,
@@ -265,6 +267,55 @@ class StructuralR16Tests(unittest.TestCase):
         self.assertEqual(result["status"], "R16_SOURCE_PREFLIGHT_NO_MODEL_EXECUTION")
         self.assertEqual(result["mode"], "correct")
         self.assertEqual(result["adapter_receipt_sha256"], _hash_file(receipt))
+
+    @patch("trainingday.r16_reload_verify._gpu_reload")
+    @patch("trainingday.r16_reload_verify._required_base")
+    def test_r16_fresh_loader_accepts_matching_fp32_digest_without_scoring(
+            self, base_reader, gpu_reload):
+        receipt, base, data, _ = self.r16_fixture("correct")
+        base_reader.return_value = ({"model_id": "Qwen/Qwen3.5-4B",
+                                     "revision": "a" * 40}, self.root)
+        gpu_reload.return_value = (data["trainable_digest_after"], 42, "mock-torch")
+        result = verify_r16_reload(
+            receipt, base, self.root / "fresh-reload.json", mode="correct",
+            expected_receipt_sha256=_hash_file(receipt),
+        )
+        self.assertEqual(result["status"], "R16_DISK_RELOADED_FP32_TENSORS_MATCH")
+        self.assertEqual(result["behavioral_efficacy"], "NOT_EVALUATED")
+        self.assertNotIn("prompt", json.dumps(result))
+        gpu_reload.assert_called_once_with(self.root, receipt.parent / "adapter")
+
+    @patch("trainingday.r16_reload_verify._gpu_reload")
+    @patch("trainingday.r16_reload_verify._required_base")
+    def test_r16_fresh_loader_rejects_bad_pin_and_false_tensor_match(
+            self, base_reader, gpu_reload):
+        receipt, base, data, _ = self.r16_fixture("zero")
+        output = self.root / "fresh-reload.json"
+        base_reader.return_value = ({"model_id": "Qwen/Qwen3.5-4B",
+                                     "revision": "a" * 40}, self.root)
+        with self.assertRaises(AdmissionError):
+            verify_r16_reload(receipt, base, output, mode="zero",
+                              expected_receipt_sha256="f" * 64)
+        gpu_reload.assert_not_called()
+        gpu_reload.return_value = ("f" * 64, 42, "mock-torch")
+        with self.assertRaises(RuntimeError):
+            verify_r16_reload(receipt, base, output, mode="zero",
+                              expected_receipt_sha256=_hash_file(receipt))
+        self.assertFalse(output.exists())
+        gpu_reload.return_value = (data["trainable_digest_after"], 41, "mock-torch")
+        with self.assertRaises(RuntimeError):
+            verify_r16_reload(receipt, base, output, mode="zero",
+                              expected_receipt_sha256=_hash_file(receipt))
+        self.assertFalse(output.exists())
+
+    @patch("trainingday.r16_reload_verify._gpu_reload")
+    def test_r16_fresh_loader_checkpoint_tamper_precedes_gpu(self, gpu_reload):
+        receipt, base, _, _ = self.r16_fixture("correct")
+        (receipt.parent / "trainer-work/checkpoint-8/optimizer.pt").write_bytes(b"changed")
+        with self.assertRaises(AdmissionError):
+            verify_r16_reload(receipt, base, self.root / "fresh-reload.json",
+                              mode="correct", expected_receipt_sha256=_hash_file(receipt))
+        gpu_reload.assert_not_called()
 
 
 if __name__ == "__main__":
