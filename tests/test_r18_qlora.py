@@ -252,6 +252,19 @@ class QloraContractTests(unittest.TestCase):
         train.assert_not_called()
         self.assertEqual(result["status"], "OOM_NO_TRAINING")
 
+    def test_conservative_guard_never_begins_an_unbudgeted_full_ga8_step(self):
+        self.assertEqual(q.next_step_guard_seconds([]), 120.0)
+        self.assertFalse(q.may_start_full_step(119.999, []))
+        self.assertTrue(q.may_start_full_step(120.0, []))
+        # The complete step, not one microbatch, sets the next reserve.
+        self.assertEqual(q.next_step_guard_seconds([65.0, 72.0, 61.0]), 110.0)
+        self.assertFalse(q.may_start_full_step(109.999, [65.0, 72.0, 61.0]))
+        self.assertTrue(q.may_start_full_step(110.0, [65.0, 72.0, 61.0]))
+        self.assertEqual(q.next_step_guard_seconds([1.0]), 30.0)
+        self.assertFalse(q.may_start_full_step(29.0, [1.0]))
+        with self.assertRaisesRegex(ValueError, "positive"):
+            q.next_step_guard_seconds([0.0])
+
 
 if __name__ == "__main__":
     unittest.main()
