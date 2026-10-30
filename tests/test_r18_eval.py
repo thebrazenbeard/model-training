@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from trainingday.admission import AdmissionError, _hash_file
 from trainingday.eval_structural_r16 import BANK_ID_SHA256, CORPUS_SHA256
@@ -335,6 +335,74 @@ class R18EvaluatorTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "CUDA unavailable"):
                 evaluate(self.change(preflight_only=False))
 
+    def test_full_model_load_failure_must_not_open_private_bank(self):
+        with patch("trainingday.r18_eval._required_base", return_value=(self.base, self.root)), \
+             patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
+                   CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
+             patch("trainingday.r18_eval._preunseal_inventory",
+                   return_value=("a" * 64, {}, {})), \
+             patch("trainingday.r18_eval._cuda_preflight"), \
+             patch("trainingday.r18_eval._load_model", create=True,
+                   side_effect=RuntimeError("full model OOM")), \
+             patch("trainingday.r18_eval._bank", side_effect=AssertionError(
+                   "private bank opened before full-model load")):
+            with self.assertRaisesRegex(RuntimeError, "full model OOM"):
+                evaluate(self.change(preflight_only=False))
+
+    def test_loaded_model_identity_and_cleanup_on_scoring_failure(self):
+        order = []
+        loaded = Mock()
+        loaded.close.side_effect = lambda: order.append("close")
+
+        def preload(*_args):
+            order.append("preload")
+            return loaded
+
+        def bank(*_args):
+            order.append("bank")
+            return [{}] * 64
+
+        def score(_cases, session, _plan_sha):
+            self.assertIs(session, loaded)
+            order.append("score")
+            raise RuntimeError("synthetic scoring failure")
+
+        with patch("trainingday.r18_eval._required_base", return_value=(self.base, self.root)), \
+             patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
+                   CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
+             patch("trainingday.r18_eval._preunseal_inventory",
+                   return_value=("a" * 64, {}, {})), \
+             patch("trainingday.r18_eval._cuda_preflight"), \
+             patch("trainingday.r18_eval._load_model", create=True, side_effect=preload), \
+             patch("trainingday.r18_eval._bank", side_effect=bank), \
+             patch("trainingday.r18_eval._run_model", side_effect=score):
+            with self.assertRaisesRegex(RuntimeError, "synthetic scoring failure"):
+                evaluate(self.change(preflight_only=False))
+        self.assertEqual(order, ["preload", "bank", "score", "close"])
+
+    def test_loaded_model_released_if_private_bank_integrity_fails(self):
+        order = []
+        loaded = Mock()
+        loaded.close.side_effect = lambda: order.append("close")
+
+        def bank(*_args):
+            order.append("bank")
+            raise AdmissionError("sealed bank integrity failure")
+
+        with patch("trainingday.r18_eval._required_base", return_value=(self.base, self.root)), \
+             patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
+                   CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
+             patch("trainingday.r18_eval._preunseal_inventory",
+                   return_value=("a" * 64, {}, {})), \
+             patch("trainingday.r18_eval._cuda_preflight"), \
+             patch("trainingday.r18_eval._load_model", return_value=loaded), \
+             patch("trainingday.r18_eval._bank", side_effect=bank), \
+             patch("trainingday.r18_eval._run_model", side_effect=AssertionError(
+                   "scoring must not begin when bank validation fails")):
+            with self.assertRaisesRegex(AdmissionError, "sealed bank integrity"):
+                evaluate(self.change(preflight_only=False))
+        self.assertEqual(order, ["bank", "close"])
+
     def test_pinned_plan_detects_hash_or_policy_change(self):
         validated, sha = _plan(self.plan_path, self.binding, self.base, self.source_sha)
         self.assertEqual(sha, canonical_sha(validated))
@@ -517,12 +585,14 @@ class R18EvaluatorTests(unittest.TestCase):
                  "answer_digits": 3, "peak_abs_intermediate": 200,
                  "nll_sum": 1.5 + i / 100,
                  "target_tokens": 3} for i in range(64)]
+        loaded = Mock()
         with patch("trainingday.r18_eval._required_base", return_value=(self.base, self.root)), \
              patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
                    CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
              patch("trainingday.r18_eval._preunseal_inventory",
                    return_value=(_hash_file(self.plan_path), {}, {})), \
              patch("trainingday.r18_eval._cuda_preflight"), \
+             patch("trainingday.r18_eval._load_model", return_value=loaded), \
              patch("trainingday.r18_eval._bank", return_value=[{}] * 64), \
              patch("trainingday.r18_eval._run_model", return_value=rows) as run:
             report = evaluate(self.change(preflight_only=False,
@@ -553,6 +623,8 @@ class R18EvaluatorTests(unittest.TestCase):
         self.assertEqual(comparison["both_correct"], 22)
         self.assertEqual(comparison["both_incorrect"], 42)
         run.assert_called_once()
+        self.assertIs(run.call_args.args[1], loaded)
+        loaded.close.assert_called_once()
 
     def test_canonical_exact_answer_requires_greedy_integer_only(self):
         for prediction, answer, is_exact in (("12", "12", True), ("+12", "12", False),
