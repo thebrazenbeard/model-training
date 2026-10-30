@@ -38,6 +38,7 @@ PLAN_SCHEMA = "VERA_TRAININGDAY_R18_BENCHMARK_PLAN_V1"
 PRIVATE_BANK_SCHEMA = "VERA_TRAININGDAY_R18_PRIVATE_EVAL_BANK_V1"
 EXCLUSIONS_SCHEMA = "VERA_TRAININGDAY_R18_PRIVATE_EVAL_EXCLUSIONS_V1"
 ARM_SCHEMA = "VERA_TRAININGDAY_R18_ARM_RECEIPT_V1"
+FREEZE_SCHEMA = "VERA_TRAININGDAY_R18_PREUNSEAL_FREEZE_INVENTORY_V1"
 BASE_MODEL = "Qwen/Qwen3.5-4B"
 BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 R18_QLORA_SOURCE_HEAD = "9a6c3b72ef8ad425fa4df371ee10cf700972c8cd"
@@ -429,6 +430,115 @@ def _adapter(args, plan: dict, plan_sha: str) -> tuple[dict | None, Path | None,
     return receipt, adapter, args.expected_adapter_receipt_sha256
 
 
+def _preunseal_inventory(args, plan: dict, plan_sha: str) -> tuple[str, dict, dict]:
+    """Require all eight *unscored* arms to be frozen before reading labels.
+
+    This is source/receipt custody, not attestation of independent GPU reload,
+    the evaluator's host identity, or the physical private bank access log.
+    """
+    path = getattr(args, "freeze_inventory", None)
+    expected = getattr(args, "expected_freeze_inventory_sha256", None)
+    if (not isinstance(path, Path) or not HEX64.fullmatch(expected or "")
+            or path.is_symlink() or not path.is_file()
+            or _hash_file(path) != expected):
+        raise AdmissionError("pre-unseal eight-arm freeze inventory and external SHA pin required")
+    inventory = _json(path)
+    entries = inventory.get("arms")
+    if (set(inventory) != {"schema", "plan_sha256", "arms"}
+            or inventory["schema"] != FREEZE_SCHEMA
+            or inventory["plan_sha256"] != plan_sha
+            or type(entries) is not list or len(entries) != 8):
+        raise AdmissionError("pre-unseal inventory schema or plan mismatch")
+    # Local import avoids coupling the source-only preflight to R18 heavy paths.
+    from trainingday.r18_benchmark import BenchmarkError, validate_arm_receipt
+    keyed: dict[tuple[str, str], dict] = {}
+    pinned: dict[tuple[str, str], tuple[Path, str]] = {}
+    saved_files: dict[Path, str] = {}
+    run_ids = set()
+    for item in entries:
+        if (type(item) is not dict
+                or set(item) != {"arm", "control", "receipt_path", "receipt_sha256"}
+                or item["arm"] not in ("mezo", "qlora")
+                or item["control"] not in CONTROLS
+                or not isinstance(item["receipt_path"], str)
+                or not HEX64.fullmatch(str(item["receipt_sha256"]))):
+            raise AdmissionError("pre-unseal inventory entry invalid")
+        key = (item["arm"], item["control"])
+        receipt_path = Path(item["receipt_path"])
+        if (key in keyed or not receipt_path.is_absolute()
+                or receipt_path.is_symlink()
+                or not receipt_path.is_file()
+                or _hash_file(receipt_path) != item["receipt_sha256"]):
+            raise AdmissionError("pre-unseal duplicate or changed arm receipt")
+        receipt = _json(receipt_path)
+        try:
+            validate_arm_receipt(receipt, plan, allow_unscored=True)
+        except (BenchmarkError, KeyError, TypeError, ValueError) as exc:
+            raise AdmissionError("pre-unseal arm receipt failed independent contract") from exc
+        if (receipt["arm"], receipt["control"]) != key or (
+                receipt["status"] != "TRAINED_UNSCORED"
+                or receipt.get("eval_access") is True
+                or receipt.get("eval_unsealed_at_utc_ns") is not None
+                or receipt["run_id"] in run_ids):
+            raise AdmissionError("pre-unseal arm already scored or identity collision")
+        if item["control"] != "frozen":
+            adapter = receipt_path.parent / "adapter"
+            if not adapter.is_dir() or adapter.is_symlink():
+                raise AdmissionError("pre-unseal saved adapter directory absent")
+            for filename, key_name in (
+                    ("adapter_model.safetensors", "adapter_model_sha256"),
+                    ("adapter_config.json", "adapter_config_sha256")):
+                saved = adapter / filename
+                if (not saved.is_file() or saved.is_symlink()
+                        or _hash_file(saved) != receipt.get(key_name)):
+                    raise AdmissionError("pre-unseal adapter bytes do not match receipt")
+                saved_files[saved] = receipt[key_name]
+        run_ids.add(receipt["run_id"])
+        keyed[key], pinned[key] = receipt, (receipt_path, item["receipt_sha256"])
+    if set(keyed) != {(arm, control) for arm in ("mezo", "qlora")
+                     for control in CONTROLS}:
+        raise AdmissionError("pre-unseal incomplete eight-arm freeze")
+    initial = {r["trainable_digest_before"] for r in keyed.values()}
+    if len(initial) != 1:
+        raise AdmissionError("pre-unseal arms do not share initial adapter digest")
+    for arm in ("mezo", "qlora"):
+        controls = {mode: keyed[(arm, mode)] for mode in CONTROLS}
+        if (controls["correct"]["training_input_sha256"] ==
+                controls["corrupt"]["training_input_sha256"]
+                or len({r["fit_probe_sha256"] for r in controls.values()}) != 1
+                or controls["correct"]["optimizer_window_seconds"] <
+                .85 * plan["training_budget_seconds"]
+                or controls["corrupt"]["optimizer_window_seconds"] <
+                .85 * plan["training_budget_seconds"]):
+            raise AdmissionError("pre-unseal incomplete controls or run budget")
+    left = keyed[("mezo", "correct")]
+    right = keyed[("qlora", "correct")]
+    if (left["training_input_sha256"] != right["training_input_sha256"]
+            or abs(left["optimizer_window_seconds"] -
+                   right["optimizer_window_seconds"]) >
+            .05 * plan["training_budget_seconds"]):
+        raise AdmissionError("pre-unseal unpaired training data or elapsed budget")
+    if args.source in ("r18-mezo", "r18-qlora"):
+        selected = pinned[(args.source.removeprefix("r18-"), args.control)]
+        if (args.adapter_receipt != selected[0]
+                or args.expected_adapter_receipt_sha256 != selected[1]):
+            raise AdmissionError("pre-unseal selected adapter not bound to inventory")
+    elif args.source != "frozen" or args.control != "frozen":
+        raise AdmissionError("pre-unseal only R18 comparison arms may score")
+    return expected, pinned, saved_files
+
+
+def _cuda_preflight() -> None:
+    """Reject an ineligible CUDA host before private answers are opened."""
+    try:
+        import torch
+        if (not torch.cuda.is_available() or not torch.cuda.is_bf16_supported()
+                or torch.cuda.mem_get_info(0)[0] < 3200 * 2**20):
+            raise RuntimeError("R18 CUDA/BF16/3200MiB pre-unseal gate failed")
+    except (ImportError, OSError) as exc:
+        raise RuntimeError("R18 CUDA pre-unseal preflight unavailable") from exc
+
+
 def _bank(manifest: Path, old_base_eval: Path, exclusions_path: Path,
           private_bank_path: Path, plan: dict, source_manifest: dict) -> list[dict]:
     """Verify 80 historic scores and rederive 64 new 6-op OOD structures."""
@@ -623,8 +733,11 @@ def evaluate(args) -> dict:
                 "adapter_receipt_sha256": receipt_sha}
     if args.peer_private is not None and args.peer_private == args.private_output:
         raise AdmissionError("peer must be a previously frozen private score")
-    # Opening private answers is expressly AFTER the arm's immutable source
-    # receipt was checked (frozen base has no mutable adapter state).
+    freeze_sha, pinned_receipts, pinned_adapters = _preunseal_inventory(
+        args, plan, plan_sha)
+    _cuda_preflight()
+    # All eight unscored arms and CUDA eligibility are now checked BEFORE
+    # opening private answers. This is not independent reload attestation.
     cases = _bank(args.manifest, args.old_base_eval, args.exclusions,
                   args.sealed_bank, plan, source_manifest)
     rows = _run_model(cases, model_path, adapter, receipt, plan_sha)
@@ -645,6 +758,11 @@ def evaluate(args) -> dict:
     # Verify the training receipt did not mutate during GPU execution.
     if receipt_sha and _hash_file(args.adapter_receipt) != receipt_sha:
         raise RuntimeError("training receipt changed during evaluation")
+    if (_hash_file(args.freeze_inventory) != freeze_sha or any(
+            _hash_file(path) != digest for path, digest in pinned_receipts.values())
+            or any(_hash_file(path) != digest
+                   for path, digest in pinned_adapters.items())):
+        raise RuntimeError("pre-unseal inventory/arm/adapter bytes changed during scoring")
     count = sum(r["exact"] for r in rows)
     tokens = sum(r["target_tokens"] for r in rows)
     nll_sum = sum(r["nll_sum"] for r in rows)
@@ -659,6 +777,7 @@ def evaluate(args) -> dict:
         }
     private = {"schema": "VERA_R18_PRIVATE_CASE_OUTCOMES_V1",
                "protocol": PROTOCOL, "plan_sha256": plan_sha,
+               "preunseal_freeze_inventory_sha256": freeze_sha,
                "eval_custody_sha256": plan["eval_custody_sha256"],
                "source": args.source, "control": args.control,
                "outcomes": rows, "outcome_sha256": canonical_sha(rows)}
@@ -680,6 +799,7 @@ def evaluate(args) -> dict:
               "cases": 64, "source": args.source, "control": args.control,
               "base_model": BASE_MODEL, "base_revision": BASE_REVISION,
               "adapter_training_receipt_sha256": receipt_sha,
+              "preunseal_freeze_inventory_sha256": freeze_sha,
               "fresh_adapter_fp32_reload_verified": adapter is not None,
               "greedy_exact_match": count, "greedy_accuracy": count / 64,
               "greedy_integer_semantic_correct": count,
@@ -721,6 +841,8 @@ def main() -> None:
     parser.add_argument("--adapter-receipt", type=Path)
     parser.add_argument("--expected-adapter-receipt-sha256")
     parser.add_argument("--peer-private", type=Path)
+    parser.add_argument("--freeze-inventory", type=Path)
+    parser.add_argument("--expected-freeze-inventory-sha256")
     parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args()
     print(json.dumps(evaluate(args), indent=2, sort_keys=True))
