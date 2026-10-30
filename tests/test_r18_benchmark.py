@@ -3,13 +3,17 @@
 import copy
 import hashlib
 import json
+import stat
+import sys
+import types
 
 import pytest
 
 from trainingday.r18_benchmark import (
     ARM_SCHEMA, EVAL_SOURCE, FIT_LENGTHS, PLAN_SCHEMA, PROBE_SCHEMA,
     BenchmarkError, canonical_sha256, compare_arms, fit_candidates,
-    main, make_plan, selected_id_digest, validate_arm_receipt, validate_fit_probes,
+    main, make_plan, preregister_from_corpus, selected_id_digest,
+    validate_arm_receipt, validate_fit_probes,
     validate_plan,
 )
 
@@ -36,6 +40,7 @@ def _plan():
     rows = _rows()
     return make_plan(
         selected_rows=rows, admission_selected_id_sha256=selected_id_digest(rows),
+        source_admission_status="ADMITTED_SOURCE_ONLY_NOT_TRAINED",
         eval_index=_eval_index(),
         r16_holdout_ids=[f"r16-fresh64-{i}" for i in range(64)],
         base_revision="1" * 40, base_binding_sha256=H,
@@ -81,7 +86,8 @@ def _receipt(plan, arm, control, *, probe_sha, selected_cfg):
         **{key: plan[key] for key in (
             "base_model", "base_revision", "base_binding_sha256",
             "tokenizer_binding_sha256", "corpus_manifest_sha256",
-            "selected_id_sha256", "train_content_sha256", "eval_custody_sha256",
+            "selected_id_sha256", "train_content_sha256", "source_admission_status",
+            "eval_custody_sha256",
             "eval_index_sha256", "seed")},
         "training_budget_seconds": 100.0,
         "training_input_sha256": J if control != "corrupt" else "c" * 64,
@@ -158,6 +164,7 @@ def test_preregistered_plan_cannot_be_rewritten(mutation):
 def test_sealed_eval_rejects_overlap_answers_prompt_duplicate_or_r16_reuse():
     fixture = dict(
         selected_rows=_rows(), admission_selected_id_sha256=selected_id_digest(_rows()),
+        source_admission_status="ADMITTED_SOURCE_ONLY_NOT_TRAINED",
         eval_index=_eval_index(), r16_holdout_ids=[f"r16-fresh64-{i}" for i in range(64)],
         base_revision="1" * 40, base_binding_sha256=H, tokenizer_binding_sha256=J,
         corpus_manifest_sha256="c" * 64, eval_custody_sha256="d" * 64,
@@ -269,6 +276,7 @@ def test_comparison_requires_all_controls_and_equal_measured_time():
 def test_source_only_cli_preregisters_and_never_overwrites(tmp_path, capsys):
     inputs = dict(
         selected_rows=_rows(), admission_selected_id_sha256=selected_id_digest(_rows()),
+        source_admission_status="ADMITTED_SOURCE_ONLY_NOT_TRAINED",
         eval_index=_eval_index(), r16_holdout_ids=[f"r16-fresh64-{i}" for i in range(64)],
         base_revision="1" * 40, base_binding_sha256=H,
         tokenizer_binding_sha256=J, corpus_manifest_sha256="c" * 64,
@@ -284,3 +292,110 @@ def test_source_only_cli_preregisters_and_never_overwrites(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["fresh_eval_count"] == 64
     with pytest.raises(BenchmarkError, match="must be new"):
         main(["preregister", "--inputs", str(inputs_file), "--output", str(plan_file)])
+
+
+def test_preregister_real_labyrinth_replayed_train_only_row_shape():
+    rows = [{"id": row["id"], "family": "verified_integer_chains",
+             "prompt": row["prompt"], "answer": row["answer"]}
+            for row in _rows()]
+    plan = make_plan(
+        selected_rows=rows, admission_selected_id_sha256=selected_id_digest(rows),
+        source_admission_status="ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE",
+        eval_index=_eval_index(),
+        r16_holdout_ids=[f"r16-fresh64-{i}" for i in range(64)],
+        base_revision="1" * 40, base_binding_sha256=H,
+        tokenizer_binding_sha256=J, corpus_manifest_sha256="c" * 64,
+        eval_custody_sha256="d" * 64, r16_eval_custody_sha256="e" * 64,
+        seed=41, training_budget_seconds=100.0, probe_budget_seconds=5.0,
+    )
+    assert plan["source_admission_status"] == "ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE"
+    assert validate_plan(plan)
+
+
+def _custodian_fixture(tmp_path, monkeypatch):
+    """Test custody control flow at its real filesystem seam, no heldout model."""
+    import trainingday.admission as admission
+    import trainingday.labyrinth_intake as intake
+    import trainingday.train_neural as neural
+
+    from trainingday.r18_benchmark import canonical_sha256
+
+    old16 = [f"reasoning-{'a' * 60}{i:04x}" for i in range(16)]
+    r16_cases = [{"id": f"r16-{i}", "prompt": f"r16 question {i}",
+                  "expected": str(i)} for i in range(64)]
+    r18_cases = [{"id": f"r18-{i}", "prompt": f"r18 question {i}",
+                  "expected": f"PRIVATE_ANSWER_{i}"} for i in range(64)]
+    r16_hash = hashlib.sha256("\n".join(c["id"] for c in r16_cases).encode()).hexdigest()
+    train = [{"id": f"train-{i}", "family": "verified_integer_chains",
+              "prompt": f"train question {i}", "answer": str(i)} for i in range(1024)]
+    old_path = tmp_path / "old16-private.json"
+    old_path.write_text(json.dumps({"previously_scored_16_ids": old16}), encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    binding = tmp_path / "base-binding.json"
+    binding.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(admission, "_hash_file", lambda p: neural.R16_V2_MANIFEST_SHA256
+                        if p == manifest else "c" * 64)
+    monkeypatch.setattr(intake, "admit_labyrinth", lambda *a, **k: (
+        {"selected_count": 1024, "status": "ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE",
+         "selected_id_sha256": selected_id_digest(train)}, train))
+    monkeypatch.setattr(neural, "_required_base", lambda binding: (
+        {"model_id": "Qwen/Qwen3.5-4B", "revision": "1" * 40,
+         "files": {"tokenizer_config.json": "b" * 64}}, tmp_path))
+    structural = types.ModuleType("trainingday.structural_eval")
+    structural.R15_V2_MANIFEST_SHA256 = neural.R16_V2_MANIFEST_SHA256
+    structural.R15_SCORED_SIGNATURE_COUNT = 13
+    structural.preregister_r15_fresh_structural64 = lambda manifest, **k: {
+        "selected_count": 64, "selected_id_sha256": r16_hash,
+        "cases": r16_cases}
+
+    def fresh64(manifest, **kwargs):
+        assert len(kwargs["previously_scored_ids"]) == 80
+        assert kwargs["expected_scored_signature_count"] == 77
+        assert kwargs["expected_scored_ids_sha256"] == hashlib.sha256(
+            "\n".join(old16 + [c["id"] for c in r16_cases]).encode()).hexdigest()
+        return {"selected_count": 64, "cases": r18_cases}
+
+    structural.select_structural_cases = fresh64
+    monkeypatch.setitem(sys.modules, "trainingday.structural_eval", structural)
+    evaluator = types.ModuleType("trainingday.eval_structural_r16")
+    evaluator.BANK_ID_SHA256 = r16_hash
+    evaluator._old_ids = lambda path: json.loads(
+        path.read_text(encoding="utf-8"))["previously_scored_16_ids"]
+    monkeypatch.setitem(sys.modules, "trainingday.eval_structural_r16", evaluator)
+    kwargs = dict(manifest=manifest, old_r15_receipt=old_path,
+                  base_binding=binding, producer_git_head=neural.R16_PRODUCER_HEAD,
+                  work_root=tmp_path, private_output_dir=tmp_path / "private",
+                  plan_output=tmp_path / "r18-plan.json",
+                  expected_r16_selected_id_sha256=r16_hash,
+                  cases=1024, seed=41, training_budget_seconds=100.0,
+                  probe_budget_seconds=5.0)
+    return kwargs, r18_cases
+
+
+def test_cpu_custodian_seals_fresh64_excluding_all_prior80_and_public_no_answers(
+        tmp_path, monkeypatch):
+    kwargs, r18_cases = _custodian_fixture(tmp_path, monkeypatch)
+    public = preregister_from_corpus(**kwargs)
+    assert public["selected_train_count"] == 1024
+    assert public["r18_eval_count"] == 64
+    plan = json.loads(kwargs["plan_output"].read_text(encoding="utf-8"))
+    assert public["plan_sha256"] == validate_plan(plan)
+    assert plan["eval_bank_source"] == EVAL_SOURCE
+    assert "PRIVATE_ANSWER" not in kwargs["plan_output"].read_text(encoding="utf-8")
+    private = kwargs["private_output_dir"] / "r18-evaluator-sealed-private.json"
+    payload = json.loads(private.read_text(encoding="utf-8"))
+    assert payload["cases"] == r18_cases
+    assert payload["eval_custody_sha256"] == canonical_sha256({
+        "manifest": plan["corpus_manifest_sha256"], "cases": r18_cases})
+    assert stat.S_IMODE(private.stat().st_mode) == 0o600
+    assert stat.S_IMODE(kwargs["private_output_dir"].stat().st_mode) == 0o700
+
+
+def test_cpu_custodian_wrong_historical_r16_pin_makes_no_artifacts(tmp_path, monkeypatch):
+    kwargs, _ = _custodian_fixture(tmp_path, monkeypatch)
+    kwargs["expected_r16_selected_id_sha256"] = "f" * 64
+    with pytest.raises(BenchmarkError, match="user-supplied R16 selection pin"):
+        preregister_from_corpus(**kwargs)
+    assert not kwargs["private_output_dir"].exists()
+    assert not kwargs["plan_output"].exists()
