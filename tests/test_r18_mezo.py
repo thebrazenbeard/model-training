@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,8 +16,9 @@ from trainingday.admission import AdmissionError
 from trainingday.r18_mezo import (
     BASE_REVISION, canonical_hash, direction_seed, finite_difference,
     run_fit_sweep, paired_zo_step, prepare_run, selected_id_digest, selected_rows,
+    save_checkpoint,
     tokenize_cases, validate_source, next_step_guard_seconds,
-    may_begin_paired_update, training_budget_status,
+    may_begin_paired_update, training_budget_status, step_timing_integrity_failure,
 )
 
 
@@ -43,7 +46,7 @@ class R18SourceTests(unittest.TestCase):
             output_root=self.output_root, run_id="r18-correct", mode="correct",
             steps=8, cases=2, seed=41, learning_rate=1e-3, epsilon=1e-3,
             micro_batch_size=1, examples_per_update=8, max_seq_length=512,
-            budget_seconds=531.0, checkpoint_every=8,
+            budget_seconds=531.0, checkpoint_every=0,
             expected_initial_digest="a" * 64, fit_probe_sha256=None,
             preflight_only=True, fit_sweep_only=False,
             sweep_batches=[1], sweep_lengths=[64, 128, 256, 384, 512, 768, 1024],
@@ -82,6 +85,23 @@ class R18SourceTests(unittest.TestCase):
                         for c in cases], sort_keys=True, ensure_ascii=False)
             .encode("utf-8")).hexdigest())
         self.assertFalse((self.output_root / self.args.run_id).exists())
+
+    def test_periodic_checkpoint_option_rejected_before_run_output(self):
+        # The R18 loop only saves a final checkpoint after stopping. An
+        # interval of eight must not be accepted as a recoverability promise.
+        self.args.checkpoint_every = 8
+        with self.assertRaisesRegex(AdmissionError, "periodic.*unsupported"):
+            validate_source(self.args)
+        self.assertFalse((self.output_root / self.args.run_id).exists())
+
+    def test_resume_option_rejected_during_source_preflight(self):
+        # A resume flag must not pass preflight and then be rejected only once
+        # the GPU run has already progressed to the expensive setup stage.
+        self.args.checkpoint_every = 0
+        self.args.resume_checkpoint = self.root / "old-checkpoint"
+        self.args.resume_receipt_sha256 = "c" * 64
+        with self.assertRaisesRegex(AdmissionError, "resume.*unsupported"):
+            validate_source(self.args)
 
     def test_corrupt_control_uses_same_ids_but_changes_labels(self):
         correct, _, _ = validate_source(self.args)
@@ -130,6 +150,24 @@ class R18SourceTests(unittest.TestCase):
 
 
 class R18MathTests(unittest.TestCase):
+    def test_step_timing_fails_closed_on_suspension_like_delay_before_deadline(self):
+        # An unusually slow completed step must invalidate the arm even if the
+        # full run's deadline has not yet elapsed. It is not proof of sleep.
+        self.assertEqual(step_timing_integrity_failure(19_000., 19_000., 32.),
+                         "STEP_EXCEEDED_ADMITTED_RESERVE")
+        self.assertEqual(training_budget_status("correct", 1, 0, 0.,
+                                                timing_integrity_failure=True),
+                         "TIME_BUDGET_INTEGRITY_INVALID")
+
+    def test_step_timing_detects_independent_clock_disagreement(self):
+        self.assertIsNone(step_timing_integrity_failure(20., 20.1, 32.))
+        self.assertEqual(step_timing_integrity_failure(5., 30., 32.),
+                         "CLOCK_DISCONTINUITY_SUSPECTED")
+        self.assertEqual(step_timing_integrity_failure(5., -0.1, 32.),
+                         "CLOCK_DISCONTINUITY_SUSPECTED")
+        with self.assertRaisesRegex(AdmissionError, "invalid step timing"):
+            step_timing_integrity_failure(float("nan"), 1., 32.)
+
     def test_conservative_guard_checks_full_paired_step_before_start(self):
         deadline_ns = 531 * 10**9
         # The physical first-step probe measured 40s, requiring 62s reserved.
@@ -337,7 +375,7 @@ class R18ResumeTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.args = argparse.Namespace(output_root=self.root, run_id="mezo-resume",
-                                       checkpoint_every=8, steps=16,
+                                       checkpoint_every=0, steps=16,
                                        expected_initial_digest="a" * 64,
                                        resume_checkpoint=None,
                                        resume_receipt_sha256=None,
@@ -376,6 +414,29 @@ class R18ResumeTests(unittest.TestCase):
         self.checkpoint()
         self.preflight["selected_id_sha256"] = "c" * 64
         with self.assertRaisesRegex(AdmissionError, "contract unsafe"):
+            prepare_run(self.args, self.preflight)
+
+    def test_interrupted_final_checkpoint_cannot_be_reused_as_complete_run(self):
+        output, contract, _, _, _ = prepare_run(self.args, self.preflight)
+
+        def crash_mid_serialization(_data, path):
+            Path(path).write_bytes(b"incomplete-safetensors")
+            raise InterruptedError("simulated disk interruption")
+
+        fake_torch_submodule = types.ModuleType("safetensors.torch")
+        fake_torch_submodule.save_file = crash_mid_serialization
+        fake_torch_package = types.ModuleType("safetensors")
+        fake_torch_package.torch = fake_torch_submodule
+        with patch.dict(sys.modules, {"safetensors": fake_torch_package,
+                                      "safetensors.torch": fake_torch_submodule}):
+            with self.assertRaisesRegex(InterruptedError, "disk interruption"):
+                save_checkpoint(output, [], object(), contract, 1, 10.0, {})
+
+        partial = output / "checkpoint-1"
+        self.assertTrue((partial / "lora-trainables.safetensors").exists())
+        self.assertFalse((partial / "state.json").exists())
+        self.assertFalse((output / "r18-mezo-receipt.json").exists())
+        with self.assertRaisesRegex(AdmissionError, "already occupied"):
             prepare_run(self.args, self.preflight)
 
 

@@ -219,13 +219,25 @@ class QloraContractTests(unittest.TestCase):
                    "peak_cuda_allocated_bytes": 0, "peak_cuda_reserved_bytes": 0,
                    "peak_cpu_rss_bytes": 0, "status": "SOURCE_ONLY_PREFLIGHT"}
         probes = [{"max_seq_length": 256, "micro_batch_size": 1,
-                   "status": "FIT", "probe_is_synthetic": True}]
+                   "status": "FIT", "probe_is_synthetic": True,
+                   "peak_cuda_allocated_bytes": 900,
+                   "peak_cuda_reserved_bytes": 1000,
+                   "peak_cpu_rss_bytes": 1200}]
         max_fit = {"max_seq_length": 1024, "micro_batch_size": 2,
                    "effective_batch_size": 8, "gradient_accumulation": 4}
         selected = []
 
         def fake_training(args, output, examples, chosen, receipt):
             selected.append(chosen)
+            # Synthetic max-fit probes are separate processes. Their peaks
+            # must not become the primary training run's peak counters.
+            self.assertEqual(receipt["peak_cuda_allocated_bytes"], 0)
+            self.assertEqual(receipt["peak_cuda_reserved_bytes"], 0)
+            self.assertEqual(receipt["fit_probe_peak_cuda_allocated_bytes"], 900)
+            self.assertEqual(receipt["fit_probe_peak_cuda_reserved_bytes"], 1000)
+            self.assertEqual(receipt["fit_probe_peak_cpu_rss_bytes"], 1200)
+            receipt["peak_cuda_allocated_bytes"] = 400
+            receipt["peak_cuda_reserved_bytes"] = 600
             receipt["status"] = "TRAINED_UNSCORED"
             return receipt
 
@@ -237,6 +249,8 @@ class QloraContractTests(unittest.TestCase):
                                      "effective_batch_size": 8, "gradient_accumulation": 8}])
         self.assertEqual(result["secondary_max_fit"], max_fit)
         self.assertEqual(result["selected_fit_config"], self.plan["primary_training_config"])
+        self.assertEqual(result["peak_cuda_reserved_bytes"], 600)
+        self.assertEqual(result["fit_probe_peak_cuda_reserved_bytes"], 1000)
 
     def test_primary_oom_is_never_mislabeled_as_success(self):
         self.args.preflight_only = False
@@ -264,6 +278,41 @@ class QloraContractTests(unittest.TestCase):
         self.assertFalse(q.may_start_full_step(29.0, [1.0]))
         with self.assertRaisesRegex(ValueError, "positive"):
             q.next_step_guard_seconds([0.0])
+
+    def test_effective_batch_token_objective_matches_mezo_for_variable_targets(self):
+        # MeZO's reference is token-weighted across the entire eight-example
+        # update. A flat 1/GA8 scale is wrong when completion lengths differ.
+        counts = [2, 3, 4, 5, 6, 7, 8, 2]
+        example_losses = [0.2, 2.3, 0.9, 1.4, 0.3, 1.7, 0.5, 3.1]
+        examples = [{"target_tokens": count} for count in counts]
+        expected = sum(n * loss for n, loss in zip(counts, example_losses)) / sum(counts)
+        unweighted = sum(example_losses) / len(example_losses)
+        self.assertNotAlmostEqual(expected, unweighted, places=4)
+
+        for batch_size in (1, 2, 4, 8):
+            actual = 0.0
+            scale_sum = 0.0
+            for start in range(0, 8, batch_size):
+                rows = examples[start:start + batch_size]
+                tokens = counts[start:start + batch_size]
+                losses = example_losses[start:start + batch_size]
+                model_mean = sum(n * loss for n, loss in zip(tokens, losses)) / sum(tokens)
+                scale = q.effective_batch_token_loss_scale(rows, examples)
+                actual += model_mean * scale
+                scale_sum += scale
+            self.assertAlmostEqual(scale_sum, 1.0, places=14)
+            self.assertAlmostEqual(actual, expected, places=14)
+
+    def test_effective_batch_scale_fails_closed_on_invalid_counts(self):
+        with self.assertRaisesRegex(ValueError, "target token"):
+            q.effective_batch_token_loss_scale([{"target_tokens": 0}],
+                                               [{"target_tokens": 0}])
+        with self.assertRaisesRegex(ValueError, "target token"):
+            q.effective_batch_token_loss_scale([{"target_tokens": 2}],
+                                               [{"target_tokens": 2}, {"target_tokens": -1}])
+        with self.assertRaisesRegex(ValueError, "target token"):
+            q.effective_batch_token_loss_scale([{"target_tokens": 3}],
+                                               [{"target_tokens": 2}])
 
 
 if __name__ == "__main__":
