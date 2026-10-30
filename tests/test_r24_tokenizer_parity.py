@@ -90,6 +90,18 @@ def row(value="2", *, key="synthetic-a", prompt="What is 1+1?"):
 
 
 class TestR24TokenizerParity(unittest.TestCase):
+    def test_runners_use_identical_joined_tokens_with_contextual_suffix(self):
+        from trainingday.r18_mezo import tokenize_cases
+        from trainingday.r18_qlora import _tensorize
+
+        tokenizer = ContextualTailTokenizer()
+        selected = [row()]
+        mezo, _ = tokenize_cases(tokenizer, selected, 128)
+        qlora = _tensorize(tokenizer, selected)
+        self.assertEqual(mezo[0]["input_ids"], qlora[0]["input_ids"])
+        self.assertEqual(mezo[0]["labels"], qlora[0]["labels"])
+        self.assertEqual(mezo[0]["target_tokens"], qlora[0]["target_tokens"])
+
     def test_malformed_preparer_output_is_structured_hold(self):
         with patch("trainingday.r24_tokenizer_parity._tensorize", return_value=[{}]):
             result = inspect_tokenizer_parity(SyntheticTokenizer(), [row()], 128)
@@ -135,15 +147,16 @@ class TestR24TokenizerParity(unittest.TestCase):
         self.assertFalse(result["corpus_membership_attested"])
         self.assertFalse(result["sampling_schedule_attested"])
 
-    def test_prefix_stable_contextual_suffix_is_a_detected_mismatch(self):
+    def test_prefix_stable_contextual_suffix_now_matches_both_runners(self):
         result = inspect_tokenizer_parity(ContextualTailTokenizer(), [row()], 128)
-        self.assertEqual(result["reason"], "TOKEN_SEQUENCE_OR_MASK_MISMATCH")
-        self.assertEqual(result["mismatched_examples"], 1)
-        self.assertEqual(result["status"], "HOLD")
+        self.assertEqual(result["reason"], "MATCHED_SUPPLIED_TOKEN_IDS_AND_LABELS")
+        self.assertEqual(result["mismatched_examples"], 0)
+        self.assertEqual(result["status"], "PASS_SOURCE_PARITY")
+        self.assertFalse(result["authorizes_training"])
 
-    def test_joined_prefix_token_merge_fails_qlora_boundary_check(self):
+    def test_joined_prefix_token_merge_fails_both_boundary_checks(self):
         result = inspect_tokenizer_parity(BoundaryMergeTokenizer(), [row("X")], 128)
-        self.assertEqual(result["reason"], "QLORA_PREPARATION_REJECTED")
+        self.assertEqual(result["reason"], "MEZO_PREPARATION_REJECTED")
         self.assertEqual(result["status"], "HOLD")
 
     def test_overlong_example_fails_mezo_no_truncation_guard(self):
@@ -151,10 +164,16 @@ class TestR24TokenizerParity(unittest.TestCase):
         self.assertEqual(result["reason"], "MEZO_PREPARATION_REJECTED")
 
     def test_qlora_only_expansion_fails_no_truncation_guard(self):
-        tokenizer = InflatingSuffixTokenizer()
+        tokenizer = SyntheticTokenizer()
         from trainingday.r18_mezo import tokenize_cases
+        from trainingday.r18_qlora import _tensorize
         prepared, _ = tokenize_cases(tokenizer, [row()], 128)
-        result = inspect_tokenizer_parity(tokenizer, [row()], len(prepared[0]["input_ids"]))
+        qlora = _tensorize(tokenizer, [row()])
+        inflated = [dict(qlora[0],
+                         input_ids=qlora[0]["input_ids"] + [7] * 40,
+                         labels=qlora[0]["labels"] + [-100] * 40)]
+        with patch("trainingday.r24_tokenizer_parity._tensorize", return_value=inflated):
+            result = inspect_tokenizer_parity(tokenizer, [row()], len(prepared[0]["input_ids"]))
         self.assertEqual(result["reason"], "QLORA_NO_TRUNCATION_LIMIT_EXCEEDED")
         self.assertEqual(result["status"], "HOLD")
 

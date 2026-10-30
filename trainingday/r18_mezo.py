@@ -377,11 +377,16 @@ def tokenize_cases(tokenizer, cases: list[dict], max_length: int) -> tuple[list[
     for case in cases:
         prefix = _generation_prefix(tokenizer, case["prompt"])
         prefix_ids = tokenizer(prefix, add_special_tokens=False)["input_ids"]
-        tail_ids = tokenizer(case["response"] + eos,
+        # Match QLoRA's canonical joined encoding. Separately encoding the
+        # completion can silently produce different supervised token IDs for
+        # context-sensitive tokenizers even if text/loss formulas match.
+        full_ids = tokenizer(prefix + case["response"] + eos,
                              add_special_tokens=False)["input_ids"]
-        full_ids = prefix_ids + tail_ids
+        if full_ids[:len(prefix_ids)] != prefix_ids:
+            raise RuntimeError("R18 prompt/completion token boundary is not stable")
+        tail_ids = full_ids[len(prefix_ids):]
         target_count = len(tail_ids)
-        if target_count < 1 or len(full_ids) > max_length:
+        if not prefix_ids or target_count < 1 or len(full_ids) > max_length:
             raise RuntimeError("completion missing or token budget exceeded; no truncation")
         prepared.append({"id": case["id"], "input_ids": full_ids,
                          "labels": [-100] * len(prefix_ids) + full_ids[len(prefix_ids):],
