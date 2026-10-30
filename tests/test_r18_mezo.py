@@ -13,7 +13,7 @@ from unittest.mock import patch
 from trainingday.admission import AdmissionError
 from trainingday.r18_mezo import (
     BASE_REVISION, canonical_hash, direction_seed, finite_difference,
-    paired_zo_step, prepare_run, selected_id_digest, selected_rows,
+    fit_sweep, paired_zo_step, prepare_run, selected_id_digest, selected_rows,
     tokenize_cases, validate_source,
 )
 
@@ -115,6 +115,49 @@ class R18SourceTests(unittest.TestCase):
 
 
 class R18MathTests(unittest.TestCase):
+    def test_sweep_uses_actual_padded_shapes_and_stops_after_oom(self):
+        class FakeCuda:
+            class OutOfMemoryError(RuntimeError):
+                pass
+
+            def empty_cache(self):
+                pass
+
+            def reset_peak_memory_stats(self, device):
+                pass
+
+            def max_memory_allocated(self, device):
+                return 1000
+
+            def max_memory_reserved(self, device):
+                return 2000
+
+            def synchronize(self, device):
+                pass
+
+        fake_torch = argparse.Namespace(cuda=FakeCuda())
+        args = argparse.Namespace(sweep_batches=[1], sweep_lengths=[64, 128, 256, 512],
+                                  seed=41, epsilon=0.001)
+        case = {"id": "x", "input_ids": [1] * 80,
+                "labels": [-100] * 78 + [2, 3], "target_tokens": 2,
+                "input_tokens": 80}
+
+        def loss(_model, _torch, _tok, _samples, _batch, length):
+            if length == 256:
+                raise FakeCuda.OutOfMemoryError("CUDA out of memory")
+            return 1.0
+
+        with patch("trainingday.r18_mezo._noise_delta"), \
+             patch("trainingday.r18_mezo._snapshot_trainables", return_value={}), \
+             patch("trainingday.r18_mezo._restore_trainables"), \
+             patch("trainingday.r18_mezo.paired_batch_loss", side_effect=loss):
+            result = fit_sweep(None, [], fake_torch, None, [case], args)
+        self.assertEqual([p["fit_status"] for p in result["probes"]],
+                         ["infeasible", "fits", "oom"])
+        self.assertEqual(result["probes"][1]["actual_tensor_shape"], [1, 128])
+        self.assertEqual(result["probes"][1]["actual_nonpad_tokens"], 80)
+        self.assertTrue(result["stopped_after_oom_requires_fresh_process"])
+
     def test_completion_only_labels_exactly_match_tokenized_chat_prefix(self):
         class DummyTokenizer:
             eos_token = "!"
