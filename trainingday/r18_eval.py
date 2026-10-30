@@ -79,11 +79,14 @@ def _private_custody(path: Path, *, directory: bool) -> None:
     if os.name == "nt":
         try:
             from trainingday.r18_benchmark import (
-                _windows_owner_sid, _windows_verify_owner_only,
+                BenchmarkError, _windows_owner_sid, _windows_verify_owner_only,
             )
         except ImportError as exc:
             raise AdmissionError("Windows private ACL verifier missing") from exc
-        _windows_verify_owner_only(path, _windows_owner_sid(), directory=directory)
+        try:
+            _windows_verify_owner_only(path, _windows_owner_sid(), directory=directory)
+        except BenchmarkError as exc:
+            raise AdmissionError("private evaluation custody has unsafe Windows ACL") from exc
     elif stat.S_IMODE(path.stat().st_mode) != (0o700 if directory else 0o600):
         raise AdmissionError("private evaluation custody is not owner-only")
 
@@ -116,8 +119,14 @@ def _private_write(path: Path, data: dict) -> None:
     if os.name == "nt":
         # The file initially inherits ONLY the owner ACE from the already
         # protected parent. Make that ACE explicit and independently verify.
-        from trainingday.r18_benchmark import _protect_private_path
-        _protect_private_path(path, directory=False)
+        try:
+            from trainingday.r18_benchmark import BenchmarkError, _protect_private_path
+        except ImportError as exc:
+            raise AdmissionError("Windows private ACL protection unavailable") from exc
+        try:
+            _protect_private_path(path, directory=False)
+        except BenchmarkError as exc:
+            raise AdmissionError("unable to restrict private outcome Windows ACL") from exc
     _private_custody(path, directory=False)
 
 
