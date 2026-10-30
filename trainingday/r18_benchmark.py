@@ -632,6 +632,10 @@ def _protect_private_path(path: Path, *, directory: bool,
         ["icacls", str(path), "/inheritance:r"],
         ["icacls", str(path), "/grant:r",
          f"*{sid}:(OI)(CI)F" if directory else f"*{sid}:F"],
+        # Windows may make BUILTIN\Administrators the owner of newly created
+        # paths even when the current user has an explicit FullControl ACE.
+        # Set the owner to this process's actual SID before attesting custody.
+        ["icacls", str(path), "/setowner", f"*{sid}"],
         ["icacls", str(path), "/verify"],
     ]
     for argv in commands:
