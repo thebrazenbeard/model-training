@@ -25,4 +25,4 @@ class MultiSeedTests(unittest.TestCase):
         summary=summarize(report)
         self.assertEqual(len(report["arms"]),20)
         self.assertFalse(summary["vera_neural_qualification"])
-        self.assertEqual(len(summary["metrics"]),8)
+        self.assertEqual(len(summary["metrics"]),10)
