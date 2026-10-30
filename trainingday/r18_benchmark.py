@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import secrets
 import stat
 import subprocess
 import unicodedata
@@ -43,7 +44,8 @@ PLAN_KEYS = frozenset({
     "tokenizer_binding_sha256", "corpus_manifest_sha256", "selected_id_sha256",
     "selected_count", "train_content_sha256", "source_admission_status",
     "eval_bank_source",
-    "eval_custody_sha256", "eval_index_sha256", "eval_examples",
+    "eval_custody_sha256", "eval_index_sha256", "eval_source_manifest_sha256",
+    "eval_examples",
     "r16_eval_custody_sha256", "r16_holdout_id_sha256", "seed",
     "training_budget_seconds", "probe_budget_seconds", "fit_policy",
     "fit_candidates", "primary_training_config", "no_eval_access_before_arm_freeze",
@@ -159,7 +161,8 @@ def make_plan(*, selected_rows: Sequence[Mapping], admission_selected_id_sha256:
               eval_index: Sequence[Mapping], r16_holdout_ids: Sequence[str],
               base_revision: str, base_binding_sha256: str,
               tokenizer_binding_sha256: str, corpus_manifest_sha256: str,
-              eval_custody_sha256: str, r16_eval_custody_sha256: str,
+              eval_custody_sha256: str, eval_source_manifest_sha256: str,
+              r16_eval_custody_sha256: str,
               seed: int, training_budget_seconds: float,
               probe_budget_seconds: float, primary_sequence_length: int = 256) -> dict:
     """Make a reproducible plan from admitted train and answer-free eval indices.
@@ -187,6 +190,7 @@ def make_plan(*, selected_rows: Sequence[Mapping], admission_selected_id_sha256:
                          ("tokenizer binding", tokenizer_binding_sha256),
                          ("corpus manifest", corpus_manifest_sha256),
                          ("R18 eval custody", eval_custody_sha256),
+                         ("R18 independent source manifest", eval_source_manifest_sha256),
                          ("R16 exclusion custody", r16_eval_custody_sha256)):
         _check(_hex(digest), f"{name} SHA256 missing")
     _check(_hex(base_revision, 40), "base must be pinned to 40-hex model revision")
@@ -208,6 +212,7 @@ def make_plan(*, selected_rows: Sequence[Mapping], admission_selected_id_sha256:
         "source_admission_status": source_admission_status,
         "eval_bank_source": EVAL_SOURCE,
         "eval_custody_sha256": eval_custody_sha256,
+        "eval_source_manifest_sha256": eval_source_manifest_sha256,
         "eval_index_sha256": canonical_sha256(eval_meta),
         "eval_examples": len(eval_meta),
         "r16_eval_custody_sha256": r16_eval_custody_sha256,
@@ -233,7 +238,8 @@ def validate_plan(plan: Mapping) -> str:
            "unbound official Qwen3.5-4B revision")
     for key in ("base_binding_sha256", "tokenizer_binding_sha256",
                 "corpus_manifest_sha256", "selected_id_sha256", "train_content_sha256",
-                "eval_custody_sha256", "eval_index_sha256", "r16_eval_custody_sha256",
+                "eval_custody_sha256", "eval_index_sha256", "eval_source_manifest_sha256",
+                "r16_eval_custody_sha256",
                 "r16_holdout_id_sha256"):
         _check(_hex(plan.get(key)), f"invalid plan {key}")
     _check(_integer(plan.get("selected_count"), zero=False)
@@ -657,18 +663,22 @@ def _create_private_json(path: Path, value: object) -> None:
 def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
                             base_binding: Path, producer_git_head: str,
                             work_root: Path, private_output_dir: Path,
-                            plan_output: Path, expected_r16_selected_id_sha256: str | None = None,
+                            plan_output: Path, eval_source_manifest_output: Path | None = None,
+                            expected_r16_selected_id_sha256: str | None = None,
                             cases: int, seed: int, training_budget_seconds: float,
                             probe_budget_seconds: float,
                             primary_sequence_length: int = 256) -> dict:
-    """Trusted CPU-only custodian: derive fresh R18 bank without exposing answers.
+    """Trusted CPU-only custodian: new external 6-chain bank, v2 training fixed.
 
     Requires the independent R16 structural evaluator module from PR #138;
     the neural runners MUST NEVER import that module or read the resulting
-    private eval-cases file. The old 16-ID list must come from a private R15
-    receipt, and the R16 64-ID digest must match an external observed pin.
+    private eval-cases file. R15/R16 v2 exhaustion is verified and historical
+    labels excluded; NEW R18 cases use a separately pinned external OOD source.
     """
     from trainingday.admission import _hash_file
+    from trainingday.r18_eval_source import (
+        generate_novel_r18_cases, source_manifest as new_source_manifest,
+    )
     from trainingday.labyrinth_intake import admit_labyrinth
     from trainingday.train_neural import (
         R16_PRODUCER_HEAD, R16_V2_MANIFEST_SHA256, _required_base,
@@ -679,7 +689,7 @@ def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
         )
         from trainingday.structural_eval import (
             R15_SCORED_SIGNATURE_COUNT, R15_V2_MANIFEST_SHA256,
-            preregister_r15_fresh_structural64, select_structural_cases,
+            preregister_r15_fresh_structural64,
         )
     except ImportError as exc:
         raise BenchmarkError(
@@ -698,6 +708,9 @@ def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
         Path(manifest), Path(base_binding), Path(old_r15_receipt))
     work_root, private_output_dir, plan_output = (
         Path(work_root), Path(private_output_dir), Path(plan_output))
+    eval_source_manifest_output = (Path(eval_source_manifest_output)
+                                   if eval_source_manifest_output is not None
+                                   else plan_output.parent / "r18-external-chain6-source-manifest.json")
     _check(manifest.is_file() and not manifest.is_symlink()
            and _hash_file(manifest) == R16_V2_MANIFEST_SHA256
            and R15_V2_MANIFEST_SHA256 == R16_V2_MANIFEST_SHA256,
@@ -707,8 +720,13 @@ def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
            and not private_output_dir.parent.is_symlink()
            and not private_output_dir.exists() and not private_output_dir.is_symlink()
            and plan_output.parent.is_dir() and not plan_output.parent.is_symlink()
-           and not plan_output.exists() and not plan_output.is_symlink(),
-           "private custody directory and public plan must be new and confined")
+           and not plan_output.exists() and not plan_output.is_symlink()
+           and eval_source_manifest_output.parent.is_dir()
+           and not eval_source_manifest_output.parent.is_symlink()
+           and not eval_source_manifest_output.exists()
+           and not eval_source_manifest_output.is_symlink()
+           and eval_source_manifest_output != plan_output,
+           "private custody directory, external eval source, and public plan must be new")
     # This exact PR #138 helper enforces the original R15 base receipt byte
     # SHA f7a807..., the status/manifest/base provenance, and ordered 16 IDs.
     # No manual extraction or copying of evaluator-private IDs is permitted.
@@ -730,30 +748,41 @@ def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
     r16 = preregister_r15_fresh_structural64(
         manifest, previously_scored_16_ids=old_ids)
     _check(r16.get("selected_count") == 64
-           and r16.get("selected_id_sha256") == PINNED_R16_FRESH64_SHA256,
+           and r16.get("selected_id_sha256") == PINNED_R16_FRESH64_SHA256
+           and r16.get("signature_count") == 64,
            "fresh64 R16 exclusion selection differs from earlier scored bank")
     r16_cases = r16["cases"]
     r16_ids = [row["id"] for row in r16_cases]
-    exclusion_ids = old_ids + r16_ids
-    exclusion_sha = hashlib.sha256("\n".join(exclusion_ids).encode()).hexdigest()
-    r18 = select_structural_cases(
-        manifest, expected_manifest_sha256=R16_V2_MANIFEST_SHA256,
-        max_cases=64, previously_scored_ids=exclusion_ids,
-        expected_scored_ids_sha256=exclusion_sha,
-        expected_scored_signature_count=R15_SCORED_SIGNATURE_COUNT + 64,
-    )
-    _check(r18.get("selected_count") == 64 and len(r18.get("cases", ())) == 64,
-           "fresh R18 structural evaluation bank unavailable")
+    # The pinned v2 eval split has ZERO unseen signatures after the previously
+    # scored R15+R16 banks. Never relabel those structures as fresh. Instead,
+    # independently generate 64 six-operation compositions (the admitted v2
+    # reasoning oracle permits only 2–5 steps) with their own source custody.
+    result = subprocess.run(["git", "rev-parse", "HEAD"],
+                            cwd=Path(__file__).resolve().parents[1],
+                            capture_output=True, text=True, check=False)
+    _check(result.returncode == 0 and _hex(result.stdout.strip(), 40),
+           "external evaluator generator source Git commit unavailable")
+    # A public fixed seed would expose all evaluation labels. This private
+    # 256-bit nonce is generated once, committed publicly only by SHA, and
+    # unsealed solely to the independent scorer after training arms freeze.
+    private_nonce_hex = secrets.token_hex(32)
+    new_cases = generate_novel_r18_cases(private_nonce_hex=private_nonce_hex)
+    eval_source = new_source_manifest(
+        new_cases, private_nonce_hex=private_nonce_hex,
+        v2_manifest_sha256=R16_V2_MANIFEST_SHA256,
+        producer_git_head=result.stdout.strip())
+    source_sha = canonical_sha256(eval_source)
+    _check(len(new_cases) == 64 and all(case["id"] not in set(old_ids + r16_ids)
+                                        for case in new_cases),
+           "external six-chain eval overlaps previously scored IDs")
     eval_index = [{"id": case["id"], "prompt_sha256": _prompt_sha(case["prompt"])}
-                  for case in r18["cases"]]
-    _check(not ({case["id"] for case in r18["cases"]} & set(exclusion_ids)),
-           "new R18 evaluation reused an already scored case")
+                  for case in new_cases]
     # These commitments bind *private answers* without copying them into the
     # public plan. The independent scorer can later reopen the private file.
     r16_custody_sha = canonical_sha256({"manifest": R16_V2_MANIFEST_SHA256,
                                         "cases": r16_cases})
-    eval_custody_sha = canonical_sha256({"manifest": R16_V2_MANIFEST_SHA256,
-                                         "cases": r18["cases"]})
+    eval_custody_sha = canonical_sha256({"source_manifest_sha256": source_sha,
+                                         "cases": new_cases})
     inputs = {
         "selected_rows": selected,
         "admission_selected_id_sha256": admitted["selected_id_sha256"],
@@ -764,6 +793,7 @@ def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
         "tokenizer_binding_sha256": base["files"]["tokenizer_config.json"],
         "corpus_manifest_sha256": _hash_file(manifest),
         "eval_custody_sha256": eval_custody_sha,
+        "eval_source_manifest_sha256": source_sha,
         "r16_eval_custody_sha256": r16_custody_sha,
         "seed": seed, "training_budget_seconds": training_budget_seconds,
         "probe_budget_seconds": probe_budget_seconds,
@@ -780,9 +810,11 @@ def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
     _create_private_json(private_output_dir / "r18-evaluator-sealed-private.json", {
         "schema": "VERA_TRAININGDAY_R18_PRIVATE_EVAL_BANK_V1",
         "manifest_sha256": R16_V2_MANIFEST_SHA256,
+        "private_nonce_hex": private_nonce_hex,
+        "eval_source_manifest_sha256": source_sha,
         "eval_custody_sha256": eval_custody_sha,
         "eval_index_sha256": plan["eval_index_sha256"],
-        "cases": r18["cases"],
+        "cases": new_cases,
     })
     _create_private_json(private_output_dir / "r18-exclusions-private.json", {
         "schema": "VERA_TRAININGDAY_R18_PRIVATE_EVAL_EXCLUSIONS_V1",
@@ -790,6 +822,7 @@ def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
         "r16_selected_id_sha256": PINNED_R16_FRESH64_SHA256,
         "excluded_signature_count": R15_SCORED_SIGNATURE_COUNT + 64,
     })
+    _create_private_json(eval_source_manifest_output, eval_source)
     _create_private_json(plan_output, plan)
     return {"status": "R18_SOURCE_ONLY_PREREGISTERED_EVAL_UNTOUCHED_BY_MODEL",
             "plan_sha256": validate_plan(plan),
@@ -799,6 +832,9 @@ def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
             "r18_eval_count": plan["eval_examples"],
             "r18_eval_index_sha256": plan["eval_index_sha256"],
             "r18_eval_custody_sha256": plan["eval_custody_sha256"],
+            "r18_eval_source_manifest_sha256": plan["eval_source_manifest_sha256"],
+            "r18_eval_source_protocol": "R18_EXTERNAL_LONG_CHAIN64_OOD_V1",
+            "r18_eval_source_manifest_output": str(eval_source_manifest_output),
             "plan_output": str(plan_output),
             "private_output_dir": str(private_output_dir)}
 
@@ -820,6 +856,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     from_corpus.add_argument("--work-root", type=Path, required=True)
     from_corpus.add_argument("--private-output-dir", type=Path, required=True)
     from_corpus.add_argument("--plan-output", type=Path, required=True)
+    from_corpus.add_argument("--eval-source-manifest-output", type=Path,
+                             help="New public manifest pinning independent 6-op evaluation source")
     from_corpus.add_argument("--expected-r16-selected-id-sha256",
                              help="Optional extra check against PR #138 frozen R16 bank pin")
     from_corpus.add_argument("--cases", type=int, default=1024)
@@ -847,6 +885,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             base_binding=args.base_binding, producer_git_head=args.producer_git_head,
             work_root=args.work_root, private_output_dir=args.private_output_dir,
             plan_output=args.plan_output,
+            eval_source_manifest_output=args.eval_source_manifest_output,
             expected_r16_selected_id_sha256=args.expected_r16_selected_id_sha256,
             cases=args.cases, seed=args.seed,
             training_budget_seconds=args.training_budget_seconds,
