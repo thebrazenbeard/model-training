@@ -229,6 +229,26 @@ class R18MathTests(unittest.TestCase):
                                loss_fn=lambda: (_ for _ in ()).throw(RuntimeError("forward failed")))
         self.assertAlmostEqual(p["value"], 1.0)
 
+    def test_mid_perturbation_failure_restores_original(self):
+        p = {"value": 1.0}
+        calls = 0
+
+        def failing_noise(_tensors, _torch, seed, scale):
+            nonlocal calls
+            calls += 1
+            p["value"] += 3.0 * scale
+            if calls == 2:
+                raise RuntimeError("CUDA out of memory mid-perturbation")
+
+        with patch("trainingday.r18_mezo._noise_delta", side_effect=failing_noise), \
+             patch("trainingday.r18_mezo._snapshot_trainables", side_effect=lambda _: {"lora_A": p["value"]}), \
+             patch("trainingday.r18_mezo._restore_trainables",
+                   side_effect=lambda _, _torch, saved: p.update(value=saved["lora_A"])):
+            with self.assertRaisesRegex(RuntimeError, "mid-perturbation"):
+                paired_zo_step([("lora_A", p)], None, seed=99, epsilon=0.01,
+                               learning_rate=0.1, loss_fn=lambda: p["value"] ** 2)
+        self.assertEqual(p["value"], 1.0)
+
     def test_rejects_nonfinite_or_zero_direction(self):
         with self.assertRaisesRegex(RuntimeError, "nonfinite"):
             finite_difference(float("nan"), 1.0, 0.001)
