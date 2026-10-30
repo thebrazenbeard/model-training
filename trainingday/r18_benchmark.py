@@ -10,10 +10,16 @@ honestly measured.  R16 fresh64 is historical context, never a tuning set.
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import hashlib
+import io
 import json
 import math
 import os
+import re
+import stat
+import subprocess
 import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -556,12 +562,82 @@ def _json_file(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _windows_owner_sid() -> str:
+    """Resolve the current Windows user SID, never a hardcoded account name."""
+    result = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"],
+                            capture_output=True, text=True, check=False)
+    _check(result.returncode == 0, "cannot resolve Windows owner SID")
+    rows = list(csv.reader(io.StringIO(result.stdout.lstrip("\ufeff"))))
+    _check(len(rows) == 1 and len(rows[0]) == 2
+           and re.fullmatch(r"S-1-\d+(?:-\d+)+", rows[0][1]) is not None,
+           "Windows owner SID result malformed")
+    return rows[0][1]
+
+
+def _windows_verify_owner_only(path: Path, sid: str, *, directory: bool) -> None:
+    """Independently inspect protected DACL via Windows Get-Acl, fail closed.
+
+    `icacls /verify` alone checks ACL canonicality, not confidentiality. Check
+    the exact owner SID, absence of inheritance and all other Allow/Deny ACEs.
+    Path is passed as a Base64 UTF-16LE literal, never PowerShell source text.
+    """
+    encoded_path = base64.b64encode(str(path).encode("utf-16le")).decode("ascii")
+    source = rf"""
+$ErrorActionPreference = 'Stop'
+$path = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded_path}'))
+$sid = '{sid}'
+$acl = Get-Acl -LiteralPath $path
+$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+if ($owner -ne $sid -or -not $acl.AreAccessRulesProtected -or $rules.Count -ne 1) {{ exit 21 }}
+$r = $rules[0]
+if ($r.IdentityReference.Value -ne $sid -or $r.IsInherited -or
+    $r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+    ([int]($r.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl)) -ne
+        [int][Security.AccessControl.FileSystemRights]::FullControl) {{ exit 22 }}
+if ({'$true' if directory else '$false'} -and
+    ($r.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ContainerInherit) -eq 0) {{ exit 23 }}
+Write-Output 'R18_PRIVATE_ACL_OWNER_ONLY'
+"""
+    encoded_script = base64.b64encode(source.encode("utf-16le")).decode("ascii")
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_script],
+        capture_output=True, text=True, check=False)
+    _check(result.returncode == 0 and "R18_PRIVATE_ACL_OWNER_ONLY" in result.stdout,
+           "Windows private evaluation ACL has inherited/broad access")
+
+
+def _protect_private_path(path: Path, *, directory: bool,
+                          is_windows: bool | None = None) -> None:
+    """Verify private custody on POSIX or enforce strict owner-only NTFS ACL."""
+    if is_windows is None:
+        is_windows = os.name == "nt"
+    if not is_windows:
+        expected = 0o700 if directory else 0o600
+        _check(stat.S_IMODE(path.stat().st_mode) == expected,
+               "private evaluator path lacks owner-only POSIX permissions")
+        return
+    sid = _windows_owner_sid()
+    commands = [
+        ["icacls", str(path), "/inheritance:r"],
+        ["icacls", str(path), "/grant:r",
+         f"*{sid}:(OI)(CI)F" if directory else f"*{sid}:F"],
+        ["icacls", str(path), "/verify"],
+    ]
+    for argv in commands:
+        result = subprocess.run(argv, capture_output=True, text=True, check=False)
+        _check(result.returncode == 0,
+               "icacls could not restrict/verify private evaluation custody")
+    _windows_verify_owner_only(path, sid, directory=directory)
+
+
 def _create_private_json(path: Path, value: object) -> None:
     """Exclusive, mode-0600 writing for evaluation-custodian data only."""
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as writer:
         json.dump(value, writer, sort_keys=True, indent=2, ensure_ascii=False)
         writer.write("\n")
+    _protect_private_path(path, directory=False)
 
 
 def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
@@ -683,6 +759,9 @@ def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
     # Keep independent scorer secrets in a new 0700 directory. No output may
     # overwrite an earlier sealed bank or preregistration; never print labels.
     private_output_dir.mkdir(mode=0o700, exist_ok=False)
+    # NTFS ignores the POSIX mode bits; lock and verify its DACL *before*
+    # writing any label. Children then inherit only the owner's full rights.
+    _protect_private_path(private_output_dir, directory=True)
     _create_private_json(private_output_dir / "r18-plan-inputs.json", inputs)
     _create_private_json(private_output_dir / "r18-evaluator-sealed-private.json", {
         "schema": "VERA_TRAININGDAY_R18_PRIVATE_EVAL_BANK_V1",
