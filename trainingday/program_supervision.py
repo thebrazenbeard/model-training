@@ -1,10 +1,9 @@
 """Train-only, source-bound supervision for a *restricted* Python program subset.
 
-No source module, function, dynamic code, imports, or subprocess is executed.
-Two distinct AST traversal/evaluation paths agree on each emitted integer
-answer. Their arithmetic primitives are shared, so agreement is not an
-independent oracle for those primitives. This is not verification of full
-CPython behavior or coding ability.
+No source module, function, dynamic code, or import is executed. A narrowly
+bounded Git subprocess reads pinned raw objects only; separate AST traversal
+paths and an independent arithmetic-primitive reference must agree. This is
+not verification of full CPython behavior or general coding ability.
 """
 
 from __future__ import annotations
@@ -15,24 +14,85 @@ import copy
 import hashlib
 import itertools
 import json
+import operator
 import re
+import subprocess
 from pathlib import Path
 
 from trainingday.admission import AdmissionError, _hash_file, _require
 
 
-SCHEMA = "vera.trainingday.program_supervision.v1"
-ORACLE = "RESTRICTED_PYTHON_AST_CROSS_PATH_CHECK_V1"
+SCHEMA = "vera.trainingday.program_supervision.v2"
+ORACLE = "RESTRICTED_PYTHON_AST_OPERATOR_REFERENCE_V2"
 SOURCE_SCHEMA = "vera.trainingday.corpus.v1"
 MAX_INT = 1_000_000
 MAX_FUNCTION_CHARS = 1600
 ALLOWED_OPS = (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod)
 ALLOWED_CMPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)
 INPUTS = (-7, -3, -1, 0, 1, 3, 7)
+_REFERENCE_BINARY = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+}
+_REFERENCE_COMPARE = {
+    ast.Eq: operator.eq, ast.NotEq: operator.ne, ast.Lt: operator.lt,
+    ast.LtE: operator.le, ast.Gt: operator.gt, ast.GtE: operator.ge,
+}
 
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _git_blob(repo_root: Path, revision: str, relative: str) -> bytes:
+    """Read one pinned raw Git blob, never checking out or executing code."""
+    root = Path(repo_root)
+    parts = relative.split("/") if isinstance(relative, str) else []
+    _require(root.is_absolute() and root.is_dir() and not root.is_symlink()
+             and len(parts) > 0 and all(re.fullmatch(r"[A-Za-z0-9_.-]+", p)
+                                          and p not in (".", "..") for p in parts)
+             and re.fullmatch(r"[0-9a-f]{40}", revision) is not None,
+             "untrusted Git root/revision/source path")
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, check=True, timeout=15,
+        ).stdout.decode("ascii").strip()
+        if head != revision:
+            raise AdmissionError("trusted Git checkout HEAD differs from source revision")
+        blob = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "blob", f"{revision}:{relative}"],
+            capture_output=True, check=True, timeout=15,
+        ).stdout
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as exc:
+        raise AdmissionError("pinned Git blob unavailable") from exc
+    _require(len(blob) <= 1_000_000, "Git blob exceeds bounded source size")
+    return blob
+
+
+def verify_source_git_blob(row: dict, source: dict, *, repo_root: Path,
+                           license_notice: bytes) -> str:
+    """Bind untrusted manifest source text and MIT notice to pinned Git bytes.
+
+    The caller supplies the checkout root independently of corpus JSON.
+    ``git cat-file blob`` reads objects only; no source module is imported,
+    executed, checked out, or granted a trusted label on its own.
+    """
+    _require(row.get("source_repo") == source.get("repo")
+             and row.get("source_revision") == source.get("revision")
+             and row.get("license_sha256") == source.get("license_sha256")
+             and isinstance(row.get("source_path"), str)
+             and isinstance(row.get("text"), str)
+             and isinstance(row.get("content_sha256"), str)
+             and isinstance(source.get("license_file"), str),
+             "source row/manifest mismatch")
+    code = _git_blob(repo_root, row["source_revision"], row["source_path"])
+    _require(code == row["text"].encode("utf-8")
+             and _sha(code) == row["content_sha256"],
+             "source row does not match pinned Git blob")
+    notice = _git_blob(repo_root, source["revision"], source["license_file"])
+    _require(notice == license_notice and _sha(notice) == row["license_sha256"],
+             "MIT notice differs from pinned Git blob")
+    return _sha(code)
 
 
 def _bounded(value: int) -> int:
@@ -189,6 +249,34 @@ def _run_statements(body: list[ast.stmt], env: dict[str, int], expr) -> int:
     raise ValueError("program path does not return")
 
 
+def _reference_expr(node: ast.expr, env: dict[str, int]) -> int | bool:
+    """Independent arithmetic primitive path (not an independent interpreter runtime).
+
+    Uses ``operator`` for arithmetic/comparison and ``divmod`` for division,
+    rather than either AST traversal's shared ``_operand/_compare`` helpers.
+    No source module, bytecode, ``eval``, or ``exec`` is invoked.
+    """
+    if isinstance(node, ast.Constant):
+        return _bounded(node.value)
+    if isinstance(node, ast.Name):
+        return _bounded(env[node.id])
+    if isinstance(node, ast.UnaryOp):
+        value = _reference_expr(node.operand, env)
+        return _bounded(value if type(node.op) is ast.UAdd else operator.neg(value))
+    if isinstance(node, (ast.BinOp, ast.Compare)):
+        left = _reference_expr(node.left, env)
+        right_node = node.right if isinstance(node, ast.BinOp) else node.comparators[0]
+        right = _reference_expr(right_node, env)
+        if isinstance(node, ast.Compare):
+            return _REFERENCE_COMPARE[type(node.ops[0])](left, right)
+        kind = type(node.op)
+        if kind in (ast.FloorDiv, ast.Mod):
+            quotient, remainder = divmod(left, right)
+            return _bounded(quotient if kind is ast.FloorDiv else remainder)
+        return _bounded(_REFERENCE_BINARY[kind](left, right))
+    raise ValueError("unreachable reference expression")
+
+
 def _candidate_functions(text: str):
     try:
         tree = ast.parse(text)
@@ -256,10 +344,11 @@ def derive_cases(row: dict, *, per_file: int = 3) -> list[dict]:
             try:
                 a = _run_statements(statements, env.copy(), _direct_expr)
                 b = _run_statements(statements, env.copy(), _stack_expr)
+                c = _run_statements(statements, env.copy(), _reference_expr)
             except (ValueError, ArithmeticError, KeyError, IndexError, OverflowError):
                 continue
-            if a != b:
-                raise AdmissionError("two restricted AST interpreters disagree")
+            if not a == b == c:
+                raise AdmissionError("restricted AST and independent arithmetic primitives disagree")
             call = f"{name}({', '.join(map(str, args))})"
             prompt = f"For the restricted integer Python function below, give only the exact integer returned by {call}.\n```python\n{snippet}\n```"
             payload = f"{digest}\n{call}\n{a}\n{ORACLE}".encode()
@@ -286,7 +375,8 @@ def _data_file(root: Path, relative: str, split: str) -> Path:
 
 def build_verified_code_corpus(manifest_path: Path, output_dir: Path, *,
                                expected_manifest_sha256: str, producer_git_head: str,
-                               max_cases: int = 1024, per_file: int = 3) -> dict:
+                               max_cases: int = 1024, per_file: int = 3,
+                               trusted_git_roots: dict[str, Path] | None = None) -> dict:
     """Create a new JSONL derivative with copied MIT notices and exact custody.
 
     All source train+eval shard hashes checked before train code is interpreted;
@@ -331,6 +421,19 @@ def build_verified_code_corpus(manifest_path: Path, output_dir: Path, *,
                  "MIT license notice missing/tampered")
         notices.append(item)
     _require({x["repo"] for x in notices} == set(source_map), "MIT notices incomplete")
+    notice_bytes = {item["repo"]: (root / item["path"]).read_bytes() for item in notices}
+    if trusted_git_roots is not None:
+        _require(type(trusted_git_roots) is dict
+                 and set(trusted_git_roots) == set(source_map),
+                 "complete separately trusted Git root map required")
+        for repo, source in source_map.items():
+            _require(isinstance(source.get("license_file"), str),
+                     "source license Git path missing")
+            actual_license = _git_blob(trusted_git_roots[repo], source["revision"],
+                                       source["license_file"])
+            _require(actual_license == notice_bytes[repo]
+                     and _sha(actual_license) == source["license_sha256"],
+                     "pinned Git MIT notice does not match manifest")
     shards = manifest.get("shards")
     _require(isinstance(shards, list) and shards, "missing source shards")
     train_shards = []
@@ -362,7 +465,7 @@ def build_verified_code_corpus(manifest_path: Path, output_dir: Path, *,
         (stage / item["path"]).write_bytes((root / item["path"]).read_bytes())
     target = stage / "train" / "000000.jsonl"
     sha = hashlib.sha256()
-    count = files = 0
+    count = files = git_verified = 0
     with target.open("wb") as output_stream:
         for shard in sorted(train_shards, key=lambda x: x["path"]):
             file = _data_file(root, shard["path"], "train")
@@ -383,7 +486,14 @@ def build_verified_code_corpus(manifest_path: Path, output_dir: Path, *,
                     files += 1
                     if count >= max_cases:
                         continue
+                    if trusted_git_roots is not None:
+                        verify_source_git_blob(
+                            row, source_map[repo], repo_root=trusted_git_roots[repo],
+                            license_notice=notice_bytes[repo],
+                        )
+                        git_verified += 1
                     for case in derive_cases(row, per_file=per_file):
+                        case["source_git_blob_verified"] = trusted_git_roots is not None
                         data = (json.dumps(case, sort_keys=True, separators=(",", ":")) + "\n").encode()
                         output_stream.write(data)
                         sha.update(data)
@@ -394,15 +504,19 @@ def build_verified_code_corpus(manifest_path: Path, output_dir: Path, *,
                      "source train shard changed during ingestion")
     _require(count > 0, "no safe supported Python functions in this source")
     report = {"schema": SCHEMA, "state": "DERIVED_TRAIN_ONLY_NO_WEIGHT_UPDATE",
+              "qualified_for_neural_training": False,
               "oracle": ORACLE, "source_manifest_sha256": expected_manifest_sha256,
               "source_producer_git_head": producer_git_head,
               "source_eval_rows_never_parsed": counts["eval"],
               "source_train_code_files_seen": files, "derived_examples": count,
+              "source_train_code_git_blobs_verified": git_verified,
               "license_notices": notices,
               "shard": {"path": "train/000000.jsonl", "bytes": target.stat().st_size,
                         "sha256": sha.hexdigest(), "count": count},
               "scope": "RESTRICTED_PYTHON_STATIC_SEMANTICS_ONLY_NOT_CPYTHON_EXECUTION",
-              "qualification_hold": "SOURCE_GIT_BLOB_AND_INDEPENDENT_ARITHMETIC_ORACLE_NOT_VERIFIED"}
+              "qualification_hold": ("INDEPENDENT_FULL_PROGRAM_ORACLE_AND_TRAINER_NOT_VERIFIED"
+                                     if trusted_git_roots is not None else
+                                     "SOURCE_GIT_BLOB_AND_TRAINER_NOT_VERIFIED")}
     (stage / "manifest.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
                                          encoding="utf-8")
     stage.rename(output)
@@ -417,11 +531,21 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-cases", type=int, default=1024)
     parser.add_argument("--per-file", type=int, default=3)
+    parser.add_argument("--trusted-repo-root", action="append", default=[],
+                        metavar="OWNER/REPO=ABSOLUTE_CLONE_PATH",
+                        help="repeat for every manifest source; binds Git HEAD and raw blobs")
     args = parser.parse_args()
+    roots = {}
+    for item in args.trusted_repo_root:
+        repo, equals, path = item.partition("=")
+        if not equals or not repo or not path or repo in roots:
+            parser.error("invalid or duplicate --trusted-repo-root")
+        roots[repo] = Path(path)
     report = build_verified_code_corpus(args.manifest, args.output,
                                         expected_manifest_sha256=args.manifest_sha256,
                                         producer_git_head=args.producer_git_head,
-                                        max_cases=args.max_cases, per_file=args.per_file)
+                                        max_cases=args.max_cases, per_file=args.per_file,
+                                        trusted_git_roots=roots or None)
     print(json.dumps({"state": report["state"], "derived_examples": report["derived_examples"],
                       "source_code_files": report["source_train_code_files_seen"]}))
 
