@@ -69,7 +69,11 @@ def select_heldout(manifest_path: Path, count: int) -> tuple[list[dict], str]:
                 scored.append((score, case_id, row))
     if len(scored) < count:
         raise AdmissionError("insufficient heldout verified cases")
-    selected = [row for _, _, row in sorted(scored)[:count]]
+    # V1 four-case pilot was exhausted by truncated output; V2 is disjoint.
+    old_ids = {case_id for _, case_id, _ in sorted(scored)[:4]}
+    fresh = sorted((hashlib.sha256(("r14-heldout-v2:" + case_id).encode()).hexdigest(),
+                    case_id, row) for _, case_id, row in scored if case_id not in old_ids)
+    selected = [row for _, _, row in fresh[:count]]
     case_digest = hashlib.sha256("\n".join(row["id"] for row in selected).encode()).hexdigest()
     return selected, case_digest
 
@@ -109,14 +113,15 @@ def evaluate(args) -> dict:
     model.eval()
     results = []
     for row in heldout:
+        question = row["prompt"] + "\nReply with only the final integer. No steps or other words."
         prompt = tokenizer.apply_chat_template(
-            [{"role": "user", "content": row["prompt"]}],
+            [{"role": "user", "content": question}],
             tokenize=False, add_generation_prompt=True, enable_thinking=False,
         )
         inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False).to("cuda:0")
         with torch.inference_mode():
             generated = model.generate(
-                **inputs, do_sample=False, max_new_tokens=12,
+                **inputs, do_sample=False, max_new_tokens=24,
                 pad_token_id=tokenizer.eos_token_id,
             )
         text = tokenizer.decode(generated[0][inputs["input_ids"].shape[1]:],
@@ -125,6 +130,7 @@ def evaluate(args) -> dict:
         results.append({"id": row["id"], "correct": exact,
                         "expected": row["answer"], "generated": text})
     result = {"status": "HELDOUT_DIAGNOSTIC_NOT_FINAL_QUALIFICATION",
+              "protocol": "R14_NUMERIC_ONLY_V2_DISJOINT_V1",
               "case_ids_sha256": digest, "cases": len(results),
               "exact_match": sum(x["correct"] for x in results),
               "mode": "adapter" if adapter_dir else "base",
