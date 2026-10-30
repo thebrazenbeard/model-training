@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -27,10 +28,15 @@ CONTROLS = ("frozen", "zero", "correct", "corrupt")
 FIT_LENGTHS = (64, 128, 256, 384, 512, 768, 1024)
 FIT_POLICY = "ASCENDING_LENGTH_BATCH1_THEN_BATCH2_UNTIL_FIRST_OOM"
 EVAL_SOURCE = "R18_NEW_SEALED_NOT_R16_FRESH64"
+ADMISSION_STATUSES = frozenset({
+    "ADMITTED_SOURCE_ONLY_NOT_TRAINED",
+    "ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE",
+})
 PLAN_KEYS = frozenset({
     "schema", "base_model", "base_revision", "base_binding_sha256",
     "tokenizer_binding_sha256", "corpus_manifest_sha256", "selected_id_sha256",
-    "selected_count", "train_content_sha256", "eval_bank_source",
+    "selected_count", "train_content_sha256", "source_admission_status",
+    "eval_bank_source",
     "eval_custody_sha256", "eval_index_sha256", "eval_examples",
     "r16_eval_custody_sha256", "r16_holdout_id_sha256", "seed",
     "training_budget_seconds", "probe_budget_seconds", "fit_policy",
@@ -84,15 +90,25 @@ def _prompt_sha(prompt: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def _training_index(rows: Sequence[Mapping]) -> list[dict]:
+def _training_index(rows: Sequence[Mapping], source_admission_status: str) -> list[dict]:
+    _check(source_admission_status in ADMISSION_STATUSES,
+           "source must be explicitly admitted before R18 plan construction")
     result = []
     for row in rows:
         _check(isinstance(row, Mapping), "train row not an object")
         _check(all(isinstance(row.get(k), str) and row[k].strip()
                    for k in ("id", "prompt", "answer")), "train row incomplete")
-        _check(row.get("split") == "train" and row.get("training_use") == "ADMITTED"
-               and row.get("evaluation_holdout") is not True,
-               "train-only admitted row required")
+        if source_admission_status == "ADMITTED_SOURCE_ONLY_NOT_TRAINED":
+            _check(row.get("split") == "train" and row.get("training_use") == "ADMITTED"
+                   and row.get("evaluation_holdout") is not True,
+                   "train-only admitted row required")
+        else:
+            # The Labyrinth admission adapter independently replays procedural
+            # train cases then returns a minimal id/family/prompt/answer dict.
+            # Its accepted cases intentionally do not carry split/use markers.
+            _check(isinstance(row.get("family"), str) and row["family"]
+                   and "split" not in row and "training_use" not in row,
+                   "Labyrinth plan needs verified replayed train-only case shape")
         result.append({"id": row["id"], "prompt_sha256": _prompt_sha(row["prompt"]),
                        "answer_sha256": hashlib.sha256(row["answer"].encode()).hexdigest()})
     selected_id_digest(rows)
@@ -133,6 +149,7 @@ def fit_candidates() -> list[dict]:
 
 
 def make_plan(*, selected_rows: Sequence[Mapping], admission_selected_id_sha256: str,
+              source_admission_status: str,
               eval_index: Sequence[Mapping], r16_holdout_ids: Sequence[str],
               base_revision: str, base_binding_sha256: str,
               tokenizer_binding_sha256: str, corpus_manifest_sha256: str,
@@ -145,7 +162,7 @@ def make_plan(*, selected_rows: Sequence[Mapping], admission_selected_id_sha256:
     revealing labels. R16 fresh64 IDs are exclusion-only and may not be scored
     or inspected to select a fit, learning rate, or checkpoint.
     """
-    training = _training_index(selected_rows)
+    training = _training_index(selected_rows, source_admission_status)
     eval_meta = _evaluation_index(eval_index)
     _check(_hex(admission_selected_id_sha256)
            and selected_id_digest(selected_rows) == admission_selected_id_sha256,
@@ -182,6 +199,7 @@ def make_plan(*, selected_rows: Sequence[Mapping], admission_selected_id_sha256:
         "selected_id_sha256": admission_selected_id_sha256,
         "selected_count": len(training),
         "train_content_sha256": canonical_sha256(training),
+        "source_admission_status": source_admission_status,
         "eval_bank_source": EVAL_SOURCE,
         "eval_custody_sha256": eval_custody_sha256,
         "eval_index_sha256": canonical_sha256(eval_meta),
@@ -215,6 +233,8 @@ def validate_plan(plan: Mapping) -> str:
     _check(_integer(plan.get("selected_count"), zero=False)
            and _integer(plan.get("eval_examples"), zero=False)
            and plan["eval_examples"] >= 64, "invalid plan corpus/eval sizes")
+    _check(plan.get("source_admission_status") in ADMISSION_STATUSES,
+           "admission provenance missing")
     _check(_integer(plan.get("seed")) and _number(plan.get("training_budget_seconds"), zero=False)
            and _number(plan.get("probe_budget_seconds"), zero=False)
            and plan["training_budget_seconds"] > plan["probe_budget_seconds"],
@@ -324,7 +344,8 @@ def validate_arm_receipt(receipt: Mapping, plan: Mapping, *,
     _check(receipt.get("plan_sha256") == plan_sha, "receipt plan mismatch")
     for key in ("base_model", "base_revision", "base_binding_sha256",
                 "tokenizer_binding_sha256", "corpus_manifest_sha256",
-                "selected_id_sha256", "train_content_sha256", "eval_custody_sha256",
+                "selected_id_sha256", "train_content_sha256", "source_admission_status",
+                "eval_custody_sha256",
                 "eval_index_sha256", "seed"):
         _check(receipt.get(key) == plan[key], f"arm {key} differs from preregistration")
     _check(isinstance(receipt.get("run_id"), str) and receipt["run_id"]
@@ -535,6 +556,160 @@ def _json_file(path: Path) -> object:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _create_private_json(path: Path, value: object) -> None:
+    """Exclusive, mode-0600 writing for evaluation-custodian data only."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as writer:
+        json.dump(value, writer, sort_keys=True, indent=2, ensure_ascii=False)
+        writer.write("\n")
+
+
+def preregister_from_corpus(*, manifest: Path, old_r15_receipt: Path,
+                            base_binding: Path, producer_git_head: str,
+                            work_root: Path, private_output_dir: Path,
+                            plan_output: Path, expected_r16_selected_id_sha256: str | None = None,
+                            cases: int, seed: int, training_budget_seconds: float,
+                            probe_budget_seconds: float,
+                            primary_sequence_length: int = 256) -> dict:
+    """Trusted CPU-only custodian: derive fresh R18 bank without exposing answers.
+
+    Requires the independent R16 structural evaluator module from PR #138;
+    the neural runners MUST NEVER import that module or read the resulting
+    private eval-cases file. The old 16-ID list must come from a private R15
+    receipt, and the R16 64-ID digest must match an external observed pin.
+    """
+    from trainingday.admission import _hash_file
+    from trainingday.labyrinth_intake import admit_labyrinth
+    from trainingday.train_neural import (
+        R16_PRODUCER_HEAD, R16_V2_MANIFEST_SHA256, _required_base,
+    )
+    try:
+        from trainingday.eval_structural_r16 import (
+            BANK_ID_SHA256 as PINNED_R16_FRESH64_SHA256, _old_ids,
+        )
+        from trainingday.structural_eval import (
+            R15_SCORED_SIGNATURE_COUNT, R15_V2_MANIFEST_SHA256,
+            preregister_r15_fresh_structural64, select_structural_cases,
+        )
+    except ImportError as exc:
+        raise BenchmarkError(
+            "R18 custodian needs the independent PR #138 structural_eval.py; "
+            "never import it from a neural runner") from exc
+
+    _check(_hex(PINNED_R16_FRESH64_SHA256), "PR #138 R16 fresh64 pin absent")
+    if expected_r16_selected_id_sha256 is not None:
+        _check(expected_r16_selected_id_sha256 == PINNED_R16_FRESH64_SHA256,
+               "user-supplied R16 selection pin differs from original R16 evaluator")
+    _check(_hex(producer_git_head, 40) and producer_git_head == R16_PRODUCER_HEAD,
+           "PR #140 R16 v2 corpus producer head changed")
+    _check(cases == 1024 and _integer(seed),
+           "R18 common training pool must be exactly 1024 admitted selected cases")
+    manifest, base_binding, old_r15_receipt = (
+        Path(manifest), Path(base_binding), Path(old_r15_receipt))
+    work_root, private_output_dir, plan_output = (
+        Path(work_root), Path(private_output_dir), Path(plan_output))
+    _check(manifest.is_file() and not manifest.is_symlink()
+           and _hash_file(manifest) == R16_V2_MANIFEST_SHA256
+           and R15_V2_MANIFEST_SHA256 == R16_V2_MANIFEST_SHA256,
+           "R18 train/eval must share exact R16 v2 pinned corpus manifest")
+    _check(work_root.is_dir() and not work_root.is_symlink()
+           and private_output_dir.parent.is_dir()
+           and not private_output_dir.parent.is_symlink()
+           and not private_output_dir.exists() and not private_output_dir.is_symlink()
+           and plan_output.parent.is_dir() and not plan_output.parent.is_symlink()
+           and not plan_output.exists() and not plan_output.is_symlink(),
+           "private custody directory and public plan must be new and confined")
+    # This exact PR #138 helper enforces the original R15 base receipt byte
+    # SHA f7a807..., the status/manifest/base provenance, and ordered 16 IDs.
+    # No manual extraction or copying of evaluator-private IDs is permitted.
+    old_ids = _old_ids(old_r15_receipt)
+
+    # Both source admission and full base custody verification are CPU-only.
+    admitted, selected = admit_labyrinth(
+        manifest, work_root, sample_size=cases, producer_git_head=producer_git_head)
+    _check(admitted.get("selected_count") == cases
+           and admitted.get("status") == "ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE"
+           and admitted.get("selected_id_sha256") == selected_id_digest(selected),
+           "admission summary/selected case custody changed")
+    base, _ = _required_base(base_binding)
+    _check(base.get("model_id") == MODEL_ID and _hex(base.get("revision"), 40)
+           and _hex(base.get("files", {}).get("tokenizer_config.json")),
+           "base/tokenizer snapshot not pinned")
+
+    # Sensitive structure/answer inspection happens only in this custodian.
+    r16 = preregister_r15_fresh_structural64(
+        manifest, previously_scored_16_ids=old_ids)
+    _check(r16.get("selected_count") == 64
+           and r16.get("selected_id_sha256") == PINNED_R16_FRESH64_SHA256,
+           "fresh64 R16 exclusion selection differs from earlier scored bank")
+    r16_cases = r16["cases"]
+    r16_ids = [row["id"] for row in r16_cases]
+    exclusion_ids = old_ids + r16_ids
+    exclusion_sha = hashlib.sha256("\n".join(exclusion_ids).encode()).hexdigest()
+    r18 = select_structural_cases(
+        manifest, expected_manifest_sha256=R16_V2_MANIFEST_SHA256,
+        max_cases=64, previously_scored_ids=exclusion_ids,
+        expected_scored_ids_sha256=exclusion_sha,
+        expected_scored_signature_count=R15_SCORED_SIGNATURE_COUNT + 64,
+    )
+    _check(r18.get("selected_count") == 64 and len(r18.get("cases", ())) == 64,
+           "fresh R18 structural evaluation bank unavailable")
+    eval_index = [{"id": case["id"], "prompt_sha256": _prompt_sha(case["prompt"])}
+                  for case in r18["cases"]]
+    _check(not ({case["id"] for case in r18["cases"]} & set(exclusion_ids)),
+           "new R18 evaluation reused an already scored case")
+    # These commitments bind *private answers* without copying them into the
+    # public plan. The independent scorer can later reopen the private file.
+    r16_custody_sha = canonical_sha256({"manifest": R16_V2_MANIFEST_SHA256,
+                                        "cases": r16_cases})
+    eval_custody_sha = canonical_sha256({"manifest": R16_V2_MANIFEST_SHA256,
+                                         "cases": r18["cases"]})
+    inputs = {
+        "selected_rows": selected,
+        "admission_selected_id_sha256": admitted["selected_id_sha256"],
+        "source_admission_status": admitted["status"],
+        "eval_index": eval_index, "r16_holdout_ids": r16_ids,
+        "base_revision": base["revision"],
+        "base_binding_sha256": _hash_file(base_binding),
+        "tokenizer_binding_sha256": base["files"]["tokenizer_config.json"],
+        "corpus_manifest_sha256": _hash_file(manifest),
+        "eval_custody_sha256": eval_custody_sha,
+        "r16_eval_custody_sha256": r16_custody_sha,
+        "seed": seed, "training_budget_seconds": training_budget_seconds,
+        "probe_budget_seconds": probe_budget_seconds,
+        "primary_sequence_length": primary_sequence_length,
+    }
+    plan = make_plan(**inputs)
+    # Keep independent scorer secrets in a new 0700 directory. No output may
+    # overwrite an earlier sealed bank or preregistration; never print labels.
+    private_output_dir.mkdir(mode=0o700, exist_ok=False)
+    _create_private_json(private_output_dir / "r18-plan-inputs.json", inputs)
+    _create_private_json(private_output_dir / "r18-evaluator-sealed-private.json", {
+        "schema": "VERA_TRAININGDAY_R18_PRIVATE_EVAL_BANK_V1",
+        "manifest_sha256": R16_V2_MANIFEST_SHA256,
+        "eval_custody_sha256": eval_custody_sha,
+        "eval_index_sha256": plan["eval_index_sha256"],
+        "cases": r18["cases"],
+    })
+    _create_private_json(private_output_dir / "r18-exclusions-private.json", {
+        "schema": "VERA_TRAININGDAY_R18_PRIVATE_EVAL_EXCLUSIONS_V1",
+        "old_r15_scored16_ids": old_ids, "r16_fresh64_ids": r16_ids,
+        "r16_selected_id_sha256": PINNED_R16_FRESH64_SHA256,
+        "excluded_signature_count": R15_SCORED_SIGNATURE_COUNT + 64,
+    })
+    _create_private_json(plan_output, plan)
+    return {"status": "R18_SOURCE_ONLY_PREREGISTERED_EVAL_UNTOUCHED_BY_MODEL",
+            "plan_sha256": validate_plan(plan),
+            "selected_train_count": plan["selected_count"],
+            "selected_train_id_sha256": plan["selected_id_sha256"],
+            "r16_exclusion_id_sha256": plan["r16_holdout_id_sha256"],
+            "r18_eval_count": plan["eval_examples"],
+            "r18_eval_index_sha256": plan["eval_index_sha256"],
+            "r18_eval_custody_sha256": plan["eval_custody_sha256"],
+            "plan_output": str(plan_output),
+            "private_output_dir": str(private_output_dir)}
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Custodian CLI: no model loading, no network, no GPU allocation."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -543,6 +718,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     register.add_argument("--inputs", type=Path, required=True,
                           help="JSON object with make_plan keyword arguments")
     register.add_argument("--output", type=Path, required=True)
+    from_corpus = modes.add_parser("preregister-from-corpus",
+                                   help="CPU-only Lappy custodian: admit1024 and seal fresh R18 64")
+    from_corpus.add_argument("--manifest", type=Path, required=True)
+    from_corpus.add_argument("--old-r15-receipt", type=Path, required=True)
+    from_corpus.add_argument("--base-binding", type=Path, required=True)
+    from_corpus.add_argument("--producer-git-head", required=True)
+    from_corpus.add_argument("--work-root", type=Path, required=True)
+    from_corpus.add_argument("--private-output-dir", type=Path, required=True)
+    from_corpus.add_argument("--plan-output", type=Path, required=True)
+    from_corpus.add_argument("--expected-r16-selected-id-sha256",
+                             help="Optional extra check against PR #138 frozen R16 bank pin")
+    from_corpus.add_argument("--cases", type=int, default=1024)
+    from_corpus.add_argument("--seed", type=int, default=41)
+    from_corpus.add_argument("--training-budget-seconds", type=float, required=True)
+    from_corpus.add_argument("--probe-budget-seconds", type=float, required=True)
+    from_corpus.add_argument("--primary-sequence-length", type=int, default=256)
     verify = modes.add_parser("verify-plan", help="Verify pinned plan and print its digest")
     verify.add_argument("--plan", type=Path, required=True)
     fit = modes.add_parser("verify-fit", help="Verify full predeclared fit sweep")
@@ -557,7 +748,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     comparison.add_argument("--probes", type=Path, required=True)
     comparison.add_argument("--receipts", type=Path, required=True)
     args = parser.parse_args(argv)
-    if args.command == "preregister":
+    if args.command == "preregister-from-corpus":
+        output = preregister_from_corpus(
+            manifest=args.manifest, old_r15_receipt=args.old_r15_receipt,
+            base_binding=args.base_binding, producer_git_head=args.producer_git_head,
+            work_root=args.work_root, private_output_dir=args.private_output_dir,
+            plan_output=args.plan_output,
+            expected_r16_selected_id_sha256=args.expected_r16_selected_id_sha256,
+            cases=args.cases, seed=args.seed,
+            training_budget_seconds=args.training_budget_seconds,
+            probe_budget_seconds=args.probe_budget_seconds,
+            primary_sequence_length=args.primary_sequence_length)
+    elif args.command == "preregister":
         input_data = _json_file(args.inputs)
         _check(isinstance(input_data, dict), "preregister inputs must be an object")
         plan = make_plan(**input_data)
