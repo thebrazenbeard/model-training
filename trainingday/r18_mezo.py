@@ -1,0 +1,767 @@
+"""R18 experimental MeZO-style *LoRA-only* zeroth-order benchmark.
+
+This is not full-parameter MeZO: the official Qwen3.5-4B base remains frozen
+under NF4/double-quantization; only FP32 LoRA tensors are perturbed/updated.
+Every update measures paired +/- epsilon losses on the SAME effective batch
+under one seeded Gaussian direction, restores the original parameters, then
+applies an actual weight update. No autograd/gradient surrogate is used.
+
+Import/preflight is CPU-only. A CUDA run requires explicit operator authority;
+this module does not pause services, reserve GPUs, or invoke evaluation.
+"""
+
+from __future__ import annotations
+
+import argparse
+import gc
+import hashlib
+import json
+import math
+import re
+import time
+from collections import defaultdict
+from pathlib import Path
+
+from trainingday.admission import AdmissionError, _canonical_prompt, _hash_file, admit
+from trainingday.labyrinth_intake import SCHEMA as LABYRINTH_SCHEMA, admit_labyrinth
+from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
+from trainingday.train_neural import BASE_ID, _required_base
+
+
+SCHEMA = "VERA_TRAININGDAY_R18_ARM_RECEIPT_V1"
+RECIPE = "R18_MEZO_STYLE_FP32_LORA_ZO_ON_FROZEN_NF4_QWEN35_4B_V1"
+BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+SAFE_ID = re.compile(r"[a-z0-9_-]{1,64}\Z")
+CHECKPOINT = re.compile(r"checkpoint-([1-9][0-9]*)\Z")
+
+
+def canonical_hash(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def selected_id_digest(rows: list[dict]) -> str:
+    """The *existing R16 admission-order* hash, not a sorted-ID rewrite."""
+    return hashlib.sha256("\n".join(row["id"] for row in rows).encode("utf-8")).hexdigest()
+
+
+def selected_rows(rows: list[dict], mode: str) -> list[dict]:
+    by_family: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        by_family[row["family"]].add(row["answer"])
+    result = []
+    for row in rows:
+        answer = row["answer"]
+        if mode == "corrupt":
+            alternatives = sorted(by_family[row["family"]] - {answer})
+            if not alternatives:
+                raise AdmissionError("corrupt control requires different answers in every family")
+            answer = alternatives[int(hashlib.sha256(row["id"].encode()).hexdigest(), 16)
+                                  % len(alternatives)]
+        result.append({"id": row["id"], "prompt": numeric_question(row["prompt"]),
+                       "response": answer})
+    return result
+
+
+def _positive_int(value: object, name: str, ceiling: int) -> None:
+    if type(value) is not int or not 1 <= value <= ceiling:
+        raise AdmissionError(f"{name} outside positive bound 1–{ceiling}")
+
+
+def validate_source(args) -> tuple[dict, list[dict], Path]:
+    """All source gates run before torch/transformers imports or GPU allocation."""
+    if args.mode not in {"zero", "correct", "corrupt"}:
+        raise AdmissionError("unsupported control")
+    if type(args.steps) is not int or not 0 <= args.steps <= 4096:
+        raise AdmissionError("steps outside bound 0–4096")
+    if (args.mode == "zero") != (args.steps == 0):
+        raise AdmissionError("zero arm requires zero updates; trained arms require steps")
+    _positive_int(args.cases, "cases", 1024)
+    _positive_int(args.micro_batch_size, "micro batch", 16)
+    _positive_int(args.examples_per_update, "examples per update", 1024)
+    if args.examples_per_update % args.micro_batch_size:
+        raise AdmissionError("examples per update must divide into complete microbatches")
+    _positive_int(args.max_seq_length, "sequence length", 2048)
+    _positive_int(args.seed, "seed", 2**31 - 1)
+    _positive_int(args.checkpoint_every, "checkpoint interval", 4096)
+    if (not math.isfinite(args.budget_seconds) or not 0 < args.budget_seconds <= 86400):
+        raise AdmissionError("time budget must be 0–86400 seconds")
+    if (not math.isfinite(args.learning_rate) or not 0 < args.learning_rate <= 1.0
+            or not math.isfinite(args.epsilon) or not 1e-7 <= args.epsilon <= 0.1):
+        raise AdmissionError("zeroth-order hyperparameter outside bounds")
+    if (not SAFE_ID.fullmatch(args.run_id) or not args.output_root.is_dir()
+            or args.output_root.is_symlink() or not args.work_root.is_dir()
+            or args.work_root.is_symlink()):
+        raise AdmissionError("unsafe run ID or output/work root")
+    if (args.resume_checkpoint is None) != (args.resume_receipt_sha256 is None):
+        raise AdmissionError("resume checkpoint and pinned receipt SHA must be supplied together")
+    if args.resume_receipt_sha256 and not HEX64.fullmatch(args.resume_receipt_sha256):
+        raise AdmissionError("resume receipt SHA malformed")
+    if args.fit_sweep_only and args.resume_checkpoint:
+        raise AdmissionError("fit sweep never resumes weights")
+    if args.preflight_only and args.fit_sweep_only:
+        raise AdmissionError("choose source preflight or GPU fit sweep")
+    if not args.resume_checkpoint and (args.output_root / args.run_id).exists():
+        raise AdmissionError("run output exists; never silently overwrite")
+    if not args.resume_checkpoint and (args.output_root / args.run_id).is_symlink():
+        raise AdmissionError("symlinked run output")
+    if (args.expected_initial_digest is not None
+            and not HEX64.fullmatch(args.expected_initial_digest)):
+        raise AdmissionError("expected initial adapter digest malformed")
+    if (args.initial_adapter is None) != (args.initial_adapter_sha256 is None):
+        raise AdmissionError("initial R16 zero adapter requires externally pinned SHA")
+    if args.initial_adapter_sha256 and not HEX64.fullmatch(args.initial_adapter_sha256):
+        raise AdmissionError("initial adapter SHA malformed")
+    if args.fit_probe_sha256 and not HEX64.fullmatch(args.fit_probe_sha256):
+        raise AdmissionError("fit probe SHA malformed")
+    if args.initial_adapter is not None:
+        weights = args.initial_adapter / "adapter_model.safetensors"
+        config = args.initial_adapter / "adapter_config.json"
+        if (not args.initial_adapter.is_dir() or args.initial_adapter.is_symlink()
+                or not weights.is_file() or weights.is_symlink()
+                or not config.is_file() or config.is_symlink()
+                or _hash_file(weights) != args.initial_adapter_sha256):
+            raise AdmissionError("externally pinned R16 zero adapter missing or tampered")
+    if args.mode != "zero" and not args.expected_initial_digest:
+        raise AdmissionError("trained arm needs externally pinned zero-arm initial digest")
+    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    if manifest.get("schema") == LABYRINTH_SCHEMA:
+        summary, rows = admit_labyrinth(args.manifest, args.work_root,
+                                        sample_size=args.cases,
+                                        producer_git_head=args.producer_git_head)
+    else:
+        summary, rows = admit(args.manifest, args.work_root, sample_size=args.cases)
+    if selected_id_digest(rows) != summary["selected_id_sha256"]:
+        raise AdmissionError("selected ID hash disagrees with full source admission")
+    if len({row["id"] for row in rows}) != len(rows):
+        raise AdmissionError("duplicate selected ID")
+    cases = selected_rows(rows, args.mode)
+    train_content_sha = canonical_hash([{
+        "id": row["id"],
+        "prompt_sha256": hashlib.sha256(_canonical_prompt(row["prompt"])).hexdigest(),
+        "answer_sha256": hashlib.sha256(row["answer"].encode("utf-8")).hexdigest(),
+    } for row in rows])
+    base, model_path = _required_base(args.base_binding)
+    if base["revision"] != BASE_REVISION:
+        raise AdmissionError("R18 base must match the official R16 pinned revision")
+    preflight = {
+        "schema": SCHEMA, "recipe": RECIPE, "status": "SOURCE_ONLY_PREFLIGHT",
+        "arm": "mezo", "control": args.mode, "run_id": args.run_id,
+        "seed": args.seed, "base_model": BASE_ID, "base_revision": base["revision"],
+        "base_binding_sha256": _hash_file(args.base_binding),
+        "corpus": summary, "selected_id_sha256": summary["selected_id_sha256"],
+        "train_content_sha256": train_content_sha,
+        # Match R16's exact prompt/response input byte contract, not a new
+        # serialization carrying per-case IDs (those are attested separately).
+        "training_input_sha256": hashlib.sha256(json.dumps(
+            [{"prompt": case["prompt"], "response": case["response"]} for case in cases],
+            sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
+        "selected_cases_sha256": canonical_hash(cases),
+        "initial_adapter_model_sha256": args.initial_adapter_sha256,
+        "question_contract": NUMERIC_QUESTION_CONTRACT,
+        "selected_count": len(cases), "model_method": "MeZO-style LoRA-only ZO; frozen NF4 base",
+        "steps_cap": args.steps, "micro_batch_size": args.micro_batch_size,
+        "examples_per_update": args.examples_per_update,
+        "max_seq_length": args.max_seq_length, "learning_rate": args.learning_rate,
+        "epsilon": args.epsilon, "budget_seconds": args.budget_seconds,
+        "selected_fit_config": {
+            "micro_batch_size": args.micro_batch_size,
+            "actual_padded_sequence_length": args.max_seq_length,
+            "effective_batch_size": args.examples_per_update,
+            "offload": False, "truncation_allowed": False,
+        },
+    }
+    return preflight, cases, model_path
+
+
+def direction_seed(seed: int, step: int) -> int:
+    """Independent of run ID: paired control arms receive same directions."""
+    digest = hashlib.sha256(f"R18-MEZO-ZO\0{seed}\0{step}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+
+
+def finite_difference(plus: float, minus: float, epsilon: float) -> float:
+    if not all(math.isfinite(x) for x in (plus, minus, epsilon)) or epsilon <= 0:
+        raise RuntimeError("nonfinite zeroth-order loss or epsilon")
+    estimate = (plus - minus) / (2.0 * epsilon)
+    if not math.isfinite(estimate):
+        raise RuntimeError("nonfinite zeroth-order gradient estimate")
+    return estimate
+
+
+def trainables(model, torch) -> list[tuple[str, object]]:
+    tensors = [(name, p) for name, p in sorted(model.named_parameters()) if p.requires_grad]
+    if not tensors or any(p.dtype != torch.float32 or p.device.type != "cuda"
+                          for _, p in tensors):
+        raise RuntimeError("MeZO LoRA-only requires nonempty FP32 CUDA trainable tensors")
+    if any("lora_" not in name.lower() for name, _ in tensors):
+        raise RuntimeError("non-LoRA parameter unexpectedly trainable")
+    return tensors
+
+
+def _noise_delta(tensors, torch, seed: int, scale: float) -> None:
+    """Regenerate one direction in stable tensor order; never hold full noise."""
+    generator = torch.Generator(device="cuda:0")
+    generator.manual_seed(seed)
+    with torch.no_grad():
+        for _, p in tensors:
+            z = torch.randn(p.shape, generator=generator, device=p.device, dtype=p.dtype)
+            p.add_(z, alpha=scale)
+
+
+def _snapshot_trainables(tensors):
+    """CPU-side exact recovery image; never keep extra 4GB GPU copies."""
+    return {name: p.detach().to(device="cpu", copy=True).contiguous()
+            for name, p in tensors}
+
+
+def _restore_trainables(tensors, torch, saved) -> None:
+    with torch.no_grad():
+        for name, p in tensors:
+            # Direct host-to-device copy avoids an extra CUDA adapter tensor.
+            p.copy_(saved[name])
+
+
+def paired_zo_step(tensors, torch, *, seed: int, epsilon: float,
+                   learning_rate: float, loss_fn) -> tuple[float, float, float]:
+    """Exact two-sided finite-difference update; restoration on loss failure.
+
+    The loss_fn must evaluate the same effective sample set under each sign
+    and return target-token-weighted cross entropy. It does NOT call backward.
+    """
+    original = _snapshot_trainables(tensors)
+    try:
+        _noise_delta(tensors, torch, seed, epsilon)
+        plus = float(loss_fn())
+        _noise_delta(tensors, torch, seed, -2.0 * epsilon)
+        minus = float(loss_fn())
+    finally:
+        # Byte-exact FP32 restoration, including if a perturbation partially
+        # failed (e.g. CUDA OOM). Replayed +/- noise alone can round-drift.
+        _restore_trainables(tensors, torch, original)
+    derivative = finite_difference(plus, minus, epsilon)
+    if derivative == 0.0:
+        raise RuntimeError("zero directional difference; no real update attested")
+    _noise_delta(tensors, torch, seed, -learning_rate * derivative)
+    return plus, minus, derivative
+
+
+def tokenize_cases(tokenizer, cases: list[dict], max_length: int) -> tuple[list[dict], dict]:
+    from successor.experiments.train_v10_qwen35_authorized import _generation_prefix
+
+    eos = tokenizer.eos_token
+    if not eos or tokenizer.pad_token_id is None:
+        raise RuntimeError("pinned tokenizer missing EOS/padding")
+    prepared = []
+    lengths, targets = [], []
+    for case in cases:
+        prefix = _generation_prefix(tokenizer, case["prompt"])
+        full_ids = tokenizer(prefix + case["response"] + eos,
+                             add_special_tokens=False)["input_ids"]
+        prefix_ids = tokenizer(prefix, add_special_tokens=False)["input_ids"]
+        if full_ids[:len(prefix_ids)] != prefix_ids:
+            raise RuntimeError("chat prompt/completion token boundary is not stable")
+        target_count = len(full_ids) - len(prefix_ids)
+        if target_count < 1 or len(full_ids) > max_length:
+            raise RuntimeError("completion missing or token budget exceeded; no truncation")
+        prepared.append({"id": case["id"], "input_ids": full_ids,
+                         "labels": [-100] * len(prefix_ids) + full_ids[len(prefix_ids):],
+                         "target_tokens": target_count, "input_tokens": len(full_ids)})
+        lengths.append(len(full_ids))
+        targets.append(target_count)
+    return prepared, {"max_input_tokens": max(lengths), "min_input_tokens": min(lengths),
+                      "target_tokens_per_cycle": sum(targets),
+                      "input_tokens_per_cycle": sum(lengths)}
+
+
+def step_rows(prepared: list[dict], step: int, examples_per_update: int) -> list[dict]:
+    return [prepared[(step * examples_per_update + offset) % len(prepared)]
+            for offset in range(examples_per_update)]
+
+
+def pack_batch(torch, tokenizer, rows: list[dict], length: int) -> dict:
+    inputs, masks, labels = [], [], []
+    for row in rows:
+        pad = length - len(row["input_ids"])
+        if pad < 0:
+            raise RuntimeError("fit candidate below verified sequence length")
+        inputs.append(row["input_ids"] + [tokenizer.pad_token_id] * pad)
+        masks.append([1] * len(row["input_ids"]) + [0] * pad)
+        labels.append(row["labels"] + [-100] * pad)
+    return {"input_ids": torch.tensor(inputs, dtype=torch.long, device="cuda:0"),
+            "attention_mask": torch.tensor(masks, dtype=torch.long, device="cuda:0"),
+            "labels": torch.tensor(labels, dtype=torch.long, device="cuda:0")}
+
+
+def paired_batch_loss(model, torch, tokenizer, selected: list[dict],
+                      batch_size: int, max_length: int) -> float:
+    """Per-target-token weighted loss over the whole effective update batch."""
+    total_weighted_loss = 0.0
+    total_targets = 0
+    with torch.inference_mode():
+        for offset in range(0, len(selected), batch_size):
+            rows = selected[offset:offset + batch_size]
+            tensors = pack_batch(torch, tokenizer, rows, max_length)
+            target_count = sum(r["target_tokens"] for r in rows)
+            output = model(**tensors, use_cache=False)
+            loss = float(output.loss.detach().float().item())
+            if not math.isfinite(loss):
+                raise RuntimeError("nonfinite forward loss")
+            total_weighted_loss += loss * target_count
+            total_targets += target_count
+            del output, tensors
+    if total_targets <= 0:
+        raise RuntimeError("no supervised target tokens")
+    return total_weighted_loss / total_targets
+
+
+def parameter_attestation(tensors, torch, initial=None):
+    digest = hashlib.sha256()
+    changed, delta_sq, total = 0, 0.0, 0
+    capture = {} if initial is None else None
+    for name, p in tensors:
+        value = p.detach().to(device="cpu", dtype=torch.float32).contiguous()
+        digest.update(name.encode("utf-8"))
+        digest.update(str(tuple(value.shape)).encode("ascii"))
+        digest.update(value.numpy().tobytes())
+        total += value.numel()
+        if initial is None:
+            capture[name] = value.clone()
+        else:
+            old = initial[name]
+            if old.shape != value.shape:
+                raise RuntimeError("initial LoRA tensor shape changed")
+            changed += int(torch.count_nonzero(value != old).item())
+            delta_sq += float(torch.sum((value - old).double().square()).item())
+    return {"digest": digest.hexdigest(), "parameter_count": total,
+            "changed_elements": changed, "delta_l2": math.sqrt(delta_sq)}, capture
+
+
+def frozen_parameter_digest(model, torch) -> tuple[str, int]:
+    """Hash every frozen tensor's *actual bytes* in bounded CPU chunks.
+
+    This captures packed NF4 parameter storage as well as frozen embeddings,
+    including tensor names, shapes and dtypes. It does not imply that all
+    non-parameter quantizer metadata are independently hash-covered.
+    """
+    digest = hashlib.sha256()
+    total_bytes = 0
+    frozen = sorted((name, p) for name, p in model.named_parameters()
+                    if not p.requires_grad)
+    if not frozen:
+        raise RuntimeError("frozen base parameters missing")
+    for name, p in frozen:
+        digest.update(name.encode("utf-8"))
+        digest.update(str(tuple(p.shape)).encode("ascii"))
+        digest.update(str(p.dtype).encode("ascii"))
+        flat = p.detach().reshape(-1)
+        stride = max(1, (8 * 2**20) // flat.element_size())
+        for offset in range(0, flat.numel(), stride):
+            cpu = flat[offset:offset + stride].to(device="cpu").contiguous()
+            chunk = cpu.view(torch.uint8).numpy().tobytes()
+            digest.update(chunk)
+            total_bytes += len(chunk)
+            del cpu, chunk
+    return digest.hexdigest(), total_bytes
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        result = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AdmissionError("invalid checkpoint JSON") from exc
+    if not isinstance(result, dict):
+        raise AdmissionError("checkpoint JSON not an object")
+    return result
+
+
+def _run_contract(preflight: dict, args) -> dict:
+    return {"schema": "VERA_TRAININGDAY_R18_MEZO_RUN_CONTRACT_V1",
+            "preflight": preflight, "checkpoint_every": args.checkpoint_every,
+            "expected_initial_digest": args.expected_initial_digest}
+
+
+def prepare_run(args, preflight: dict) -> tuple[Path, dict, int, float, dict | None]:
+    """Resume only externally pinned safetensors; no Python pickle deserialization."""
+    output = args.output_root / args.run_id
+    contract = _run_contract(preflight, args)
+    contract_path = output / "run-contract.json"
+    if not args.resume_checkpoint:
+        if output.exists() or output.is_symlink():
+            raise AdmissionError("run output already occupied")
+        output.mkdir(exist_ok=False)
+        with contract_path.open("x", encoding="utf-8") as stream:
+            json.dump(contract, stream, sort_keys=True, indent=2)
+        return output, contract, 0, 0.0, None
+    checkpoint = args.resume_checkpoint
+    if (not output.is_dir() or output.is_symlink() or not contract_path.is_file()
+            or contract_path.is_symlink() or _read_json(contract_path) != contract
+            or not checkpoint.is_dir() or checkpoint.is_symlink()
+            or checkpoint.parent != output):
+        raise AdmissionError("resume path/contract unsafe or changed")
+    match = CHECKPOINT.fullmatch(checkpoint.name)
+    if not match:
+        raise AdmissionError("resume checkpoint name invalid")
+    step = int(match.group(1))
+    if not 0 < step < args.steps:
+        raise AdmissionError("resume step outside training cap")
+    state_path = checkpoint / "state.json"
+    weights = checkpoint / "lora-trainables.safetensors"
+    if (not state_path.is_file() or state_path.is_symlink() or not weights.is_file()
+            or weights.is_symlink() or _hash_file(state_path) != args.resume_receipt_sha256):
+        raise AdmissionError("resume state missing or externally pinned SHA mismatched")
+    state = _read_json(state_path)
+    if (state.get("schema") != "R18_MEZO_STATE_V1"
+            or state.get("run_contract_sha256") != canonical_hash(contract)
+            or state.get("completed_steps") != step
+            or state.get("weights_sha256") != _hash_file(weights)
+            or state.get("status") != "CHECKPOINT_BYTES_PINNED_NOT_RELOADED"):
+        raise AdmissionError("resume state/weight custody mismatch")
+    elapsed = state.get("optimizer_window_seconds")
+    if type(elapsed) not in (int, float) or not 0 <= elapsed <= args.budget_seconds:
+        raise AdmissionError("resume wall-time budget malformed")
+    return output, contract, step, float(elapsed), state
+
+
+def save_checkpoint(output: Path, tensors, torch, contract: dict,
+                    step: int, elapsed: float, counters: dict) -> dict:
+    from safetensors.torch import save_file
+
+    directory = output / f"checkpoint-{step}"
+    if directory.exists() or directory.is_symlink():
+        raise RuntimeError("checkpoint path already exists; refuse overwrite")
+    directory.mkdir(exist_ok=False)
+    weights = directory / "lora-trainables.safetensors"
+    save_file({name: p.detach().to(device="cpu", dtype=torch.float32).contiguous()
+               for name, p in tensors}, str(weights))
+    state = {"schema": "R18_MEZO_STATE_V1",
+             "status": "CHECKPOINT_BYTES_PINNED_NOT_RELOADED",
+             "run_contract_sha256": canonical_hash(contract),
+             "completed_steps": step, "optimizer_window_seconds": elapsed,
+             "weights_sha256": _hash_file(weights), "counters": counters}
+    state_path = directory / "state.json"
+    with state_path.open("x", encoding="utf-8") as stream:
+        json.dump(state, stream, sort_keys=True, indent=2)
+    return {"checkpoint_path": str(directory),
+            "checkpoint_state_sha256": _hash_file(state_path),
+            "checkpoint_weights_sha256": state["weights_sha256"]}
+
+
+def restore_checkpoint(tensors, torch, directory: Path, state: dict) -> None:
+    from safetensors.torch import load_file
+
+    values = load_file(str(directory / "lora-trainables.safetensors"), device="cpu")
+    if set(values) != {name for name, _ in tensors}:
+        raise AdmissionError("resume adapter tensor names do not match pinned base")
+    with torch.no_grad():
+        for name, p in tensors:
+            value = values[name]
+            if value.shape != p.shape or value.dtype != torch.float32:
+                raise AdmissionError("resume FP32 LoRA tensor shape/dtype changed")
+            p.copy_(value.to(device=p.device))
+
+
+def _oom(exc: Exception, torch) -> bool:
+    return isinstance(exc, torch.cuda.OutOfMemoryError) or (
+        isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+        and "cuda" in str(exc).lower())
+
+
+def fit_sweep(model, tensors, torch, tokenizer, prepared, args) -> dict:
+    """Probe real padded shapes ascending; EXIT on OOM for fresh-process retry."""
+    batches = sorted(set(args.sweep_batches))
+    lengths = sorted(set(args.sweep_lengths))
+    if (not batches or not lengths or any(type(b) is not int or b < 1 or b > 16 for b in batches)
+            or any(type(n) is not int or n < 1 or n > 2048 for n in lengths)):
+        raise AdmissionError("invalid bounded sweep candidates")
+    max_input = max(len(row["input_ids"]) for row in prepared)
+    probes = []
+    stopped_after_oom = False
+    for length in lengths:
+        for batch in batches:
+            if length < max_input:
+                probes.append({"batch_size": batch, "sequence_length": length,
+                               "fit_status": "infeasible", "reason": "verified case exceeds sequence"})
+                continue
+            sample = [prepared[i % len(prepared)] for i in range(batch)]
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats(0)
+            start = time.perf_counter()
+            try:
+                # Perturbed + and - forward passes, no optimization or learning.
+                seed = direction_seed(args.seed, 1)
+                original = _snapshot_trainables(tensors)
+                try:
+                    _noise_delta(tensors, torch, seed, args.epsilon)
+                    paired_batch_loss(model, torch, tokenizer, sample, batch, length)
+                    _noise_delta(tensors, torch, seed, -2 * args.epsilon)
+                    paired_batch_loss(model, torch, tokenizer, sample, batch, length)
+                finally:
+                    _restore_trainables(tensors, torch, original)
+                torch.cuda.synchronize(0)
+                outcome = "fits"
+            except Exception as exc:
+                if not _oom(exc, torch):
+                    raise
+                outcome = "oom"
+            probes.append({"batch_size": batch, "sequence_length": length,
+                           "actual_tensor_shape": [batch, length],
+                           "actual_nonpad_tokens": sum(r["input_tokens"] for r in sample),
+                           "mean_nonpad_tokens": sum(r["input_tokens"] for r in sample) / batch,
+                           "fit_status": outcome,
+                           "peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated(0),
+                           "peak_cuda_reserved_bytes": torch.cuda.max_memory_reserved(0),
+                           "probe_seconds": round(time.perf_counter() - start, 4),
+                           "forward_passes_attempted": 2})
+            gc.collect()
+            torch.cuda.empty_cache()
+            if outcome == "oom":
+                # CUDA context may be poisoned/fragmented after OOM. A later
+                # candidate must be attempted by a NEW Python process.
+                stopped_after_oom = True
+                break
+        if stopped_after_oom:
+            break
+    return {"probes": probes, "fit_probe_sha256": canonical_hash(probes),
+            "status": "GPU_FIT_PROBED_NO_TRAINING",
+            "stopped_after_oom_requires_fresh_process": stopped_after_oom}
+
+
+def _gpu_stack(args, model_path: Path):
+    import psutil
+    import torch
+    from peft import LoraConfig, PeftModel, get_peft_model
+    from transformers import AutoTokenizer, BitsAndBytesConfig, Qwen3_5ForCausalLM, set_seed
+
+    if psutil.virtual_memory().available < 9 * 2**30:
+        raise RuntimeError("under 9 GiB available RAM")
+    if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
+        raise RuntimeError("native BF16 CUDA unavailable")
+    if torch.cuda.get_device_properties(0).total_memory < 3900 * 2**20:
+        raise RuntimeError("GPU under R16 3900 MiB physical floor")
+    if torch.cuda.mem_get_info(0)[0] < 3200 * 2**20:
+        raise RuntimeError("less than R16 3200 MiB torch-visible free VRAM")
+    set_seed(args.seed)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+    if not tokenizer.chat_template:
+        raise RuntimeError("pinned tokenizer has no chat template")
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                               bnb_4bit_use_double_quant=True,
+                               bnb_4bit_compute_dtype=torch.bfloat16)
+    model = Qwen3_5ForCausalLM.from_pretrained(
+        model_path, quantization_config=config, device_map=0,
+        dtype=torch.bfloat16, local_files_only=True,
+    )
+    model.config.use_cache = False
+    for p in model.parameters():
+        p.requires_grad_(False)
+    lora = LoraConfig(r=4, lora_alpha=16, lora_dropout=0, bias="none",
+                      task_type="CAUSAL_LM", target_modules="all-linear")
+    if args.initial_adapter is not None:
+        # Read only the already source-pinned R16 zero-arm safetensors, not a
+        # derivative adapter and never an unsafe pickle checkpoint.
+        model = PeftModel.from_pretrained(model, str(args.initial_adapter),
+                                         is_trainable=True, local_files_only=True)
+    else:
+        model = get_peft_model(model, lora)
+    # PEFT often initializes adapters as BF16 with a BF16 parent; force FP32.
+    for name, p in model.named_parameters():
+        if p.requires_grad:
+            if "lora_" not in name.lower():
+                raise RuntimeError("non-LoRA trainable parameter")
+            p.data = p.data.to(dtype=torch.float32)
+    model.eval()  # fixed dropout and no accidental train-mode stochasticity
+    return torch, psutil, tokenizer, model
+
+
+def run(args) -> dict:
+    preflight, cases, model_path = validate_source(args)
+    if args.preflight_only:
+        if args.resume_checkpoint:
+            preflight["resume_custody_status"] = "GPU_TOKENIZED_CONTRACT_NOT_YET_VALIDATED"
+        return preflight
+    # GPU-heavy load occurs strictly after full manifest, rights and pin gates.
+    cold_started = time.perf_counter()
+    torch, psutil, tokenizer, model = _gpu_stack(args, model_path)
+    prepared, token_report = tokenize_cases(tokenizer, cases, args.max_seq_length)
+    preflight["tokenizer_binding_sha256"] = _hash_file(model_path / "tokenizer_config.json")
+    preflight["token_report"] = token_report
+    preflight["tokenization_sha256"] = canonical_hash([
+        {"id": item["id"], "input_ids": item["input_ids"], "labels": item["labels"]}
+        for item in prepared])
+    preflight["source_training_input_sha256"] = preflight["training_input_sha256"]
+    # The R18 comparison contract is the *exact labels/token IDs*, not merely
+    # equal Unicode text. This must match the QLoRA R18 runner byte-for-byte.
+    preflight["training_input_sha256"] = preflight["tokenization_sha256"]
+    tensors = trainables(model, torch)
+    before, initial = parameter_attestation(tensors, torch)
+    if args.expected_initial_digest and before["digest"] != args.expected_initial_digest:
+        raise RuntimeError("fresh LoRA initial digest differs from zero control")
+    if args.fit_sweep_only:
+        result = fit_sweep(model, tensors, torch, tokenizer, prepared, args)
+        final, _ = parameter_attestation(tensors, torch, initial)
+        if final["digest"] != before["digest"]:
+            raise RuntimeError("fit sweep mutated adapter weights")
+        return {**preflight, **result, "trainable_digest_before": before["digest"],
+                "trainable_digest_after": final["digest"]}
+    output, contract, resumed_step, previously_elapsed, state = prepare_run(args, preflight)
+    if state is not None:
+        restore_checkpoint(tensors, torch, args.resume_checkpoint, state)
+    frozen_before, frozen_byte_count = frozen_parameter_digest(model, torch)
+    # One unperturbed diagnostic forward is outside the optimizer clock.
+    # It is counted separately, never conflated with training presentations.
+    diagnostic_rows = step_rows(prepared, resumed_step, args.examples_per_update)
+    baseline_started = time.perf_counter()
+    unperturbed_loss = paired_batch_loss(model, torch, tokenizer, diagnostic_rows,
+                                        args.micro_batch_size, args.max_seq_length)
+    unperturbed_loss_seconds = time.perf_counter() - baseline_started
+    cold_start_seconds = time.perf_counter() - cold_started
+    counters = {"example_presentations": resumed_step * args.examples_per_update,
+                "input_tokens_presented": 0, "supervised_target_tokens": 0,
+                "forward_sample_tokens": 0, "backward_sample_tokens": 0,
+                "paired_forward_calls": 0, "zo_directions": resumed_step}
+    if state:
+        counters = dict(state["counters"])
+    torch.cuda.reset_peak_memory_stats(0)
+    start = time.perf_counter()
+    completed = resumed_step
+    last_checkpoint = None
+    sampled_peak_rss = psutil.Process().memory_info().rss
+    directional_log = []
+    if args.mode != "zero":
+        for step in range(resumed_step, args.steps):
+            if previously_elapsed + time.perf_counter() - start >= args.budget_seconds:
+                break
+            selected = step_rows(prepared, step, args.examples_per_update)
+            loss_fn = lambda: paired_batch_loss(model, torch, tokenizer, selected,
+                                                args.micro_batch_size, args.max_seq_length)
+            plus, minus, derivative = paired_zo_step(
+                tensors, torch, seed=direction_seed(args.seed, step + 1),
+                epsilon=args.epsilon, learning_rate=args.learning_rate, loss_fn=loss_fn,
+            )
+            torch.cuda.synchronize(0)
+            completed = step + 1
+            counters["example_presentations"] += len(selected)
+            counters["input_tokens_presented"] += sum(r["input_tokens"] for r in selected)
+            counters["supervised_target_tokens"] += sum(r["target_tokens"] for r in selected)
+            counters["forward_sample_tokens"] += 2 * len(selected) * args.max_seq_length
+            counters["paired_forward_calls"] += 2 * len(selected) // args.micro_batch_size
+            counters["zo_directions"] += 1
+            directional_log.append({"step": completed, "loss_plus": plus,
+                                    "loss_minus": minus, "directional_derivative": derivative})
+            sampled_peak_rss = max(sampled_peak_rss, psutil.Process().memory_info().rss)
+            if completed % args.checkpoint_every == 0 and completed < args.steps:
+                elapsed = previously_elapsed + time.perf_counter() - start
+                last_checkpoint = save_checkpoint(output, tensors, torch, contract,
+                                                  completed, elapsed, counters)
+    elapsed = previously_elapsed + time.perf_counter() - start
+    after, _ = parameter_attestation(tensors, torch, initial)
+    frozen_after, frozen_after_bytes = frozen_parameter_digest(model, torch)
+    if frozen_before != frozen_after or frozen_byte_count != frozen_after_bytes:
+        raise RuntimeError("frozen NF4 base tensor bytes changed during LoRA-only ZO")
+    if (args.mode == "zero") != (before["digest"] == after["digest"]):
+        raise RuntimeError("zeroth-order actual adapter delta attestation failed")
+    if args.mode != "zero" and not completed > resumed_step:
+        raise RuntimeError("no new zeroth-order weight update completed in budget")
+    if args.mode != "zero" and (not last_checkpoint or completed != int(
+            Path(last_checkpoint["checkpoint_path"]).name.split("-")[1])):
+        last_checkpoint = save_checkpoint(output, tensors, torch, contract,
+                                          completed, elapsed, counters)
+    adapter = output / "adapter"
+    model.save_pretrained(adapter, safe_serialization=True)
+    adapter_weights = adapter / "adapter_model.safetensors"
+    adapter_config = adapter / "adapter_config.json"
+    if not adapter_weights.is_file() or not adapter_config.is_file():
+        raise RuntimeError("LoRA checkpoint was not saved")
+    receipt = {**preflight,
+               "status": "TRAINED_UNSCORED", "zero_update": args.mode == "zero",
+               "fit_status": "fits", "optimizer_steps": completed,
+               "new_optimizer_steps": completed - resumed_step,
+               "unique_examples_seen": min(len(prepared), counters["example_presentations"]),
+               "examples_seen": counters["example_presentations"],
+               "tokens_seen": counters["input_tokens_presented"], **counters,
+               "timed_training_seconds": elapsed, "optimizer_window_seconds": elapsed,
+               "peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated(0),
+               "peak_cuda_reserved_bytes": torch.cuda.max_memory_reserved(0),
+               "peak_cpu_rss_bytes": sampled_peak_rss,
+               "cold_start_and_diagnostic_seconds": cold_start_seconds,
+               "unperturbed_loss": unperturbed_loss,
+               "unperturbed_loss_seconds": unperturbed_loss_seconds,
+               "diagnostic_forward_calls": len(diagnostic_rows) // args.micro_batch_size,
+               "diagnostic_forward_sample_tokens": len(diagnostic_rows) * args.max_seq_length,
+               "total_forward_sample_tokens_including_diagnostic": (
+                   counters["forward_sample_tokens"] + len(diagnostic_rows) * args.max_seq_length),
+               "frozen_parameter_sha256_before": frozen_before,
+               "frozen_parameter_sha256_after": frozen_after,
+               "frozen_parameter_bytes_hashed": frozen_byte_count,
+               "trainable_parameter_count": before["parameter_count"],
+               "trainable_digest_before": before["digest"],
+               "trainable_digest_after": after["digest"],
+               "changed_trainable_elements": after["changed_elements"],
+               "actual_weight_delta_l2": after["delta_l2"],
+               "resumed_from_step": resumed_step, "checkpoint": last_checkpoint,
+               "adapter_model_sha256": _hash_file(adapter_weights),
+               "adapter_config_sha256": _hash_file(adapter_config),
+               "directional_updates": directional_log,
+               "eval_accuracy": None, "eval_nll": None,
+               "eval_examples": 0, "eval_target_tokens": 0,
+               "eval_set_sha256": None,
+               "fit_probe_sha256": args.fit_probe_sha256,
+               "evidence_limit": ("saved LoRA only; no independent reload or heldout score; "
+                                  "NF4 quantizer non-parameter metadata not hashed")}
+    with (output / "r18-mezo-receipt.json").open("x", encoding="utf-8") as stream:
+        json.dump(receipt, stream, sort_keys=True, indent=2)
+    return receipt
+
+
+def parse_int_list(value: str) -> list[int]:
+    try:
+        result = [int(part) for part in value.split(",")]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be comma-separated integers") from exc
+    if not result or any(n < 1 for n in result):
+        raise argparse.ArgumentTypeError("candidate sizes must be positive")
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--producer-git-head", default=None)
+    parser.add_argument("--base-binding", type=Path, required=True)
+    parser.add_argument("--work-root", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--mode", choices=["zero", "correct", "corrupt"], required=True)
+    parser.add_argument("--steps", type=int, default=0)
+    parser.add_argument("--cases", type=int, default=64)
+    parser.add_argument("--seed", type=int, default=41)
+    parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--epsilon", type=float, default=1e-3)
+    parser.add_argument("--micro-batch-size", type=int, default=1)
+    parser.add_argument("--examples-per-update", type=int, default=8)
+    parser.add_argument("--max-seq-length", type=int, default=512)
+    parser.add_argument("--budget-seconds", type=float, required=True)
+    parser.add_argument("--checkpoint-every", type=int, default=8)
+    parser.add_argument("--expected-initial-digest", default=None)
+    parser.add_argument("--fit-probe-sha256", default=None)
+    parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--fit-sweep-only", action="store_true")
+    parser.add_argument("--sweep-batches", type=parse_int_list, default=[1])
+    parser.add_argument("--sweep-lengths", type=parse_int_list,
+                        default=[64, 128, 256, 384, 512, 768, 1024])
+    parser.add_argument("--initial-adapter", type=Path,
+                        help="Externally pinned R16 zero-update PEFT adapter directory")
+    parser.add_argument("--initial-adapter-sha256", help="Exact SHA256 of its adapter_model.safetensors")
+    parser.add_argument("--resume-checkpoint", type=Path)
+    parser.add_argument("--resume-receipt-sha256")
+    args = parser.parse_args()
+    print(json.dumps(run(args), indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
