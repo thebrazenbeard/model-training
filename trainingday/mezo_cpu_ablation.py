@@ -92,7 +92,8 @@ def zo_update(parameters, loss_fn, *, epsilon: float, lr: float, seed: int,
             "directional_derivative": directional_derivative}
 
 
-def run_arm(*, method: str, mode: str, steps: int, seed: int):
+def run_arm(*, method: str, mode: str, steps: int, seed: int,
+            adapter_path: str | None = None):
     if method not in ("mezo", "adamw") or mode not in ("zero", "correct", "corrupt"):
         raise ValueError("unsupported bounded method or control")
     if not 0 <= steps <= 200 or (mode == "zero" and steps != 0):
@@ -138,6 +139,21 @@ def run_arm(*, method: str, mode: str, steps: int, seed: int):
     final_sha = _digest(parameters)
     if (mode == "zero") != (final_sha == initial_sha):
         raise RuntimeError("zero/update parameter digest invariant violated")
+    adapter_bytes = None
+    adapter_file_sha256 = None
+    if adapter_path is not None:
+        from pathlib import Path
+        from safetensors.torch import save_file, load_file
+        target = Path(adapter_path)
+        if not target.parent.is_dir() or target.exists():
+            raise FileExistsError("adapter output path must be new")
+        save_file({"lora_a": model.lora_a.detach().contiguous().cpu(),
+                   "lora_b": model.lora_b.detach().contiguous().cpu()}, str(target))
+        loaded = load_file(str(target), device="cpu")
+        if _digest([loaded["lora_a"], loaded["lora_b"]]) != final_sha:
+            raise RuntimeError("saved adapter tensor reload mismatch")
+        adapter_bytes = target.stat().st_size
+        adapter_file_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
     with torch.no_grad():
         final_loss = float(F.mse_loss(model(hold_x), hold_y))
         exact = int(((model(hold_x) >= 0) == (hold_y >= 0)).sum())
@@ -156,6 +172,8 @@ def run_arm(*, method: str, mode: str, steps: int, seed: int):
         "baseline_heldout_sign_correct": baseline_exact,
         "heldout_sign_correct": exact,
         "optimizer_seconds": elapsed,
+        "adapter_bytes": adapter_bytes,
+        "adapter_file_sha256": adapter_file_sha256,
         "cuda_allocations": 0, "official_4b_model_trained": False,
         "reasoning_generalization_qualified": False,
     }
@@ -169,9 +187,10 @@ def main():
     parser.add_argument("--steps", type=int, default=40)
     parser.add_argument("--seed", type=int, default=29037)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--adapter")
     args = parser.parse_args()
     result = run_arm(method=args.method, mode=args.mode, steps=args.steps,
-                     seed=args.seed)
+                     seed=args.seed, adapter_path=args.adapter)
     from pathlib import Path
     path = Path(args.output)
     with path.open("x", encoding="utf-8") as handle:
