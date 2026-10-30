@@ -1,6 +1,7 @@
 """CPU-only R18 receipt and sealed-data protocol tests (no GPU or network)."""
 
 import copy
+import base64
 import hashlib
 import json
 import os
@@ -424,7 +425,14 @@ def test_windows_private_acl_owner_only_and_no_broad_inheritance(tmp_path, monke
             return subprocess.CompletedProcess(
                 argv, 0, "Successfully processed 1 files; Failed processing 0 files", "")
         assert argv[0] == "powershell.exe"
-        return subprocess.CompletedProcess(argv, 0, "R18_PRIVATE_ACL_OWNER_ONLY\n", "")
+        script = base64.b64decode(argv[-1]).decode("utf-16le")
+        assert all(sid in script for sid in (
+            owner_sid, "S-1-5-18", "S-1-5-32-544", "S-1-3-4"))
+        assert "$acl.AreAccessRulesProtected" in script
+        assert "$allowed -notcontains $principal" in script
+        assert "$observed.ContainsKey($principal)" in script
+        assert "$r.IsInherited" in script
+        return subprocess.CompletedProcess(argv, 0, "R18_PRIVATE_ACL_PRIVILEGED_ONLY\n", "")
 
     monkeypatch.setattr("trainingday.r18_benchmark.subprocess.run", windows_process)
     path = tmp_path / "new-private-dir"
