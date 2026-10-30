@@ -99,6 +99,28 @@ def _valid_seconds(value) -> bool:
     return type(value) in (int, float) and 0 < value <= 86400
 
 
+def next_step_guard_seconds(completed_step_seconds: list[float]) -> float:
+    """Reserve enough time for an entire GA8 optimizer update, not a microbatch.
+
+    An initial 120-second floor uses R16's ~66-second GA8 observation with a
+    substantial cushion. Thereafter the guard is 1.5 times the *slowest*
+    completed step plus two seconds, with a 30-second absolute floor. It is a
+    conservative predictor, not a guarantee against an unexpected slow step:
+    any actual deadline breach remains a failed, non-comparable run.
+    """
+    if not completed_step_seconds:
+        return 120.0
+    if any(type(x) not in (int, float) or x <= 0 for x in completed_step_seconds):
+        raise ValueError("R18 step guard requires positive completed-step timings")
+    return max(30.0, 1.5 * max(completed_step_seconds) + 2.0)
+
+
+def may_start_full_step(remaining_seconds: float,
+                        completed_step_seconds: list[float]) -> bool:
+    """A partial GA8 update is never an admitted use of the time budget."""
+    return remaining_seconds >= next_step_guard_seconds(completed_step_seconds)
+
+
 def _initial_adapter_custody(args) -> dict:
     directory = getattr(args, "initial_adapter", None)
     model_sha = getattr(args, "initial_adapter_model_sha256", None)
@@ -506,11 +528,16 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
     deadline_ns = started_ns + round(receipt["training_budget_seconds"] * 1e9)
     unique = set()
     steps = presentations = input_tokens = target_tokens = tensor_tokens = 0
+    completed_step_seconds = []
+    stop_reason = "ZERO_UPDATE_CONTROL" if args.control in {"frozen", "zero"} else "UNEXPECTED_ABORT"
     try:
         if args.control not in {"frozen", "zero"}:
             for offset in range(0, len(converted), EFFECTIVE_BATCH):
-                if time.perf_counter_ns() >= deadline_ns:
+                remaining_seconds = (deadline_ns - time.perf_counter_ns()) / 1e9
+                if not may_start_full_step(remaining_seconds, completed_step_seconds):
+                    stop_reason = "INSUFFICIENT_REMAINING_FOR_SAFE_FULL_STEP"
                     break
+                step_started_ns = time.perf_counter_ns()
                 optimizer.zero_grad(set_to_none=True)
                 for index in range(offset, offset + EFFECTIVE_BATCH, batch_size):
                     items = converted[index:index + batch_size]
@@ -528,7 +555,14 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                         target_tokens += item["target_tokens"]
                         tensor_tokens += seq
                 optimizer.step()
+                # CUDA work is asynchronous; timing must cover a *completed*
+                # backward/optimizer update before predicting the next one.
+                torch.cuda.synchronize()
+                completed_step_seconds.append(
+                    (time.perf_counter_ns() - step_started_ns) / 1e9)
                 steps += 1
+            else:
+                stop_reason = "UNIQUE_TRAINING_POOL_EXHAUSTED"
         torch.cuda.synchronize()
     finally:
         stop_ns = time.perf_counter_ns()
@@ -546,14 +580,23 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                        optimizer_window_seconds=round(elapsed, 3),
                        timed_training_seconds=round(elapsed, 3),
                        training_budget_overshoot_seconds=round(overshoot, 3),
+                       training_budget_unused_seconds=round(
+                           max(0., receipt["training_budget_seconds"] - elapsed), 3),
                        training_budget_tolerance_seconds=round(tolerance, 3),
                        training_budget_within_tolerance=(overshoot <= tolerance),
+                       budget_stop_reason=stop_reason,
+                       completed_step_seconds=[round(x, 3) for x in completed_step_seconds],
+                       next_step_guard_seconds=round(
+                           next_step_guard_seconds(completed_step_seconds), 3),
+                       step_guard_policy="INITIAL_120S_THEN_1P5X_SLOWEST_PLUS_2S_MIN30S",
                        measured_training_window_excludes_load_and_fit=True,
                        train_start_monotonic_ns=started_ns,
                        train_stop_monotonic_ns=stop_ns,
                        train_deadline_monotonic_ns=deadline_ns)
     if stop_ns > deadline_ns:
         raise RuntimeError("R18 strict equal-time deadline exceeded by completed step")
+    if args.control in {"correct", "corrupt"} and steps == 0:
+        raise RuntimeError("R18 fail-closed: no complete optimizer step fits training budget")
     after, count_after = _parameter_digest(model, torch)
     delta_squared = 0.
     delta_max = 0.
