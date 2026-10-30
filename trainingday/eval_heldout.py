@@ -72,12 +72,15 @@ def select_heldout(manifest_path: Path, count: int,
                 scored.append((score, case_id, row))
     if len(scored) < count:
         raise AdmissionError("insufficient heldout verified cases")
-    # V1 four-case pilot was exhausted by truncated output; V2 is disjoint.
+    # V1's four cases were exhausted by a truncated-format pilot (base 0/4),
+    # so never recycle them as the revised instruction-following benchmark.
     old_ids = {case_id for _, case_id, _ in sorted(scored)[:4]}
     fresh = sorted((hashlib.sha256(("r14-heldout-v2:" + case_id).encode()).hexdigest(),
                     case_id, row) for _, case_id, row in scored if case_id not in old_ids)
     if protocol == "v3":
-        # V2 eight cases were scored by all one-step arms; never recycle.
+        # V2's eight development cases have now been scored by all three
+        # one-step arms. Reserve a disjoint V3 bank before the eight-step
+        # arms are evaluated; never reuse tuned development examples.
         old_ids.update(case_id for _, case_id, _ in fresh[:8])
         fresh = sorted((hashlib.sha256(("r14-heldout-v3:" + case_id).encode()).hexdigest(),
                         case_id, row) for _, case_id, row in scored if case_id not in old_ids)
@@ -121,6 +124,7 @@ def evaluate(args) -> dict:
     model.eval()
     results = []
     for row in heldout:
+        # Explicit answer format is fixed before seeing this V2 case bank.
         question = row["prompt"] + "\nReply with only the final integer. No steps or other words."
         prompt = tokenizer.apply_chat_template(
             [{"role": "user", "content": question}],
@@ -135,8 +139,23 @@ def evaluate(args) -> dict:
         text = tokenizer.decode(generated[0][inputs["input_ids"].shape[1]:],
                                 skip_special_tokens=True).strip()
         exact = bool(re.fullmatch(r"[+-]?\d+", text)) and int(text) == row["answer"]
-        results.append({"id": row["id"], "correct": exact,
-                        "expected": row["answer"], "generated": text})
+        scored = {"id": row["id"], "correct": exact,
+                  "expected": row["answer"], "generated": text}
+        if args.teacher_force_nll:
+            # Companion diagnostic: likelihood of the original numeric
+            # completion, not a claim of successful free generation.
+            completion = str(row["answer"]) + (tokenizer.eos_token or "")
+            completion_ids = tokenizer(completion, add_special_tokens=False)["input_ids"]
+            prefix_size = inputs["input_ids"].shape[1]
+            full_ids = torch.cat((inputs["input_ids"],
+                                  torch.tensor([completion_ids], device="cuda:0")), dim=1)
+            with torch.inference_mode():
+                logits = model(input_ids=full_ids).logits
+            predicted = logits[0, prefix_size - 1:prefix_size + len(completion_ids) - 1]
+            scored["answer_nll_per_token"] = float(torch.nn.functional.cross_entropy(
+                predicted.float(), full_ids[0, prefix_size:], reduction="mean"
+            ).item())
+        results.append(scored)
     result = {"status": "HELDOUT_DIAGNOSTIC_NOT_FINAL_QUALIFICATION",
               "protocol": "R14_NUMERIC_ONLY_" + args.protocol.upper() + "_FRESH",
               "case_ids_sha256": digest, "cases": len(results),
@@ -146,6 +165,9 @@ def evaluate(args) -> dict:
               "corpus_manifest_sha256": _hash_file(args.manifest),
               "base_revision": binding["revision"], "results": results,
               "provenance": corpus.get("status")}
+    if args.teacher_force_nll:
+        result["mean_answer_nll_per_token"] = sum(
+            x["answer_nll_per_token"] for x in results) / len(results)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
@@ -160,6 +182,7 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--cases", type=int, default=4)
     parser.add_argument("--protocol", choices=["v2", "v3"], default="v2")
+    parser.add_argument("--teacher-force-nll", action="store_true")
     args = parser.parse_args()
     print(json.dumps(evaluate(args), indent=2))
 
