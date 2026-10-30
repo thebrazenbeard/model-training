@@ -466,6 +466,10 @@ def build_verified_code_corpus(manifest_path: Path, output_dir: Path, *,
     target = stage / "train" / "000000.jsonl"
     sha = hashlib.sha256()
     count = files = git_verified = 0
+    # The upstream source digest is not a guarantee of unique derived
+    # question/answer IDs (e.g., repeated function definitions). Refuse any
+    # duplicate before writing it into a train-only shard.
+    derived_ids: set[str] = set()
     with target.open("wb") as output_stream:
         for shard in sorted(train_shards, key=lambda x: x["path"]):
             file = _data_file(root, shard["path"], "train")
@@ -493,6 +497,9 @@ def build_verified_code_corpus(manifest_path: Path, output_dir: Path, *,
                         )
                         git_verified += 1
                     for case in derive_cases(row, per_file=per_file):
+                        _require(case["id"] not in derived_ids,
+                                 "duplicate derived training example")
+                        derived_ids.add(case["id"])
                         case["source_git_blob_verified"] = trusted_git_roots is not None
                         data = (json.dumps(case, sort_keys=True, separators=(",", ":")) + "\n").encode()
                         output_stream.write(data)
