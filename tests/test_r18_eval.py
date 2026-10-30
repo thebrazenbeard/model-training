@@ -24,6 +24,9 @@ class R18EvaluatorTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
+        if os.name == "nt":
+            from trainingday.r18_benchmark import _protect_private_path
+            _protect_private_path(self.root, directory=True)
         self.manifest = self.root / "manifest.json"
         self.manifest.write_text("{}", encoding="utf-8")
         self.binding = self.root / "base.json"
@@ -207,10 +210,15 @@ class R18EvaluatorTests(unittest.TestCase):
     def test_private_custody_requires_owner_only_permissions(self):
         path = self.root / "private-seal.json"
         path.write_text("{}", encoding="utf-8")
-        path.chmod(0o644)
+        if os.name != "nt":
+            path.chmod(0o644)
         with self.assertRaises(AdmissionError):
             _json(path, private=True)
-        path.chmod(0o600)
+        if os.name == "nt":
+            from trainingday.r18_benchmark import _protect_private_path
+            _protect_private_path(path, directory=False)
+        else:
+            path.chmod(0o600)
         self.assertEqual(_json(path, private=True), {})
 
     def test_selection_rederives_old16_r16_64_and_r18_64(self):
@@ -242,6 +250,10 @@ class R18EvaluatorTests(unittest.TestCase):
             "eval_index_sha256": pinned_plan["eval_index_sha256"],
             "cases": cases}), encoding="utf-8")
         self.sealed.chmod(0o600)
+        if os.name == "nt":
+            from trainingday.r18_benchmark import _protect_private_path
+            _protect_private_path(self.exclusions, directory=False)
+            _protect_private_path(self.sealed, directory=False)
         r16_selection = {"selected_count": 64, "selected_id_sha256": BANK_ID_SHA256,
                          "cases": r16_cases}
         r18_selection = {"selected_count": 64, "cases": cases}
