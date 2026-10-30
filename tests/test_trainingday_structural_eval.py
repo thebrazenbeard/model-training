@@ -7,7 +7,7 @@ import pytest
 from test_trainingday_labyrinth_intake import _fixture, _reason
 from trainingday.structural_eval import (
     EvaluationGateError, select_structural_cases, score_answers,
-    compare_control_scores,
+    compare_control_scores, preregister_r15_fresh_structural64,
 )
 
 
@@ -30,6 +30,36 @@ def _structural(tmp_path):
     entry.update(bytes=len(data), count=1, sha256=hashlib.sha256(data).hexdigest())
     path.write_text(json.dumps(manifest), encoding="utf-8")
     return path, hashlib.sha256(path.read_bytes()).hexdigest(), row
+
+
+def _two_structures(tmp_path):
+    path, _, first = _structural(tmp_path)
+    manifest = json.loads(path.read_text())
+    row = _reason(100, 5)
+    row["operations"] = [["add", 3], ["subtract", 1]]
+    row["answer"] = 7
+    row["prompt"] = "Start with 5. add 3. subtract 1. What is the final integer?"
+    row["text"] = f"Question: {row['prompt']}\nAnswer: 7"
+    digest = hashlib.sha256(row["text"].encode()).hexdigest()
+    row.update(id="reasoning-" + digest, content_sha256=digest)
+    file = path.parent / "eval/000000.jsonl"
+    # Same *signature* as the old case but a different ID: excluding only the
+    # exact old ID would contaminate a supposedly fresh operator-chain gate.
+    duplicate_signature = _reason(101, 5)
+    duplicate_signature["operations"] = [["subtract", 2], ["multiply", 3]]
+    duplicate_signature["answer"] = 9
+    duplicate_signature["prompt"] = "Start with 5. subtract 2. multiply 3. What is the final integer?"
+    duplicate_signature["text"] = f"Question: {duplicate_signature['prompt']}\nAnswer: 9"
+    old_sig_digest = hashlib.sha256(duplicate_signature["text"].encode()).hexdigest()
+    duplicate_signature.update(id="reasoning-" + old_sig_digest, content_sha256=old_sig_digest)
+    data = (file.read_bytes() + (json.dumps(row, sort_keys=True) + "\n").encode()
+            + (json.dumps(duplicate_signature, sort_keys=True) + "\n").encode())
+    file.write_bytes(data)
+    entry = next(x for x in manifest["shards"] if x["split"] == "eval")
+    entry.update(count=3, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+    manifest["counts"]["eval"] = 3
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    return path, hashlib.sha256(path.read_bytes()).hexdigest(), first, row
 
 
 def test_selects_a_real_unseen_structure_and_keeps_source_pins(tmp_path):
@@ -126,3 +156,48 @@ def test_requires_frozen_base_beyond_initialized_zero_lora(tmp_path):
     assert wrong["correct"] == 0
     with pytest.raises(EvaluationGateError, match="missing"):
         compare_control_scores({"zero": wrong, "correct": wrong, "corrupt": wrong})
+
+
+def test_fresh_preregistration_excludes_entire_already_scored_signature(tmp_path):
+    path, pin, old, fresh = _two_structures(tmp_path)
+    result = select_structural_cases(
+        path, expected_manifest_sha256=pin, max_cases=1,
+        previously_scored_ids=[old["id"]],
+        expected_scored_ids_sha256=hashlib.sha256(old["id"].encode()).hexdigest(),
+        expected_scored_signature_count=1,
+    )
+    assert result["status"] == "STRUCTURAL_EVAL_PREREGISTERED_FRESH_NO_MODEL_INFERENCE"
+    assert result["signature_count"] == 1
+    assert result["excluded_scored_signature_count"] == 1
+    assert result["cases"][0]["id"] == fresh["id"]
+    assert result["cases"][0]["id"] != old["id"]
+    assert "previously_scored_ids" not in result
+
+
+def test_fresh_preregistration_rejects_forged_missing_or_mismatched_old_evidence(tmp_path):
+    path, pin, old, _ = _two_structures(tmp_path)
+    old_id = old["id"]
+    digest = hashlib.sha256(old_id.encode()).hexdigest()
+    kwargs = dict(manifest_path=path, expected_manifest_sha256=pin, max_cases=1,
+                  previously_scored_ids=[old_id], expected_scored_ids_sha256=digest,
+                  expected_scored_signature_count=1)
+    with pytest.raises(EvaluationGateError, match="custody"):
+        select_structural_cases(**{**kwargs, "expected_scored_ids_sha256": "0" * 64})
+    with pytest.raises(EvaluationGateError, match="custody"):
+        select_structural_cases(**{**kwargs, "previously_scored_ids": [old_id, old_id]})
+    with pytest.raises(EvaluationGateError, match="absent"):
+        missing = "reasoning-" + "a" * 64
+        select_structural_cases(**{**kwargs, "previously_scored_ids": [missing],
+                                   "expected_scored_ids_sha256": hashlib.sha256(missing.encode()).hexdigest()})
+    with pytest.raises(EvaluationGateError, match="signature count"):
+        select_structural_cases(**{**kwargs, "expected_scored_signature_count": 2})
+    with pytest.raises(EvaluationGateError, match="insufficient"):
+        select_structural_cases(**{**kwargs, "max_cases": 2})
+
+
+def test_r15_wrapper_requires_exact_old_16_id_custody(tmp_path):
+    path, _, first, _ = _two_structures(tmp_path)
+    with pytest.raises(EvaluationGateError, match="16-ID"):
+        preregister_r15_fresh_structural64(path, previously_scored_16_ids=[first["id"]])
+    with pytest.raises(EvaluationGateError, match="custody"):
+        preregister_r15_fresh_structural64(path, previously_scored_16_ids=["reasoning-" + f"{n:064x}" for n in range(16)])

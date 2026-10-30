@@ -20,6 +20,13 @@ class EvaluationGateError(ValueError):
     """Pinned evidence or cross-arm evaluation gate failed."""
 
 
+# These are development-bank custody pins, not a claim of final-bank sealing.
+R15_V2_MANIFEST_SHA256 = "90b55cf8742f9222c91f88e5727dcd0113322e4721e4fd3d1bdcdf65f40d0836"
+R15_SCORED16_IDS_SHA256 = "212cc8d173c012743899f2ddf610468bd5fed3e318c35fcf90ce08635fb9165c"
+R15_SCORED16_COUNT = 16
+R15_SCORED_SIGNATURE_COUNT = 13
+
+
 def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -58,7 +65,10 @@ def _rows(path: Path, expected_count: int):
 
 
 def select_structural_cases(
-    manifest_path: Path, *, expected_manifest_sha256: str, max_cases: int = 64
+    manifest_path: Path, *, expected_manifest_sha256: str, max_cases: int = 64,
+    previously_scored_ids: list[str] | None = None,
+    expected_scored_ids_sha256: str | None = None,
+    expected_scored_signature_count: int | None = None,
 ) -> dict:
     """Pick unique unseen operator structures from a pinned v2 corpus.
 
@@ -70,6 +80,20 @@ def select_structural_cases(
             or not isinstance(expected_manifest_sha256, str)
             or not re.fullmatch(r"[0-9a-f]{64}", expected_manifest_sha256)):
         raise EvaluationGateError("manifest SHA pin missing")
+    exclusions_enabled = previously_scored_ids is not None
+    if exclusions_enabled:
+        if (type(previously_scored_ids) is not list or not previously_scored_ids
+                or any(not isinstance(v, str) or not re.fullmatch(r"reasoning-[0-9a-f]{64}", v)
+                       for v in previously_scored_ids)
+                or len(set(previously_scored_ids)) != len(previously_scored_ids)
+                or not isinstance(expected_scored_ids_sha256, str)
+                or _digest("\n".join(previously_scored_ids).encode()) != expected_scored_ids_sha256
+                or type(expected_scored_signature_count) is not int
+                or expected_scored_signature_count < 1):
+            raise EvaluationGateError("invalid previously scored ID custody")
+    elif expected_scored_ids_sha256 is not None or expected_scored_signature_count is not None:
+        raise EvaluationGateError("missing previously scored ID custody")
+    scored_id_set = set(previously_scored_ids or ())
     raw = manifest_path.read_bytes()
     if _digest(raw) != expected_manifest_sha256:
         raise EvaluationGateError("manifest SHA mismatch")
@@ -128,6 +152,8 @@ def select_structural_cases(
     eval_by_signature = {}
     seen_ids = set()
     seen_digests = set()
+    observed_scored_ids = set()
+    scored_signatures = set()
     for split in ("train", "eval"):
         for path, size, expected_hash in sorted(per_split[split], key=lambda e: str(e[0])):
             if _digest(path.read_bytes()) != expected_hash:
@@ -152,6 +178,9 @@ def select_structural_cases(
                 if split == "train":
                     train_signatures.add(sig)
                     continue
+                if identifier in scored_id_set:
+                    observed_scored_ids.add(identifier)
+                    scored_signatures.add(sig)
                 priority = _digest((str(manifest["seed"]) + "\x00" + identifier).encode())
                 entry = {"id": identifier, "prompt": case["prompt"], "expected": case["answer"]}
                 previous = eval_by_signature.get(sig)
@@ -159,13 +188,47 @@ def select_structural_cases(
                     eval_by_signature[sig] = (priority, entry)
     if train_signatures.intersection(eval_by_signature):
         raise EvaluationGateError("structural train/eval overlap")
+    if exclusions_enabled:
+        if observed_scored_ids != scored_id_set:
+            raise EvaluationGateError("previously scored eval IDs absent")
+        if len(scored_signatures) != expected_scored_signature_count:
+            raise EvaluationGateError("previously scored signature count mismatch")
+        eval_by_signature = {sig: entry for sig, entry in eval_by_signature.items()
+                             if sig not in scored_signatures}
     if len(eval_by_signature) < max_cases:
         raise EvaluationGateError("insufficient unseen evaluation structures")
     cases = [case for _, case in sorted(eval_by_signature.values(), key=lambda e: e[0])[:max_cases]]
     selection_hash = _digest("\n".join(case["id"] for case in cases).encode())
-    return {"status": "STRUCTURAL_EVAL_SELECTED_NO_MODEL_INFERENCE",
+    result = {"status": ("STRUCTURAL_EVAL_PREREGISTERED_FRESH_NO_MODEL_INFERENCE"
+                         if exclusions_enabled else "STRUCTURAL_EVAL_SELECTED_NO_MODEL_INFERENCE"),
             "manifest_sha256": expected_manifest_sha256, "signature_count": len(eval_by_signature),
             "selected_id_sha256": selection_hash, "selected_count": len(cases), "cases": cases}
+    if exclusions_enabled:
+        result.update(previously_scored_id_sha256=expected_scored_ids_sha256,
+                      excluded_scored_signature_count=len(scored_signatures),
+                      selected_signature_count=len(cases))
+    return result
+
+
+def preregister_r15_fresh_structural64(
+    manifest_path: Path, *, previously_scored_16_ids: list[str]
+) -> dict:
+    """Only the unscored v2 signatures, checked against the actual R15 16-ID pin.
+
+    The old IDs must be supplied inside the trusted evaluator from the previous
+    scoring receipt; neither prompts nor old IDs are returned in the selection.
+    The available signature pool must supply 64 genuinely unscored structures.
+    """
+    if type(previously_scored_16_ids) is not list or len(previously_scored_16_ids) != R15_SCORED16_COUNT:
+        raise EvaluationGateError("previously scored 16-ID list required")
+    result = select_structural_cases(
+        manifest_path, expected_manifest_sha256=R15_V2_MANIFEST_SHA256,
+        max_cases=64, previously_scored_ids=previously_scored_16_ids,
+        expected_scored_ids_sha256=R15_SCORED16_IDS_SHA256,
+        expected_scored_signature_count=R15_SCORED_SIGNATURE_COUNT,
+    )
+    result["protocol"] = "R15_FRESH_STRUCTURAL64_AFTER_SCORED16_EXCLUSION_V1"
+    return result
 
 
 def score_answers(selection: dict, predictions: dict, *, mode: str) -> dict:

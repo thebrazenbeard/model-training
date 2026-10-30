@@ -8,6 +8,35 @@ Status: SOURCE-ONLY EVALUATION CONTRACT. This is not a successful neural model r
 - Qualified source of v2 generated corpus: Labyrinth d0f2d63863873cf60747383740cc87d8f4e075a4; 283 train operator signatures and 77 dev-eval signatures, zero overlap in the previously verified corpus audit. This is not a sealed independent final bank.
 - Source evaluation selection receipt on Lappy: D:\VERA\.scratch\trainingday-structural-eval-20261029\heldout-case-selection-receipt.json, SHA256 b4ba396ac065553a38f33f9afbbd378685187c7075d1e80045410e182125ed4d; 64 distinct operator signatures selected; ID-list SHA256 a5c29c84c8490e2b336966a74ad7f95e93a13ae1043bca1b73061125027dbaa5.
 
+## R15 development-bank reuse correction and fresh 64-case preregistration
+
+The original 64-case selection above is **not fresh** relative to R15's already
+scored 16-case v2 diagnostic. On-host review established zero repeated case IDs
+but 13/13 of the earlier operator signatures overlap that initial 64-case
+selection. Case-ID separation alone is insufficient for structural generalization.
+
+The independent evaluator may instead call
+`preregister_r15_fresh_structural64(manifest_path, previously_scored_16_ids=...)`
+*before any new model scoring*. It has fixed custody pins:
+
+- v2 manifest SHA256 `90b55cf8742f9222c91f88e5727dcd0113322e4721e4fd3d1bdcdf65f40d0836`;
+- previously scored 16-case ordered ID-list SHA256 `212cc8d173c012743899f2ddf610468bd5fed3e318c35fcf90ce08635fb9165c`;
+- exactly 16 previously scored IDs covering exactly 13 operation signatures;
+- exactly 64 previously unscored distinct operation signatures selected by the
+  existing stable source priority after exclusion.
+
+The old 16 IDs must be obtained by the evaluator from its trusted previous
+scoring receipts, not generated or guessed from hashes. Every supplied ID must
+be independently located among **eval** reasoning rows in the exact pinned
+corpus, and all 13 associated operator signatures are removed wholesale,
+including other cases with different IDs but identical operation sequences.
+The selector fails closed if the pin, ID custody, 13-signature count or 64-case
+availability differs. The returned receipt identifies the exclusion hash and
+counts but does not print old IDs or their prompts. The 64 new evaluation
+questions remain development holdout, **not** a sealed final bank.
+
+No new R15 64-case physical evaluation has been run by this source change.
+
 ## Deliberately separated evidence gates
 1. trainingday.structural_eval.select_structural_cases(manifest, expected_manifest_sha256=..., max_cases=64) checks exact manifest pin, source license notices, every train/eval shard hash, row counts, independently replays reasoning answers using the producer's integer oracle, rejects duplicate record IDs and operator-pattern overlap, and selects at most one development question per unseen operator sequence. This module reads eval plaintext and MUST NEVER be imported into the training process or used for optimizer updates. Keep prompts private to the independent evaluator process, not GitHub, public logs, or model-generated training datasets.
 2. trainingday.adapter_receipts.verify_training_triplet({zero,correct,corrupt},...) verifies three never-overwritten adapter directories, their actual file SHA256 values, matched source manifest/selected train IDs/seed/base revision/binding, common initial FP32 trainable digest, zero update control, and changed correct/corrupt trainable digests with equal step counts. This is a STATIC receipt/byte check, not independent optimizer execution attestation, model-tensor deserialization or fresh-process reload.
