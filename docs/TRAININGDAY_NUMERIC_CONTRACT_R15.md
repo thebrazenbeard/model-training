@@ -24,6 +24,23 @@ a retroactive R14 PASS.
 - Use separate v2 structural development eval, independent oracle,
   plus retention controls before any scaling or GGUF promotion.
 
+## Evaluator custody gate
+
+The R15 evaluator now rejects any manifest whose bytes do not match the
+exact v2 SHA-256 above. For adapter evaluation, it additionally verifies the
+saved adapter and base-binding hashes, requires the precise R15 recipe and
+`R15_STRICT_INTEGER_V1` prompt contract, and matches the training receipt's
+corpus manifest and Labyrinth producer head to the evaluator arguments.
+Generic R14 adapter *reload* verification remains supported, but an R14
+adapter is not admitted to the R15 comparison.
+
+Output metadata records an R15 development protocol and the R14 selection
+namespace retained to compare exactly the same case IDs. The R14 V3 bank was
+previously used for development, so these case IDs are **reused, not fresh,
+sealed, or final**. A separate structurally unique frozen bank must qualify
+transfer before any release decision. The reported answer NLL also includes
+EOS and should not be described as numeric-token-only likelihood.
+
 **Limits:** the runner remains an eight-step pilot without resume or
 consumer-side proof of producer Git head. New numeric formatting does not
 prove reasoning transfer, nor do the 77 held-out primitive-operation
