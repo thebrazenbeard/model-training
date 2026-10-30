@@ -36,6 +36,22 @@ class MezoPilotTests(unittest.TestCase):
         self.assertEqual(candidate["optimizer_steps"], 5)
         self.assertGreater(candidate["forward_evaluations"], 0)
 
+
+    def test_persisted_lora_can_be_loaded_with_exact_tensor_digest(self):
+        import tempfile
+        from pathlib import Path
+        from safetensors.torch import load_file
+        from trainingday.mezo_cpu_ablation import _digest
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "adapter.safetensors"
+            result = run_arm(method="mezo", mode="correct", steps=5,
+                             seed=29037, adapter_path=str(target))
+            self.assertTrue(target.is_file())
+            loaded = load_file(str(target), device="cpu")
+            self.assertEqual(_digest([loaded["lora_a"], loaded["lora_b"]]),
+                             result["final_sha256"])
+            self.assertEqual(result["adapter_bytes"], target.stat().st_size)
+
     def test_holdout_is_not_training_data(self):
         a = make_data(seed=29037, count=48)
         b = make_data(seed=29038, count=32)
