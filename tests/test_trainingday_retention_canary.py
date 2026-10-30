@@ -1,7 +1,7 @@
 """Source-only canary checks; no GPU/model data or heldout is opened."""
 
+import hashlib
 import json
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 from trainingday.admission import AdmissionError
 from trainingday.retention_canary import (
-    ARMS, FAMILIES, IDS, RELATIVE, SOURCE_SHA256, preregister,
+    ARMS, FAMILIES, IDS, RELATIVE, SOURCE_SHA256, WINDOWS_CRLF_SHA256,
+    preregister,
 )
 
 
@@ -23,11 +24,19 @@ class RetentionCanaryTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         target = self.root / RELATIVE
         target.parent.mkdir(parents=True)
-        shutil.copyfile(REPO / RELATIVE, target)
+        # Make fixtures deterministic on both Windows checkout policies.
+        raw = (REPO / RELATIVE).read_bytes()
+        physical_sha = hashlib.sha256(raw).hexdigest()
+        self.assertIn(physical_sha, (SOURCE_SHA256, WINDOWS_CRLF_SHA256))
+        if physical_sha == WINDOWS_CRLF_SHA256:
+            raw = raw.replace(b"\r\n", b"\n")
+        target.write_bytes(raw)
 
     def test_exact_public_source_and_disjoint_families(self):
         result = preregister(self.root)
         self.assertEqual(result["source_sha256"], SOURCE_SHA256)
+        self.assertEqual(result["checkout_sha256"], SOURCE_SHA256)
+        self.assertEqual(result["checkout_line_endings"], "LF")
         self.assertEqual(result["case_count"], 5)
         self.assertEqual(result["family_counts"], FAMILIES)
         self.assertEqual(result["required_matched_arms"], list(ARMS))
@@ -36,6 +45,30 @@ class RetentionCanaryTests(unittest.TestCase):
         exported = json.dumps(result)
         self.assertNotIn("2 + 2 = 5", exported)
         self.assertNotIn("weather", exported)
+
+    def test_exact_windows_crlf_checkout_is_accepted_without_repinning(self):
+        path = self.root / RELATIVE
+        payload = path.read_bytes()
+        self.assertNotIn(b"\r", payload)
+        path.write_bytes(payload.replace(b"\n", b"\r\n"))
+        result = preregister(self.root)
+        self.assertEqual(result["source_sha256"], SOURCE_SHA256)
+        self.assertEqual(result["checkout_sha256"], WINDOWS_CRLF_SHA256)
+        self.assertEqual(result["checkout_line_endings"], "CRLF")
+
+    def test_mixed_endings_lone_cr_and_crlf_mutation_rejected(self):
+        path = self.root / RELATIVE
+        original = path.read_bytes()
+        cases = (
+            original.replace(b"\n", b"\r\n", 1),
+            original.replace(b"\n", b"\r", 1),
+            original.replace(b"\n", b"\r\n").replace(b"\r\n", b"\r\n ", 1),
+        )
+        for case in cases:
+            with self.subTest(kind=case[:40]):
+                path.write_bytes(case)
+                with self.assertRaises(AdmissionError):
+                    preregister(self.root)
 
     def test_unpinned_bytes_rejected(self):
         path = self.root / RELATIVE
