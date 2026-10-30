@@ -19,6 +19,11 @@ from trainingday.admission import AdmissionError, _hash_file
 SCHEMA = "VERA_TRAININGDAY_R17_PUBLIC_RETENTION_CANARY_V1"
 RELATIVE = Path("successor/vera_lab/scenarios/public_smoke.jsonl")
 SOURCE_SHA256 = "36ba8b0450dcad327b2cd15e129ef75aa5d2bcf821912222a7ca3483f7c1d7f4"
+# Git may materialize this exact committed LF blob as CRLF on Windows.
+# Both *complete byte hashes* are pinned; no whitespace or arbitrary newline
+# normalization is allowed. Mixed endings, lone CR, extra blank lines, and
+# changed JSON bytes fail closed.
+WINDOWS_CRLF_SHA256 = "d40fe40a9d968100a21fc8288b8bb9fe5104a635b6803ce89bf071996415e4ed"
 IDS = (
     "public-stale-evidence-001",
     "public-runtime-label-001",
@@ -41,9 +46,11 @@ def preregister(source_root: Path) -> dict:
     path = source_root / RELATIVE
     if (not source_root.is_dir() or source_root.is_symlink()
             or not path.is_file() or path.is_symlink()
-            or any(parent.is_symlink() for parent in path.parents)
-            or _hash_file(path) != SOURCE_SHA256):
+            or any(parent.is_symlink() for parent in path.parents)):
         raise AdmissionError("public retention canary source bytes not pinned")
+    checkout_sha = _hash_file(path)
+    if checkout_sha not in (SOURCE_SHA256, WINDOWS_CRLF_SHA256):
+        raise AdmissionError("public retention canary checkout changed beyond LF/CRLF")
     try:
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     except (ValueError, UnicodeError) as exc:
@@ -76,6 +83,8 @@ def preregister(source_root: Path) -> dict:
         "schema": SCHEMA,
         "state": "SOURCE_PREFLIGHT_ONLY_NOT_MODEL_SCORED",
         "source_sha256": SOURCE_SHA256,
+        "checkout_sha256": checkout_sha,
+        "checkout_line_endings": "LF" if checkout_sha == SOURCE_SHA256 else "CRLF",
         "source_relative_path": RELATIVE.as_posix(),
         "case_count": len(ids),
         "case_id_sha256": hashlib.sha256("\n".join(ids).encode()).hexdigest(),
