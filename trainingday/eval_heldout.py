@@ -43,9 +43,12 @@ def _integer_oracle(row: dict) -> int:
     return result
 
 
-def select_heldout(manifest_path: Path, count: int) -> tuple[list[dict], str]:
+def select_heldout(manifest_path: Path, count: int,
+                   protocol: str = "v2") -> tuple[list[dict], str]:
     if not 1 <= count <= 16:
         raise AdmissionError("heldout pilot must have 1–16 examples")
+    if protocol not in {"v2", "v3"}:
+        raise AdmissionError("unknown heldout protocol")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     root = manifest_path.parent
     scored = []
@@ -73,6 +76,11 @@ def select_heldout(manifest_path: Path, count: int) -> tuple[list[dict], str]:
     old_ids = {case_id for _, case_id, _ in sorted(scored)[:4]}
     fresh = sorted((hashlib.sha256(("r14-heldout-v2:" + case_id).encode()).hexdigest(),
                     case_id, row) for _, case_id, row in scored if case_id not in old_ids)
+    if protocol == "v3":
+        # V2 eight cases were scored by all one-step arms; never recycle.
+        old_ids.update(case_id for _, case_id, _ in fresh[:8])
+        fresh = sorted((hashlib.sha256(("r14-heldout-v3:" + case_id).encode()).hexdigest(),
+                        case_id, row) for _, case_id, row in scored if case_id not in old_ids)
     selected = [row for _, _, row in fresh[:count]]
     case_digest = hashlib.sha256("\n".join(row["id"] for row in selected).encode()).hexdigest()
     return selected, case_digest
@@ -85,7 +93,7 @@ def evaluate(args) -> dict:
         args.manifest, args.work_root, sample_size=1,
         producer_git_head=args.producer_git_head,
     )
-    heldout, digest = select_heldout(args.manifest, args.cases)
+    heldout, digest = select_heldout(args.manifest, args.cases, args.protocol)
     binding, base_path = _required_base(args.base_binding)
     adapter_dir = None
     if args.adapter_receipt:
@@ -130,7 +138,7 @@ def evaluate(args) -> dict:
         results.append({"id": row["id"], "correct": exact,
                         "expected": row["answer"], "generated": text})
     result = {"status": "HELDOUT_DIAGNOSTIC_NOT_FINAL_QUALIFICATION",
-              "protocol": "R14_NUMERIC_ONLY_V2_DISJOINT_V1",
+              "protocol": "R14_NUMERIC_ONLY_" + args.protocol.upper() + "_FRESH",
               "case_ids_sha256": digest, "cases": len(results),
               "exact_match": sum(x["correct"] for x in results),
               "mode": "adapter" if adapter_dir else "base",
@@ -151,6 +159,7 @@ def main() -> None:
     parser.add_argument("--adapter-receipt", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--cases", type=int, default=4)
+    parser.add_argument("--protocol", choices=["v2", "v3"], default="v2")
     args = parser.parse_args()
     print(json.dumps(evaluate(args), indent=2))
 
