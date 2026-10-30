@@ -13,7 +13,7 @@ from unittest.mock import patch
 from trainingday.admission import AdmissionError
 from trainingday.r18_mezo import (
     BASE_REVISION, canonical_hash, direction_seed, finite_difference,
-    fit_sweep, paired_zo_step, prepare_run, selected_id_digest, selected_rows,
+    run_fit_sweep, paired_zo_step, prepare_run, selected_id_digest, selected_rows,
     tokenize_cases, validate_source,
 )
 
@@ -36,7 +36,8 @@ class R18SourceTests(unittest.TestCase):
         self.output_root = self.root / "output"
         self.output_root.mkdir()
         self.args = argparse.Namespace(
-            manifest=self.manifest, base_binding=self.base_binding,
+            manifest=self.manifest, plan=self.root / "preregistered-plan.json",
+            base_binding=self.base_binding,
             producer_git_head=None, work_root=self.root,
             output_root=self.output_root, run_id="r18-correct", mode="correct",
             steps=8, cases=2, seed=41, learning_rate=1e-3, epsilon=1e-3,
@@ -46,14 +47,25 @@ class R18SourceTests(unittest.TestCase):
             preflight_only=True, fit_sweep_only=False,
             sweep_batches=[1], sweep_lengths=[64, 128, 256, 384, 512, 768, 1024],
             initial_adapter=None, initial_adapter_sha256=None,
+            initial_adapter_config_sha256=None,
             resume_checkpoint=None, resume_receipt_sha256=None,
         )
         self.summary = {"selected_id_sha256": selected_id_digest(ROWS),
-                        "manifest_sha256": "b" * 64}
+                        "manifest_sha256": "b" * 64,
+                        "status": "ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE"}
         self.admit = patch("trainingday.r18_mezo.admit",
                            return_value=(self.summary, ROWS)).start()
         self.base = patch("trainingday.r18_mezo._required_base",
                           return_value=({"revision": BASE_REVISION}, self.root)).start()
+        patch("trainingday.r18_mezo.R16_V2_MANIFEST_SHA256",
+              hashlib.sha256(self.manifest.read_bytes()).hexdigest()).start()
+        self.args.producer_git_head = "1" * 40
+        patch("trainingday.r18_mezo.R16_PRODUCER_HEAD", "1" * 40).start()
+        patch("trainingday.r18_mezo._validate_prereg_plan", return_value={
+            "_validated_plan_sha256": "c" * 64,
+            "eval_custody_sha256": "d" * 64, "eval_index_sha256": "e" * 64,
+            "training_budget_seconds": self.args.budget_seconds,
+        }).start()
         self.addCleanup(patch.stopall)
 
     def test_source_preflight_is_read_only_and_matches_r16_selection_order(self):
@@ -97,9 +109,11 @@ class R18SourceTests(unittest.TestCase):
         adapter.mkdir()
         weights = adapter / "adapter_model.safetensors"
         weights.write_bytes(b"known-test-adapter")
-        (adapter / "adapter_config.json").write_text('{"peft_type":"LORA"}')
+        config = adapter / "adapter_config.json"
+        config.write_text('{"peft_type":"LORA"}')
         self.args.initial_adapter = adapter
         self.args.initial_adapter_sha256 = hashlib.sha256(weights.read_bytes()).hexdigest()
+        self.args.initial_adapter_config_sha256 = hashlib.sha256(config.read_bytes()).hexdigest()
         validate_source(self.args)
         weights.write_bytes(b"tampered")
         with self.assertRaisesRegex(AdmissionError, "tampered"):
@@ -115,48 +129,46 @@ class R18SourceTests(unittest.TestCase):
 
 
 class R18MathTests(unittest.TestCase):
-    def test_sweep_uses_actual_padded_shapes_and_stops_after_oom(self):
-        class FakeCuda:
-            class OutOfMemoryError(RuntimeError):
-                pass
+    def test_fit_sweep_new_process_per_preregistered_synthetic_candidate(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            plan_path = root / "plan.json"
+            plan_path.write_text('{"probe_budget_seconds":30}')
+            args = argparse.Namespace(output_root=root, run_id="fit-only",
+                                      manifest=root / "manifest", base_binding=root / "binding",
+                                      plan=plan_path, work_root=root, seed=41,
+                                      budget_seconds=531, learning_rate=.001, epsilon=.001,
+                                      initial_adapter=None, initial_adapter_sha256=None,
+                                      initial_adapter_config_sha256=None)
+            configs = [{"micro_batch_size": batch,
+                        "actual_padded_sequence_length": length,
+                        "effective_batch_size": 8,
+                        "offload": False, "truncation_allowed": False}
+                       for batch in (1, 2)
+                       for length in (64, 128, 256, 384, 512, 768, 1024)]
+            called = []
 
-            def empty_cache(self):
-                pass
+            def fake_subprocess(command, **_kwargs):
+                index = int(command[command.index("--probe-index") + 1])
+                output = Path(command[command.index("--probe-result") + 1])
+                called.append((index, command.count("--probe-child")))
+                item = {"schema": "VERA_TRAININGDAY_R18_FIT_PROBE_V1",
+                        "arm": "mezo", "plan_sha256": "a" * 64,
+                        "candidate_index": index, "config": configs[index],
+                        "outcome": "OOM" if index in (2, 8) else "FIT",
+                        "fresh_process_id": f"pid:{index}",
+                        "actual_padded_sequence_length": configs[index]["actual_padded_sequence_length"]}
+                output.write_text(json.dumps(item))
+                return argparse.Namespace(returncode=0)
 
-            def reset_peak_memory_stats(self, device):
-                pass
-
-            def max_memory_allocated(self, device):
-                return 1000
-
-            def max_memory_reserved(self, device):
-                return 2000
-
-            def synchronize(self, device):
-                pass
-
-        fake_torch = argparse.Namespace(cuda=FakeCuda())
-        args = argparse.Namespace(sweep_batches=[1], sweep_lengths=[64, 128, 256, 512],
-                                  seed=41, epsilon=0.001)
-        case = {"id": "x", "input_ids": [1] * 80,
-                "labels": [-100] * 78 + [2, 3], "target_tokens": 2,
-                "input_tokens": 80}
-
-        def loss(_model, _torch, _tok, _samples, _batch, length):
-            if length == 256:
-                raise FakeCuda.OutOfMemoryError("CUDA out of memory")
-            return 1.0
-
-        with patch("trainingday.r18_mezo._noise_delta"), \
-             patch("trainingday.r18_mezo._snapshot_trainables", return_value={}), \
-             patch("trainingday.r18_mezo._restore_trainables"), \
-             patch("trainingday.r18_mezo.paired_batch_loss", side_effect=loss):
-            result = fit_sweep(None, [], fake_torch, None, [case], args)
-        self.assertEqual([p["fit_status"] for p in result["probes"]],
-                         ["infeasible", "fits", "oom"])
-        self.assertEqual(result["probes"][1]["actual_tensor_shape"], [1, 128])
-        self.assertEqual(result["probes"][1]["actual_nonpad_tokens"], 80)
-        self.assertTrue(result["stopped_after_oom_requires_fresh_process"])
+            with patch("trainingday.r18_mezo._fit_configurations", return_value=configs), \
+                 patch("trainingday.r18_mezo.subprocess.run", side_effect=fake_subprocess):
+                result = run_fit_sweep(args, {"plan_sha256": "a" * 64})
+            self.assertEqual([x[0] for x in called], [0, 1, 2, 7, 8])
+            self.assertTrue(all(child == 1 for _, child in called))
+            self.assertEqual(len(result["probes"]), 5)
+            self.assertEqual(result["probes"][-1]["outcome"], "OOM")
+            self.assertEqual(result["fit_probe_sha256"], canonical_hash(result["probes"]))
 
     def test_completion_only_labels_exactly_match_tokenized_chat_prefix(self):
         class DummyTokenizer:
