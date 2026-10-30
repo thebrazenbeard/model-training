@@ -243,6 +243,45 @@ def finite_difference(plus: float, minus: float, epsilon: float) -> float:
     return estimate
 
 
+def next_step_guard_seconds(probe_step_seconds: float,
+                            observed_step_seconds: list[float]) -> float:
+    """Conservative budget reservation for ONE complete paired ZO update.
+
+    Before the first update use the independently measured synthetic fit
+    probe's actual optimizer-step time. Thereafter use the slowest completed
+    physical training update. A 50% safety factor plus 2 seconds protects
+    against ordinary device/host variability; it is not a hard real-time
+    bound, so an unexpected overrun is separately marked INVALID.
+    """
+    source = max(observed_step_seconds) if observed_step_seconds else probe_step_seconds
+    if not math.isfinite(source) or source <= 0 or any(
+            not math.isfinite(x) or x <= 0 for x in observed_step_seconds):
+        raise AdmissionError("no truthful positive completed step timing for budget guard")
+    return 1.5 * source + 2.0
+
+
+def may_begin_paired_update(now_monotonic_ns: int, deadline_monotonic_ns: int,
+                            probe_step_seconds: float,
+                            observed_step_seconds: list[float]) -> tuple[bool, float, float]:
+    """Return (start_allowed, required_seconds, remaining_seconds)."""
+    if (type(now_monotonic_ns) is not int or type(deadline_monotonic_ns) is not int
+            or now_monotonic_ns < 0 or deadline_monotonic_ns < now_monotonic_ns):
+        raise AdmissionError("invalid monotonic deadline/clock")
+    required = next_step_guard_seconds(probe_step_seconds, observed_step_seconds)
+    remaining = (deadline_monotonic_ns - now_monotonic_ns) / 1e9
+    return remaining >= required, required, remaining
+
+
+def training_budget_status(mode: str, completed_steps: int, initial_step: int,
+                           overrun_seconds: float) -> str:
+    """An overrun can be preserved as forensic evidence, never a valid arm."""
+    if overrun_seconds > 0:
+        return "TIME_BUDGET_OVERRUN_INVALID"
+    if mode != "zero" and completed_steps <= initial_step:
+        return "NOT_TRAINED_INSUFFICIENT_SAFE_WINDOW"
+    return "TRAINED_UNSCORED"
+
+
 def trainables(model, torch) -> list[tuple[str, object]]:
     tensors = [(name, p) for name, p in sorted(model.named_parameters()) if p.requires_grad]
     if not tensors or any(p.dtype != torch.float32 or p.device.type != "cuda"
@@ -661,16 +700,20 @@ def _probe_child(args) -> dict:
                       "target_tokens": 2, "input_tokens": length}
                      for i in range(8)]
         torch.cuda.reset_peak_memory_stats(0)
+        update_started = time.monotonic_ns()
         paired_zo_step(tensors, torch, seed=direction_seed(args.seed, 1),
                        epsilon=args.epsilon, learning_rate=args.learning_rate,
                        loss_fn=lambda: paired_batch_loss(model, torch, tokenizer,
                                                           synthetic, batch, length))
+        torch.cuda.synchronize(0)
+        update_seconds = (time.monotonic_ns() - update_started) / 1e9
         after, _ = parameter_attestation(tensors, torch)
         if before["digest"] == after["digest"]:
             raise RuntimeError("synthetic fit probe did not change FP32 LoRA weights")
         torch.cuda.synchronize(0)
         result.update({"outcome": "FIT", "optimizer_step_completed": True,
                        "failure_artifact_sha256": None,
+                       "optimizer_step_seconds": update_seconds,
                        "paired_forward_calls": 16 // batch,
                        "padded_forward_tokens": 16 * length})
     except Exception as exc:
@@ -846,6 +889,14 @@ def run(args) -> dict:
                        and row.get("outcome") == "FIT" for row in probe_records)):
         raise AdmissionError("fit probe plan/padded primary fit not independently pinned")
     validate_mezo_probe_prefix(probe_records, _read_json(args.plan))
+    primary_probe = next(row for row in probe_records
+                         if row["config"] == preflight["selected_fit_config"]
+                         and row["outcome"] == "FIT")
+    # New physical probes report optimizer-step-only time; older verified FIT
+    # probes have total load+step time, a larger conservative first-step proxy.
+    first_step_reference_seconds = primary_probe.get(
+        "optimizer_step_seconds", primary_probe["elapsed_seconds"])
+    next_step_guard_seconds(first_step_reference_seconds, [])
     if args.resume_checkpoint:
         raise AdmissionError("resumed process cannot satisfy strict single-window R18 budget custody")
     # GPU-heavy load occurs strictly after full manifest, rights and pin gates.
@@ -867,7 +918,7 @@ def run(args) -> dict:
     before, initial = parameter_attestation(tensors, torch)
     if args.expected_initial_digest and before["digest"] != args.expected_initial_digest:
         raise RuntimeError("fresh LoRA initial digest differs from zero control")
-    output, contract, resumed_step, previously_elapsed, state = prepare_run(args, preflight)
+    output, contract, resumed_step, _previously_elapsed, state = prepare_run(args, preflight)
     if state is not None:
         restore_checkpoint(tensors, torch, args.resume_checkpoint, state)
     frozen_before, frozen_byte_count = frozen_parameter_digest(model, torch)
@@ -890,24 +941,38 @@ def run(args) -> dict:
     torch.cuda.reset_peak_memory_stats(0)
     train_start_ns = time.monotonic_ns()
     train_deadline_ns = train_start_ns + round(args.budget_seconds * 1e9)
-    start = time.perf_counter()
     completed = resumed_step
     last_checkpoint = None
     sampled_peak_rss = psutil.Process().memory_info().rss
     peak_nvml, nvml_supported = _nvml_used_bytes()
     directional_log = []
+    completed_step_durations = []
+    last_guard_required_seconds = None
+    stop_reason = "ZERO_CONTROL" if args.mode == "zero" else "STEP_CAP_REACHED"
     if args.mode != "zero":
         for step in range(resumed_step, args.steps):
-            if time.monotonic_ns() >= train_deadline_ns:
+            now_ns = time.monotonic_ns()
+            if now_ns >= train_deadline_ns:
+                stop_reason = "MONOTONIC_DEADLINE_REACHED"
+                break
+            allowed, reserve, remaining = may_begin_paired_update(
+                now_ns, train_deadline_ns,
+                first_step_reference_seconds, completed_step_durations)
+            last_guard_required_seconds = reserve
+            if not allowed:
+                stop_reason = "CONSERVATIVE_NEXT_PAIRED_UPDATE_GUARD"
                 break
             selected = step_rows(prepared, step, args.examples_per_update)
             loss_fn = lambda: paired_batch_loss(model, torch, tokenizer, selected,
                                                 args.micro_batch_size, args.max_seq_length)
+            step_started_ns = time.monotonic_ns()
             plus, minus, derivative = paired_zo_step(
                 tensors, torch, seed=direction_seed(args.seed, step + 1),
                 epsilon=args.epsilon, learning_rate=args.learning_rate, loss_fn=loss_fn,
             )
             torch.cuda.synchronize(0)
+            step_duration = (time.monotonic_ns() - step_started_ns) / 1e9
+            completed_step_durations.append(step_duration)
             completed = step + 1
             counters["example_presentations"] += len(selected)
             counters["input_tokens_presented"] += sum(r["input_tokens"] for r in selected)
@@ -917,29 +982,35 @@ def run(args) -> dict:
             counters["paired_forward_calls"] += 2 * len(selected) // args.micro_batch_size
             counters["zo_directions"] += 1
             directional_log.append({"step": completed, "loss_plus": plus,
-                                    "loss_minus": minus, "directional_derivative": derivative})
+                                    "loss_minus": minus, "directional_derivative": derivative,
+                                    "actual_step_seconds": step_duration,
+                                    "pre_step_remaining_budget_seconds": remaining,
+                                    "pre_step_conservative_reserve_seconds": reserve})
             sampled_peak_rss = max(sampled_peak_rss, psutil.Process().memory_info().rss)
             nvml_current, nvml_current_supported = _nvml_used_bytes()
             peak_nvml = max(peak_nvml, nvml_current)
             nvml_supported = nvml_supported or nvml_current_supported
-            if completed % args.checkpoint_every == 0 and completed < args.steps:
-                elapsed = previously_elapsed + time.perf_counter() - start
-                last_checkpoint = save_checkpoint(output, tensors, torch, contract,
-                                                  completed, elapsed, counters)
+            # Strict single-window R18 excludes checkpoint disk I/O from the
+            # optimizer clock. A final safetensors checkpoint is saved *after*
+            # stopping; cross-process resume is not admitted for comparison.
+            if time.monotonic_ns() > train_deadline_ns:
+                stop_reason = "UNEXPECTED_MONOTONIC_DEADLINE_OVERRUN_INVALID"
+                break
     train_stop_ns = time.monotonic_ns()
     elapsed = (train_stop_ns - train_start_ns) / 1e9
-    if train_stop_ns > train_deadline_ns:
-        raise RuntimeError("R18 optimizer update overran strict monotonic budget; no equal-time claim")
+    overrun_seconds = max(0.0, (train_stop_ns - train_deadline_ns) / 1e9)
+    unused_budget_seconds = max(0.0, (train_deadline_ns - train_stop_ns) / 1e9)
+    if overrun_seconds:
+        stop_reason = "UNEXPECTED_MONOTONIC_DEADLINE_OVERRUN_INVALID"
     stage_save_started = time.perf_counter()
     after, _ = parameter_attestation(tensors, torch, initial)
     frozen_after, frozen_after_bytes = frozen_parameter_digest(model, torch)
     if frozen_before != frozen_after or frozen_byte_count != frozen_after_bytes:
         raise RuntimeError("frozen NF4 base tensor bytes changed during LoRA-only ZO")
-    if (args.mode == "zero") != (before["digest"] == after["digest"]):
+    if ((args.mode == "zero" or completed == resumed_step)
+            != (before["digest"] == after["digest"])):
         raise RuntimeError("zeroth-order actual adapter delta attestation failed")
-    if args.mode != "zero" and not completed > resumed_step:
-        raise RuntimeError("no new zeroth-order weight update completed in budget")
-    if args.mode != "zero" and (not last_checkpoint or completed != int(
+    if args.mode != "zero" and completed > resumed_step and (not last_checkpoint or completed != int(
             Path(last_checkpoint["checkpoint_path"]).name.split("-")[1])):
         last_checkpoint = save_checkpoint(output, tensors, torch, contract,
                                           completed, elapsed, counters)
@@ -949,14 +1020,24 @@ def run(args) -> dict:
     adapter_config = adapter / "adapter_config.json"
     if not adapter_weights.is_file() or not adapter_config.is_file():
         raise RuntimeError("LoRA checkpoint was not saved")
+    outcome_status = training_budget_status(args.mode, completed, resumed_step,
+                                            overrun_seconds)
     receipt = {**preflight,
-               "status": "TRAINED_UNSCORED", "zero_update": args.mode == "zero",
+               "status": outcome_status, "zero_update": args.mode == "zero",
                "fit_status": "fits", "optimizer_steps": completed,
                "new_optimizer_steps": completed - resumed_step,
                "unique_examples_seen": min(len(prepared), counters["example_presentations"]),
                "examples_seen": counters["example_presentations"],
                "tokens_seen": counters["input_tokens_presented"], **counters,
                "timed_training_seconds": elapsed, "optimizer_window_seconds": elapsed,
+               "budget_stop_reason": stop_reason,
+               "unused_training_budget_seconds": unused_budget_seconds,
+               "training_budget_overrun_seconds": overrun_seconds,
+               "deadline_respected": overrun_seconds == 0.0,
+               "first_step_probe_reference_seconds": first_step_reference_seconds,
+               "completed_step_durations_seconds": completed_step_durations,
+               "last_required_next_step_reserve_seconds": last_guard_required_seconds,
+               "guard_rule": "1.5x_slowest_completed_step_plus_2s; first=physical_fit_probe_step",
                "train_start_monotonic_ns": train_start_ns,
                "train_stop_monotonic_ns": train_stop_ns,
                "train_deadline_monotonic_ns": train_deadline_ns,
