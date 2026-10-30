@@ -16,6 +16,7 @@ from trainingday.admission import AdmissionError, _hash_file
 from trainingday.labyrinth_intake import admit_labyrinth
 from trainingday.reload_verify import validate_receipt
 from trainingday.train_neural import _required_base
+from trainingday.numeric_prompt import numeric_question
 
 
 def _integer_oracle(row: dict) -> int:
@@ -125,7 +126,7 @@ def evaluate(args) -> dict:
     results = []
     for row in heldout:
         # Explicit answer format is fixed before seeing this V2 case bank.
-        question = row["prompt"] + "\nReply with only the final integer. No steps or other words."
+        question = numeric_question(row["prompt"])
         prompt = tokenizer.apply_chat_template(
             [{"role": "user", "content": question}],
             tokenize=False, add_generation_prompt=True, enable_thinking=False,

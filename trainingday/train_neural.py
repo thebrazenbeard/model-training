@@ -17,10 +17,11 @@ from pathlib import Path
 
 from trainingday.admission import AdmissionError, admit, _hash_file
 from trainingday.labyrinth_intake import SCHEMA as LABYRINTH_SCHEMA, admit_labyrinth
+from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
 
 
 BASE_ID = "Qwen/Qwen3.5-4B"
-RECIPE = "TRAININGDAY_QWEN35_FRESH_QLORA_V1"
+RECIPE = "TRAININGDAY_QWEN35_FRESH_QLORA_R15_NUMERIC_MATCHED"
 
 
 def _required_base(binding: Path) -> tuple[dict, Path]:
@@ -67,7 +68,7 @@ def _control_rows(rows: list[dict], mode: str) -> list[dict]:
         by_family[row["family"]].append(row["answer"])
     cases = []
     for row in rows:
-        copy = {"prompt": row["prompt"], "response": row["answer"]}
+        copy = {"prompt": numeric_question(row["prompt"]), "response": row["answer"]}
         if mode == "corrupt":
             alternatives = sorted(set(by_family[row["family"]]) - {row["answer"]})
             if not alternatives:
@@ -129,6 +130,7 @@ def validate_run(args) -> tuple[dict, list[dict], dict, Path]:
 def train(args) -> dict:
     summary, cases, base, model_path = validate_run(args)
     preflight = {"status": "SOURCE_ONLY_PREFLIGHT", "recipe": RECIPE,
+                 "question_contract": NUMERIC_QUESTION_CONTRACT,
                  "corpus": summary, "base_model": base["model_id"],
                  "base_revision": base["revision"], "mode": args.mode,
                  "steps": args.steps, "new_optimizer_steps": 0,
