@@ -18,10 +18,81 @@ from pathlib import Path
 from trainingday.admission import AdmissionError, admit, _hash_file
 from trainingday.labyrinth_intake import SCHEMA as LABYRINTH_SCHEMA, admit_labyrinth
 from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
+from trainingday.checkpoint_custody import canonical_sha, create_custody, validate_custody
 
 
 BASE_ID = "Qwen/Qwen3.5-4B"
 RECIPE = "TRAININGDAY_QWEN35_FRESH_QLORA_R15_NUMERIC_MATCHED"
+R16_RECIPE = "TRAININGDAY_QWEN35_QLORA_R16_CHECKPOINTABLE_MATCHED"
+R16_V2_MANIFEST_SHA256 = "90b55cf8742f9222c91f88e5727dcd0113322e4721e4fd3d1bdcdf65f40d0836"
+R16_PRODUCER_HEAD = "1d38e4f25b5663bf8a84ff5e139875d4152e3680"
+
+
+def _r16(args) -> bool:
+    return getattr(args, "r16_checkpointable", False) is True
+
+
+def _r16_resume_requested(args) -> bool:
+    return getattr(args, "resume_checkpoint", None) is not None
+
+
+def _r16_contract(args, preflight: dict) -> dict:
+    if not _r16(args):
+        raise AdmissionError("R16 checkpoint contract requested for R15")
+    return {
+        "schema": "VERA_TRAININGDAY_R16_RUN_CONTRACT_V1",
+        "recipe": R16_RECIPE,
+        "question_contract": NUMERIC_QUESTION_CONTRACT,
+        "manifest_sha256": preflight["corpus"]["manifest_sha256"],
+        "producer_git_head": args.producer_git_head,
+        "base_model": preflight["base_model"],
+        "base_revision": preflight["base_revision"],
+        "base_binding_sha256": _hash_file(args.base_binding),
+        "mode": args.mode, "steps": args.steps, "cases": args.cases,
+        "seed": args.seed, "learning_rate": args.learning_rate,
+        "run_id": args.run_id,
+        "initial_digest": args.expected_initial_digest,
+        "training_input_sha256": preflight["training_input_sha256"],
+        "optimizer": "adamw_bnb_8bit", "gradient_accumulation": 8,
+        "lora_r": 4, "lora_alpha": 16, "max_length": 512,
+        "save_strategy": "steps", "save_steps": 8,
+    }
+
+
+def _r16_prepare_output(args, preflight: dict) -> tuple[Path, Path | None, int, str]:
+    """Gate any checkpoint deserialization before importing GPU dependencies."""
+    output = args.output_root / args.run_id
+    contract = _r16_contract(args, preflight)
+    contract_hash = canonical_sha(contract)
+    contract_file = output / "r16-run-contract.json"
+    if not _r16_resume_requested(args):
+        if output.exists() or output.is_symlink():
+            raise AdmissionError("R16 fresh output already exists")
+        output.mkdir(exist_ok=False)
+        contract_file.write_text(json.dumps(contract, sort_keys=True, indent=2) + "\n",
+                                 encoding="utf-8")
+        return output, None, 0, contract_hash
+    checkpoint = Path(args.resume_checkpoint)
+    custody_file = getattr(args, "resume_custody", None)
+    expected_custody_sha = getattr(args, "resume_custody_sha256", None)
+    if (not output.is_dir() or output.is_symlink() or not contract_file.is_file()
+            or contract_file.is_symlink() or not checkpoint.is_dir()
+            or checkpoint.is_symlink() or checkpoint.parent != output / "trainer-work"
+            or not custody_file or not expected_custody_sha
+            or any(path.is_symlink() for path in output.parents)):
+        raise AdmissionError("R16 resume output/checkpoint/custody missing or unconfined")
+    if json.loads(contract_file.read_text(encoding="utf-8")) != contract:
+        raise AdmissionError("R16 run contract mismatch")
+    custody_path = Path(custody_file)
+    if (not custody_path.is_file() or custody_path.is_symlink()
+            or custody_path.is_relative_to(output)
+            or _hash_file(custody_path) != expected_custody_sha):
+        raise AdmissionError("R16 externally pinned checkpoint receipt absent or changed")
+    custody = json.loads(custody_path.read_text(encoding="utf-8"))
+    step = validate_custody(checkpoint, custody, contract_sha256=contract_hash)
+    if step % 8 or step >= args.steps:
+        raise AdmissionError("R16 resume step outside bounded schedule")
+    return output, checkpoint, step, contract_hash
 
 
 def _required_base(binding: Path) -> tuple[dict, Path]:
@@ -96,9 +167,10 @@ def _parameter_digest(model, torch) -> tuple[str, int]:
 
 
 def validate_run(args) -> tuple[dict, list[dict], dict, Path]:
+    step_cap = 32 if _r16(args) else 8
     if not (args.mode == "zero" and args.steps == 0
-            or args.mode in {"correct", "corrupt"} and 1 <= args.steps <= 8):
-        raise AdmissionError("control steps must be 0 or 1–8")
+            or args.mode in {"correct", "corrupt"} and 1 <= args.steps <= step_cap):
+        raise AdmissionError(f"control steps must be 0 or 1–{step_cap}")
     if not isinstance(args.cases, int) or args.cases < args.steps * 8 or args.cases > 1024:
         raise AdmissionError("insufficient/more-than-bounded cases")
     if not (0 < args.learning_rate <= 0.0002):
@@ -107,8 +179,20 @@ def validate_run(args) -> tuple[dict, list[dict], dict, Path]:
         raise AdmissionError("isolated output root absent/symlinked")
     if (not args.run_id or len(args.run_id) > 64
             or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for c in args.run_id)
-            or (args.output_root / args.run_id).exists()):
+            or ((args.output_root / args.run_id).exists() and
+                not (_r16(args) and _r16_resume_requested(args)))):
         raise AdmissionError("unsafe or occupied run output")
+    if _r16(args):
+        if (_hash_file(args.manifest) != R16_V2_MANIFEST_SHA256
+                or args.producer_git_head != R16_PRODUCER_HEAD):
+            raise AdmissionError("R16 needs exact v2 manifest and producer")
+        if args.mode in {"correct", "corrupt"} and (args.steps < 8 or args.steps % 8):
+            raise AdmissionError("R16 trained steps must be checkpoint boundaries 8–32")
+        if _r16_resume_requested(args) and args.mode == "zero":
+            raise AdmissionError("zero-update arm cannot resume")
+    elif (_r16_resume_requested(args) or getattr(args, "resume_custody", None)
+          or getattr(args, "resume_custody_sha256", None)):
+        raise AdmissionError("R15 cannot resume optimizer state")
     if args.mode != "zero" and not args.expected_initial_digest:
         raise AdmissionError("trained arms require a bound zero-update initial digest")
     if args.expected_initial_digest and (len(args.expected_initial_digest) != 64
@@ -129,7 +213,8 @@ def validate_run(args) -> tuple[dict, list[dict], dict, Path]:
 
 def train(args) -> dict:
     summary, cases, base, model_path = validate_run(args)
-    preflight = {"status": "SOURCE_ONLY_PREFLIGHT", "recipe": RECIPE,
+    preflight = {"status": "SOURCE_ONLY_PREFLIGHT",
+                 "recipe": R16_RECIPE if _r16(args) else RECIPE,
                  "question_contract": NUMERIC_QUESTION_CONTRACT,
                  "corpus": summary, "base_model": base["model_id"],
                  "base_revision": base["revision"], "mode": args.mode,
@@ -138,7 +223,19 @@ def train(args) -> dict:
                      json.dumps(cases, sort_keys=True, ensure_ascii=False).encode("utf-8")
                  ).hexdigest()}
     if args.preflight_only:
+        if _r16(args) and _r16_resume_requested(args):
+            # A read-only, fully checked checkpoint resume preflight.
+            _r16_prepare_output(args, preflight)
         return preflight
+
+    r16_output = None
+    resume_checkpoint = None
+    resumed_from_step = 0
+    r16_contract_sha = None
+    if _r16(args):
+        r16_output, resume_checkpoint, resumed_from_step, r16_contract_sha = (
+            _r16_prepare_output(args, preflight)
+        )
 
     # Heavy imports and any GPU allocation start *after* manifest/source gates.
     import psutil
@@ -189,9 +286,13 @@ def train(args) -> dict:
         task_type="CAUSAL_LM", target_modules="all-linear",
     )
     output = args.output_root / args.run_id
-    if output.exists():
-        raise RuntimeError("run output occupied after source preflight")
-    output.mkdir(exist_ok=False)
+    if not _r16(args):
+        if output.exists():
+            raise RuntimeError("run output occupied after source preflight")
+        output.mkdir(exist_ok=False)
+    else:
+        if output != r16_output:
+            raise RuntimeError("R16 output contract path changed")
     try:
         cfg = stack["SFTConfig"](
             output_dir=str(output / "trainer-work"),
@@ -203,7 +304,10 @@ def train(args) -> dict:
             gradient_checkpointing_kwargs={"use_reentrant": False},
             max_length=512, completion_only_loss=True, packing=False,
             shuffle_dataset=False, train_sampling_strategy="sequential",
-            logging_steps=1, save_strategy="no", eval_strategy="no",
+            logging_steps=1,
+            save_strategy="steps" if _r16(args) else "no",
+            save_steps=8 if _r16(args) else 500,
+            eval_strategy="no",
             report_to=[], seed=args.seed, data_seed=args.seed,
         )
         trainer = stack["SFTTrainer"](
@@ -229,7 +333,10 @@ def train(args) -> dict:
                     or optimizer_identity["is_paged"] is not False
                     or optimizer_identity["optim_bits"] != 8):
                 raise RuntimeError("unexpected optimizer backend/precision/paging")
-            training_result = trainer.train()
+            training_result = trainer.train(
+                resume_from_checkpoint=str(resume_checkpoint)
+                if _r16(args) and resume_checkpoint else None
+            )
         observed_steps = int(trainer.state.global_step)
         if observed_steps != args.steps:
             raise RuntimeError(f"optimizer step count mismatch:{observed_steps}!={args.steps}")
@@ -245,8 +352,9 @@ def train(args) -> dict:
             raise RuntimeError("adapter save incomplete")
         receipt = {
             **preflight,
-            "status": "ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED",
-            "new_optimizer_steps": observed_steps,
+            "status": ("R16_ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED"
+                       if _r16(args) else "ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED"),
+            "new_optimizer_steps": observed_steps - resumed_from_step,
             "elapsed_seconds": round(time.perf_counter() - started, 2),
             "seed": args.seed, "trainable_parameter_count": count,
             "trainable_digest_before": before, "trainable_digest_after": after,
@@ -259,6 +367,19 @@ def train(args) -> dict:
             "optimizer_identity": optimizer_identity,
             "runtime": {"torch": torch.__version__, "transformers": stack["transformers"].__version__},
         }
+        if _r16(args):
+            receipt["r16_run_contract_sha256"] = r16_contract_sha
+            receipt["resumed_from_step"] = resumed_from_step
+            receipt["optimizer_resume_equivalence"] = "UNVERIFIED_REQUIRES_UNINTERRUPTED_MATCH"
+            if args.mode != "zero":
+                checkpoint_path = output / "trainer-work" / f"checkpoint-{observed_steps}"
+                custody = create_custody(checkpoint_path, contract_sha256=r16_contract_sha)
+                custody_path = output / "latest-checkpoint-custody.json"
+                custody_path.write_text(json.dumps(custody, sort_keys=True, indent=2) + "\n",
+                                        encoding="utf-8")
+                receipt["checkpoint_custody_file_sha256"] = _hash_file(custody_path)
+                receipt["checkpoint_step"] = custody["step"]
+                receipt["checkpoint_custody_state"] = custody["state"]
         (output / "training_receipt.json").write_text(
             json.dumps(receipt, indent=2, default=str) + "\n", encoding="utf-8"
         )
@@ -284,6 +405,14 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=0.00002)
     parser.add_argument("--expected-initial-digest", default=None)
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--r16-checkpointable", action="store_true",
+                        help="Bounded R16 experiment: 8–32 steps with optimizer/RNG checkpoint custody")
+    parser.add_argument("--resume-checkpoint", type=Path,
+                        help="Exact externally inventoried R16 Trainer checkpoint")
+    parser.add_argument("--resume-custody", type=Path,
+                        help="Externally pinned checksum receipt (not inside run output)")
+    parser.add_argument("--resume-custody-sha256",
+                        help="Expected SHA256 of the separate checkpoint custody receipt")
     args = parser.parse_args()
     print(json.dumps(train(args), indent=2, default=str))
 
