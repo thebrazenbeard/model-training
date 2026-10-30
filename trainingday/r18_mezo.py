@@ -531,8 +531,16 @@ def _nvml_used_bytes() -> tuple[int, bool]:
         used = int(pynvml.nvmlDeviceGetMemoryInfo(handle).used)
         pynvml.nvmlShutdown()
         return used, True
-    except (ImportError, Exception):
-        return 0, False
+    except Exception:
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2, check=True,
+            )
+            used_mib = int(result.stdout.splitlines()[0].strip())
+            return used_mib * 2**20, True
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            return 0, False
 
 
 def _fit_configurations():
@@ -541,6 +549,59 @@ def _fit_configurations():
     except ImportError as exc:
         raise AdmissionError("R18 fit protocol module not integrated") from exc
     return fit_candidates()
+
+
+def validate_mezo_probe_prefix(probes: list[dict], plan: dict) -> None:
+    """One-arm prerequisite matching the custodian's two-phase prefix rules.
+
+    The full two-arm `validate_fit_probes` remains the final authority.
+    """
+    candidates = _fit_configurations()
+    if not probes or not isinstance(probes, list) or len(probes) > 14:
+        raise AdmissionError("MeZO fit probe schedule missing/oversized")
+    nonces = set()
+    b1 = [p for p in probes if p.get("candidate_index", -1) < 7]
+    b2 = [p for p in probes if p.get("candidate_index", -1) >= 7]
+    if not b1 or probes != b1 + b2:
+        raise AdmissionError("MeZO fit phases incomplete/reordered")
+    for phase, part, start in ((1, b1, 0), (2, b2, 7)):
+        for offset, row in enumerate(part):
+            index = start + offset
+            nonce = row.get("fresh_process_id")
+            if (index >= 14 or row.get("candidate_index") != index
+                    or row.get("config") != candidates[index]
+                    or row.get("schema") != PROBE_SCHEMA or row.get("arm") != "mezo"
+                    or row.get("plan_sha256") != canonical_hash(plan)
+                    or row.get("data_partition") != "TRAIN_ONLY"
+                    or row.get("eval_access") is not False
+                    or row.get("checkpoint_selection") is not False
+                    or row.get("actual_padded_sequence_length") !=
+                    candidates[index]["actual_padded_sequence_length"]
+                    or row.get("outcome") not in {"FIT", "OOM"}
+                    or row.get("optimizer_step_completed") is not (row["outcome"] == "FIT")
+                    or not isinstance(nonce, str) or not nonce or nonce in nonces
+                    or type(row.get("elapsed_seconds")) not in (float, int)
+                    or not 0 < row["elapsed_seconds"] <= plan["probe_budget_seconds"]
+                    or any(type(row.get(field)) is not int or row[field] < 0 for field in (
+                        "peak_cuda_allocated_bytes", "peak_cuda_reserved_bytes",
+                        "peak_cpu_rss_bytes", "peak_nvml_used_bytes"))
+                    or row.get("peak_cuda_reserved_bytes", 0) < row.get("peak_cuda_allocated_bytes", 0)
+                    or (row["outcome"] == "OOM") != bool(
+                        row.get("failure_artifact_sha256"))
+                    or (row["outcome"] == "OOM" and not HEX64.fullmatch(
+                        row["failure_artifact_sha256"]))):
+                raise AdmissionError(f"MeZO invalid candidate {index} evidence")
+            if row["outcome"] == "OOM" and offset != len(part) - 1:
+                raise AdmissionError(f"MeZO batch{phase} probed after OOM")
+            nonces.add(nonce)
+    b1_fits = sum(p["outcome"] == "FIT" for p in b1)
+    if (not b1_fits or not (len(b1) == 7 or b1[-1]["outcome"] == "OOM")
+            or not b2 or len(b2) > b1_fits
+            or not (len(b2) == b1_fits or b2[-1]["outcome"] == "OOM")):
+        raise AdmissionError("MeZO B1/B2 fit frontier incomplete")
+    if not any(p["config"] == plan["primary_training_config"] and p["outcome"] == "FIT"
+               for p in b1):
+        raise AdmissionError("MeZO preregistered primary shape not proven fit")
 
 
 def _probe_child(args) -> dict:
@@ -553,6 +614,9 @@ def _probe_child(args) -> dict:
     plan_sha = validate_plan(plan)
     if (plan_sha != args.expected_plan_sha256 or args.seed != plan["seed"]
             or args.probe_result.exists() or args.probe_result.is_symlink()
+            or args.probe_result.parent != args.output_root / args.run_id
+            or args.probe_result.name != f"fit-probe-{args.probe_index:02d}.json"
+            or not args.probe_result.parent.is_dir()
             or args.probe_result.parent.is_symlink()):
         raise AdmissionError("probe plan identity/output path differs from custody")
     base, model_path = _required_base(args.base_binding)
@@ -696,6 +760,8 @@ def run_fit_sweep(args, preflight: dict) -> dict:
         records.append(record)
         if record["outcome"] == "OOM":
             break
+    if b1_fits:
+        validate_mezo_probe_prefix(records, plan)
     # The expected validated schedule is a prefix of each phase; never claim
     # full fit when the child failed or the first B1 length cannot fit.
     summary = {"schema": "VERA_TRAININGDAY_R18_FIT_SWEEP_V1",
@@ -779,6 +845,7 @@ def run(args) -> dict:
             or not any(row.get("config") == preflight["selected_fit_config"]
                        and row.get("outcome") == "FIT" for row in probe_records)):
         raise AdmissionError("fit probe plan/padded primary fit not independently pinned")
+    validate_mezo_probe_prefix(probe_records, _read_json(args.plan))
     if args.resume_checkpoint:
         raise AdmissionError("resumed process cannot satisfy strict single-window R18 budget custody")
     # GPU-heavy load occurs strictly after full manifest, rights and pin gates.
