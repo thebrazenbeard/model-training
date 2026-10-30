@@ -14,7 +14,13 @@ from trainingday.admission import AdmissionError, _hash_file
 from trainingday.train_neural import _parameter_digest, _required_base
 
 
-def validate_receipt(receipt_path: Path, binding_path: Path) -> tuple[dict, Path]:
+def validate_receipt(
+    receipt_path: Path, binding_path: Path, *,
+    expected_recipe: str | None = None,
+    expected_question_contract: str | None = None,
+    expected_manifest_sha256: str | None = None,
+    expected_producer_git_head: str | None = None,
+) -> tuple[dict, Path]:
     if not receipt_path.is_file() or receipt_path.is_symlink():
         raise AdmissionError("saved training receipt missing or symlinked")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -27,6 +33,22 @@ def validate_receipt(receipt_path: Path, binding_path: Path) -> tuple[dict, Path
         raise AdmissionError("base binding unavailable")
     if _hash_file(binding_path) != receipt.get("base_binding_sha256"):
         raise AdmissionError("base binding changed since training")
+    # Optional protocol expectations are used by the R15 evaluator. Leave
+    # generic R14 fresh-reload custody checks backward compatible.
+    if expected_recipe is not None and receipt.get("recipe") != expected_recipe:
+        raise AdmissionError("training recipe differs from evaluation protocol")
+    if (expected_question_contract is not None
+            and receipt.get("question_contract") != expected_question_contract):
+        raise AdmissionError("training question contract differs from evaluator")
+    corpus = receipt.get("corpus")
+    if expected_manifest_sha256 is not None and (
+            not isinstance(corpus, dict)
+            or corpus.get("manifest_sha256") != expected_manifest_sha256):
+        raise AdmissionError("training corpus manifest differs from evaluator")
+    if expected_producer_git_head is not None and (
+            not isinstance(corpus, dict)
+            or corpus.get("producer_git_head") != expected_producer_git_head):
+        raise AdmissionError("training corpus producer differs from evaluator")
     adapter_dir = receipt_path.parent / "adapter"
     if not adapter_dir.is_dir() or adapter_dir.is_symlink():
         raise AdmissionError("adapter directory absent")
