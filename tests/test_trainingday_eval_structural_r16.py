@@ -138,6 +138,7 @@ class StructuralR16Tests(unittest.TestCase):
                 preflight(self.manifest, self.old)
 
     def test_unpinned_old_evaluation_rejected_before_parse(self):
+        self.assertEqual(len(OLD_EVAL_SHA256), 64)
         with self.assertRaises(AdmissionError):
             _old_ids(self.old)
         self.assertNotEqual(OLD_EVAL_SHA256,
