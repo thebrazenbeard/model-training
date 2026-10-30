@@ -575,10 +575,12 @@ def _windows_owner_sid() -> str:
 
 
 def _windows_verify_owner_only(path: Path, sid: str, *, directory: bool) -> None:
-    """Independently inspect protected DACL via Windows Get-Acl, fail closed.
+    """Inspect an owner/privileged-system-only protected Windows DACL.
 
     `icacls /verify` alone checks ACL canonicality, not confidentiality. Check
-    the exact owner SID, absence of inheritance and all other Allow/Deny ACEs.
+    the owner SID, absence of inheritance, and reject every unprivileged ACE.
+    Windows may retain explicit SYSTEM, local Administrators and OWNER RIGHTS
+    FullControl ACEs; these well-known SIDs preserve normal Windows custody.
     Path is passed as a Base64 UTF-16LE literal, never PowerShell source text.
     """
     encoded_path = base64.b64encode(str(path).encode("utf-16le")).decode("ascii")
@@ -589,21 +591,29 @@ $sid = '{sid}'
 $acl = Get-Acl -LiteralPath $path
 $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
 $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-if ($owner -ne $sid -or -not $acl.AreAccessRulesProtected -or $rules.Count -ne 1) {{ exit 21 }}
-$r = $rules[0]
-if ($r.IdentityReference.Value -ne $sid -or $r.IsInherited -or
-    $r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
-    ([int]($r.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl)) -ne
-        [int][Security.AccessControl.FileSystemRights]::FullControl) {{ exit 22 }}
-if ({'$true' if directory else '$false'} -and
-    ($r.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ContainerInherit) -eq 0) {{ exit 23 }}
-Write-Output 'R18_PRIVATE_ACL_OWNER_ONLY'
+if ($owner -ne $sid -or -not $acl.AreAccessRulesProtected -or $rules.Count -lt 1 -or
+    $rules.Count -gt 4) {{ exit 21 }}
+$allowed = @($sid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4')
+$observed = @{{}}
+foreach ($r in $rules) {{
+    $principal = $r.IdentityReference.Value
+    if ($allowed -notcontains $principal -or $observed.ContainsKey($principal) -or
+        $r.IsInherited -or
+        $r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        ([int]($r.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl)) -ne
+            [int][Security.AccessControl.FileSystemRights]::FullControl) {{ exit 22 }}
+    if ({'$true' if directory else '$false'} -and
+        ($r.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ContainerInherit) -eq 0) {{ exit 23 }}
+    $observed[$principal] = $true
+}}
+if (-not $observed.ContainsKey($sid)) {{ exit 24 }}
+Write-Output 'R18_PRIVATE_ACL_PRIVILEGED_ONLY'
 """
     encoded_script = base64.b64encode(source.encode("utf-16le")).decode("ascii")
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_script],
         capture_output=True, text=True, check=False)
-    _check(result.returncode == 0 and "R18_PRIVATE_ACL_OWNER_ONLY" in result.stdout,
+    _check(result.returncode == 0 and "R18_PRIVATE_ACL_PRIVILEGED_ONLY" in result.stdout,
            "Windows private evaluation ACL has inherited/broad access")
 
 
