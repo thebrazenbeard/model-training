@@ -4,7 +4,7 @@ This is a source/CPU-only witness. Neither the R19 token-weighted
 cross-entropy correction nor agreement on a scalar loss proves that the
 two arms supervise identical token IDs or positions.
 
-Observed source paths at the independently reviewed PR #149 tree
+Historical source paths at the independently reviewed PR #149 tree
 `2f977515ff6571b0e6bf8debb886597e842a1d85`:
 
 - `r18_mezo.tokenize_cases()` tokenizes the chat-generation prefix and
@@ -14,7 +14,11 @@ Observed source paths at the independently reviewed PR #149 tree
   supervises the suffix. Prefix stability alone does **not** guarantee the
   separately tokenized suffix equals the suffix tokenization in context.
 
-`trainingday.r24_tokenizer_parity.inspect_tokenizer_parity()` runs those exact
+The later R25 source candidate makes MeZO use the same complete joined
+encoding and prefix-boundary check as QLoRA. This does not retroactively
+validate any R18 receipt; it changes the source precondition for future runs.
+
+`trainingday.r24_tokenizer_parity.inspect_tokenizer_parity()` runs the current
 preparers against the **same caller-supplied public/admitted examples** and
 tokenizer instance. It requires equal, ordered input IDs, labels and
 supervised-target counts; both no-truncation conditions must hold. No example
@@ -24,12 +28,12 @@ text or token IDs are returned. It always returns
 Synthetic adversarial fixtures demonstrate:
 
 1. A byte/character-local tokenizer can pass, with equal IDs and labels.
-2. A prefix-stable but context-sensitive completion tokenizer can make the
-   two runners supervise different token IDs and must HOLD.
+2. The historically mismatching prefix-stable contextual completion now
+   gives both runners identical joined-encoding target IDs.
 3. A tokenizer that changes the prefix at the generation boundary is rejected
-   by QLoRA and must HOLD.
-4. A joined sequence that exceeds the admitted token limit must HOLD even if
-   MeZO's separately encoded sequence fits.
+   by both runners and must HOLD.
+4. Either runner's joined sequence exceeding the admitted token limit must
+   HOLD; the witness also rejects a malformed QLoRA-only length mismatch.
 5. Duplicate selections, invalid rows, and missing responses must HOLD.
 
 ## Physical qualification still required
