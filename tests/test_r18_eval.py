@@ -13,9 +13,10 @@ from trainingday.admission import AdmissionError, _hash_file
 from trainingday.eval_structural_r16 import BANK_ID_SHA256, CORPUS_SHA256
 from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT
 from trainingday.r18_eval import (
-    BASE_MODEL, BASE_REVISION, EVAL_SOURCE, PRIVATE_BANK_SCHEMA,
+    BASE_MODEL, BASE_REVISION, EVAL_SOURCE, FREEZE_SCHEMA, PRIVATE_BANK_SCHEMA,
     PROTOCOL, RECIPES, _adapter, _bank, _exact, _json, _paired, _plan,
-    _integer_semantic, _prompt_sha, _replay_rendered_chain6, _source_manifest,
+    _integer_semantic, _preunseal_inventory, _prompt_sha, _replay_rendered_chain6,
+    _source_manifest,
     canonical_sha, evaluate,
     generate_novel_r18_cases,
 )
@@ -180,6 +181,159 @@ class R18EvaluatorTests(unittest.TestCase):
         self.assertEqual(report["status"], "R18_ARM_PREFLIGHT_NO_BANK_OPENED_NO_MODEL_EXECUTION")
         self.assertFalse(self.args.output.exists())
         self.assertFalse(self.args.private_output.exists())
+
+    def test_scoring_without_all_arm_freeze_inventory_cannot_unseal(self):
+        # A single frozen-control request used to reach _bank() directly.
+        with patch("trainingday.r18_eval._required_base", return_value=(self.base, self.root)), \
+             patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
+                   CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
+             patch("trainingday.r18_eval._bank", side_effect=AssertionError(
+                   "private bank opened before complete freeze")), \
+             patch("trainingday.r18_eval._run_model", side_effect=AssertionError(
+                   "model scored without complete freeze")):
+            with self.assertRaisesRegex(AdmissionError, "pre-unseal"):
+                evaluate(self.change(preflight_only=False))
+
+    def make_freeze_inventory(self):
+        from trainingday.r18_benchmark import make_plan, selected_id_digest, validate_plan
+        rows = [{"id": f"train-{i}", "split": "train", "training_use": "ADMITTED",
+                 "prompt": f"What is {i} plus one?", "answer": str(i+1)}
+                for i in range(8)]
+        plan = make_plan(
+            selected_rows=rows, admission_selected_id_sha256=selected_id_digest(rows),
+            source_admission_status="ADMITTED_SOURCE_ONLY_NOT_TRAINED",
+            eval_index=[{"id": f"r18-holdout-{i}",
+                         "prompt_sha256": hashlib.sha256(
+                             f"r18-prompt-{i}".encode()).hexdigest()}
+                        for i in range(64)],
+            r16_holdout_ids=[f"r16-fresh64-{i}" for i in range(64)],
+            base_revision="1" * 40, base_binding_sha256="a" * 64,
+            tokenizer_binding_sha256="b" * 64, corpus_manifest_sha256="c" * 64,
+            eval_custody_sha256="d" * 64, eval_source_manifest_sha256="f" * 64,
+            r16_eval_custody_sha256="e" * 64,
+            seed=41, training_budget_seconds=100.0, probe_budget_seconds=5.0)
+        receipts = []
+        for arm in ("mezo", "qlora"):
+            for control in ("frozen", "zero", "correct", "corrupt"):
+                trained = control in ("correct", "corrupt")
+                seconds = 96.0 if trained else 0.0
+                receipt = {
+                    "schema": "VERA_TRAININGDAY_R18_ARM_RECEIPT_V1",
+                    "arm": arm, "control": control, "run_id": f"{arm}-{control}",
+                    "plan_sha256": validate_plan(plan),
+                    **{key: plan[key] for key in (
+                        "base_model", "base_revision", "base_binding_sha256",
+                        "tokenizer_binding_sha256", "corpus_manifest_sha256",
+                        "selected_id_sha256", "train_content_sha256",
+                        "source_admission_status", "eval_custody_sha256",
+                        "eval_index_sha256", "seed")},
+                    "training_budget_seconds": 100.0,
+                    "training_input_sha256": "c" * 64 if control == "corrupt" else "b" * 64,
+                    "fit_probe_sha256": "f" * 64,
+                    "selected_fit_config": plan["primary_training_config"],
+                    "max_prepared_example_tokens": 96,
+                    "optimizer_steps": 8 if trained else 0,
+                    "unique_examples_seen": 8 if trained else 0,
+                    "example_presentations": 64 if trained else 0,
+                    "input_tokens_presented": 6400 if trained else 0,
+                    "forward_sample_tokens": (12800 if arm == "mezo" else 6400) if trained else 0,
+                    "backward_sample_tokens": (0 if arm == "mezo" else 6400) if trained else 0,
+                    "padded_forward_tokens": (16384 if arm == "mezo" else 8192) if trained else 0,
+                    "padded_backward_tokens": (0 if arm == "mezo" else 8192) if trained else 0,
+                    "supervised_target_tokens": 320 if trained else 0,
+                    "peak_cuda_allocated_bytes": 500000,
+                    "peak_cuda_reserved_bytes": 600000,
+                    "peak_nvml_used_bytes": 700000, "peak_cpu_rss_bytes": 800000,
+                    "trainable_digest_before": "a" * 64,
+                    "trainable_digest_after": "b" * 64 if trained else "a" * 64,
+                    "train_start_monotonic_ns": 100_000_000_000,
+                    "train_stop_monotonic_ns": 100_000_000_000 + round(seconds * 1e9),
+                    "train_deadline_monotonic_ns": 200_000_000_000,
+                    "optimizer_window_seconds": seconds,
+                    "stage_seconds": {"load": 2.0, "setup": 3.0, "train": seconds,
+                                      "save": 1.0, "eval": 2.0},
+                    "external_process_wall_seconds": 10.0 + seconds,
+                    "status": "TRAINED_UNSCORED", "eval_examples": 0,
+                    "eval_correct": None, "eval_accuracy": None,
+                    "eval_nll": None, "eval_nll_sum": None,
+                    "eval_target_tokens": 0, "eval_case_receipt_sha256": None,
+                }
+                receipts.append(receipt)
+        entries = []
+        for rec in receipts:
+            if rec["control"] != "frozen":
+                adapter_dir = self.root / f"{rec['arm']}-{rec['control']}" / "adapter"
+                adapter_dir.mkdir(parents=True)
+                model = adapter_dir / "adapter_model.safetensors"
+                config = adapter_dir / "adapter_config.json"
+                model.write_bytes(b"test-only adapter bytes" + rec["run_id"].encode())
+                config.write_text("{}", encoding="utf-8")
+                rec["adapter_model_sha256"] = _hash_file(model)
+                rec["adapter_config_sha256"] = _hash_file(config)
+                receipt_dir = adapter_dir.parent
+            else:
+                receipt_dir = self.root
+            path = receipt_dir / f"{rec['arm']}-{rec['control']}-receipt.json"
+            path.write_text(json.dumps(rec), encoding="utf-8")
+            entries.append({"arm": rec["arm"], "control": rec["control"],
+                            "receipt_path": str(path), "receipt_sha256": _hash_file(path)})
+        inventory = {"schema": FREEZE_SCHEMA, "plan_sha256": validate_plan(plan),
+                     "arms": entries}
+        path = self.root / "freeze-inventory.json"
+        path.write_text(json.dumps(inventory), encoding="utf-8")
+        return plan, inventory, path
+
+    def test_complete_unscored_eight_arm_freeze_is_hash_bound(self):
+        plan, inventory, path = self.make_freeze_inventory()
+        args = self.change(freeze_inventory=path,
+                           expected_freeze_inventory_sha256=_hash_file(path))
+        digest, pinned, saved = _preunseal_inventory(
+            args, plan, inventory["plan_sha256"])
+        self.assertEqual(digest, _hash_file(path))
+        self.assertEqual(len(pinned), 8)
+        self.assertEqual(len(saved), 12)
+        # Repeated/partial controls, timing-invalid arms, and altered receipts
+        # must be denied before a single sealed answer can be read.
+        for mutation in (lambda x: x["arms"].pop(),
+                         lambda x: x["arms"].__setitem__(1, x["arms"][0]),
+                         lambda x: x.update(plan_sha256="0" * 64)):
+            altered = json.loads(json.dumps(inventory))
+            mutation(altered)
+            path.write_text(json.dumps(altered), encoding="utf-8")
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(
+                    AdmissionError, "pre-unseal"):
+                _preunseal_inventory(self.change(
+                    freeze_inventory=path,
+                    expected_freeze_inventory_sha256=_hash_file(path)),
+                    plan, inventory["plan_sha256"])
+        path.write_text(json.dumps(inventory), encoding="utf-8")
+        rec_path = Path(inventory["arms"][0]["receipt_path"])
+        rec = json.loads(rec_path.read_text(encoding="utf-8"))
+        original_receipt_bytes = rec_path.read_bytes()
+        rec["train_stop_monotonic_ns"] += 600_000_000_000
+        rec_path.write_text(json.dumps(rec), encoding="utf-8")
+        with self.assertRaisesRegex(AdmissionError, "pre-unseal"):
+            _preunseal_inventory(args, plan, inventory["plan_sha256"])
+        rec_path.write_bytes(original_receipt_bytes)
+        saved = Path(next(item["receipt_path"] for item in inventory["arms"]
+                          if item["control"] == "correct" and
+                          item["arm"] == "mezo")).parent / "adapter" / "adapter_model.safetensors"
+        saved.write_bytes(b"fake updated adapter")
+        with self.assertRaisesRegex(AdmissionError, "adapter bytes"):
+            _preunseal_inventory(args, plan, inventory["plan_sha256"])
+
+    def test_cuda_rejection_happens_before_private_bank_unseal(self):
+        with patch("trainingday.r18_eval._required_base", return_value=(self.base, self.root)), \
+             patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
+                   CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
+             patch("trainingday.r18_eval._preunseal_inventory",
+                   return_value=("a" * 64, {}, {})), \
+             patch("trainingday.r18_eval._cuda_preflight",
+                   side_effect=RuntimeError("CUDA unavailable")), \
+             patch("trainingday.r18_eval._bank", side_effect=AssertionError(
+                   "bank must remain sealed if CUDA preflight fails")):
+            with self.assertRaisesRegex(RuntimeError, "CUDA unavailable"):
+                evaluate(self.change(preflight_only=False))
 
     def test_pinned_plan_detects_hash_or_policy_change(self):
         validated, sha = _plan(self.plan_path, self.binding, self.base, self.source_sha)
@@ -366,9 +520,13 @@ class R18EvaluatorTests(unittest.TestCase):
         with patch("trainingday.r18_eval._required_base", return_value=(self.base, self.root)), \
              patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
                    CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
+             patch("trainingday.r18_eval._preunseal_inventory",
+                   return_value=(_hash_file(self.plan_path), {}, {})), \
+             patch("trainingday.r18_eval._cuda_preflight"), \
              patch("trainingday.r18_eval._bank", return_value=[{}] * 64), \
              patch("trainingday.r18_eval._run_model", return_value=rows) as run:
-            report = evaluate(self.change(preflight_only=False))
+            report = evaluate(self.change(preflight_only=False,
+                                          freeze_inventory=self.plan_path))
         self.assertEqual(report["greedy_exact_match"], 22)
         self.assertEqual(report["greedy_integer_semantic_correct"], 22)
         self.assertEqual(report["greedy_canonical_format_correct"], 22)
