@@ -41,7 +41,9 @@ PLAN_SCHEMA = "VERA_TRAININGDAY_R18_BENCHMARK_PLAN_V1"
 RECEIPT_SCHEMA = "VERA_TRAININGDAY_R18_ARM_RECEIPT_V1"
 SEQUENCES = (64, 128, 256, 384, 512, 768, 1024)
 EFFECTIVE_BATCH = 8
-FIT_POLICY = "ASCENDING_TO_FIRST_OOM_THEN_B2_AT_MAX_FIT"
+FIT_POLICY = "ASCENDING_LENGTH_BATCH1_THEN_BATCH2_UNTIL_FIRST_OOM"
+EVAL_SOURCE = "R18_NEW_SEALED_NOT_R16_FRESH64"
+PROBE_SCHEMA = "VERA_TRAININGDAY_R18_FIT_PROBE_V1"
 
 
 def canonical_sha(value) -> str:
@@ -70,17 +72,16 @@ def train_content_digest(rows: list[dict]) -> str:
 
 def candidate_schedule() -> list[dict]:
     def item(length: int, batch: int) -> dict:
-        return {"max_seq_length": length, "micro_batch_size": batch,
+        return {"actual_padded_sequence_length": length, "micro_batch_size": batch,
                 "effective_batch_size": EFFECTIVE_BATCH, "offload": False,
                 "truncation_allowed": False}
-    # The batch=2 candidate is tested only at the largest successful B1 length.
-    return [item(length, 1) for length in SEQUENCES]
+    return [item(length, batch) for batch in (1, 2) for length in SEQUENCES]
 
 
 def _validate_fit_plan(plan: dict) -> None:
     if (plan.get("fit_policy") != FIT_POLICY
             or plan.get("fit_candidates") != candidate_schedule()
-            or plan.get("eval_bank_source") != "R18_NEW_SEALED"):
+            or plan.get("eval_bank_source") != EVAL_SOURCE):
         raise AdmissionError("R18 fit policy, ascending candidates, or sealed bank changed")
     primary = plan.get("primary_training_config")
     if (not isinstance(primary, dict)
@@ -130,8 +131,8 @@ def _initial_adapter_custody(args) -> dict:
 
 def preflight(args) -> tuple[dict, list[dict], Path, dict]:
     """Admit only the R16 v2 training selection; never open an eval shard."""
-    if args.control not in {"zero", "correct", "corrupt"}:
-        raise AdmissionError("QLoRA arm needs zero/correct/corrupt control")
+    if args.control not in {"frozen", "zero", "correct", "corrupt"}:
+        raise AdmissionError("QLoRA arm needs frozen/zero/correct/corrupt control")
     if not re.fullmatch(r"[a-z0-9_-]{1,64}", args.run_id):
         raise AdmissionError("invalid R18 run ID")
     if (not args.output_root.is_dir() or args.output_root.is_symlink()
@@ -176,7 +177,7 @@ def preflight(args) -> tuple[dict, list[dict], Path, dict]:
         raise AdmissionError("R18 selected IDs differ from frozen plan")
     if train_content_digest(selected) != plan.get("train_content_sha256"):
         raise AdmissionError("R18 train content differs from frozen plan")
-    rows = _control_rows(selected, args.control)
+    rows = _control_rows(selected, "zero" if args.control == "frozen" else args.control)
     # IDs are bound to the position in the admitted selection.  Control labels
     # change train-input hash, never sample membership or prompt ordering.
     examples = [{"id": source["id"], **row}
@@ -196,7 +197,10 @@ def preflight(args) -> tuple[dict, list[dict], Path, dict]:
         "corpus_manifest_sha256": R16_V2_MANIFEST_SHA256,
         "selected_count": args.cases,
         "train_content_sha256": plan["train_content_sha256"],
+        "source_admission_status": plan["source_admission_status"],
         "eval_set_sha256": plan["eval_custody_sha256"],
+        "eval_custody_sha256": plan["eval_custody_sha256"],
+        "eval_index_sha256": plan["eval_index_sha256"],
         "training_budget_seconds": plan["training_budget_seconds"],
         "probe_budget_seconds": plan["probe_budget_seconds"],
         "fit_policy": FIT_POLICY, "fit_candidates": plan["fit_candidates"],
@@ -209,6 +213,7 @@ def preflight(args) -> tuple[dict, list[dict], Path, dict]:
         "disk_offload": False, "truncation_allowed": False,
         "eval_accuracy": None, "eval_nll": None,
         "eval_nll_sum": None, "eval_case_receipt_sha256": None,
+        "eval_correct": None,
         "eval_examples": 0, "eval_target_tokens": 0,
         "status": "SOURCE_ONLY_PREFLIGHT", "fit_status": "NOT_RUN",
         "optimizer_steps": 0, "unique_examples_seen": 0,
@@ -219,7 +224,7 @@ def preflight(args) -> tuple[dict, list[dict], Path, dict]:
         "supervised_target_tokens": 0, "optimizer_window_seconds": 0.0,
         "timed_training_seconds": 0.0,
         "peak_cuda_allocated_bytes": 0, "peak_cuda_reserved_bytes": 0,
-        "peak_cpu_rss_bytes": 0,
+        "peak_cpu_rss_bytes": 0, "peak_nvml_used_bytes": 0,
         "trainable_digest_before": None, "trainable_digest_after": None,
     }
     return report, examples, base_path, plan
@@ -235,10 +240,14 @@ def _tensorize(tokenizer, examples: list[dict]) -> list[dict]:
     for row in examples:
         prompt = _generation_prefix(tokenizer, row["prompt"])
         head = tokenizer(prompt, add_special_tokens=False)["input_ids"]
-        tail = tokenizer(row["response"] + eos, add_special_tokens=False)["input_ids"]
+        whole = tokenizer(prompt + row["response"] + eos,
+                          add_special_tokens=False)["input_ids"]
+        if whole[:len(head)] != head:
+            raise RuntimeError("R18 prompt/completion token boundary is not stable")
+        tail = whole[len(head):]
         if not head or not tail:
             raise RuntimeError("empty R18 prompt or supervised completion")
-        result.append({"id": row["id"], "input_ids": head + tail,
+        result.append({"id": row["id"], "input_ids": whole,
                        "labels": [-100] * len(head) + tail,
                        "target_tokens": len(tail)})
     return result
@@ -278,7 +287,8 @@ def _load_model(base_path: Path, seed: int, lr: float, *, initial_adapter=None):
     if free < 3200 * 2**20:
         raise RuntimeError("R18 less than 3200MiB free VRAM: do not disrupt other work")
     transformers.set_seed(seed)
-    tokenizer = AutoTokenizer.from_pretrained(base_path)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    tokenizer = AutoTokenizer.from_pretrained(base_path, local_files_only=True)
     if not tokenizer.chat_template:
         raise RuntimeError("pinned tokenizer has no chat template")
     if tokenizer.pad_token_id is None:
@@ -286,8 +296,9 @@ def _load_model(base_path: Path, seed: int, lr: float, *, initial_adapter=None):
     quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                               bnb_4bit_use_double_quant=True,
                               bnb_4bit_compute_dtype=torch.bfloat16)
-    model = Qwen3_5ForCausalLM.from_pretrained(base_path, quantization_config=quant,
-                                               device_map=0, dtype=torch.bfloat16)
+    model = Qwen3_5ForCausalLM.from_pretrained(
+        base_path, quantization_config=quant, device_map=0,
+        dtype=torch.bfloat16, local_files_only=True)
     model.config.use_cache = False
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     adapter = LoraConfig(r=4, lora_alpha=16, lora_dropout=0, bias="none",
@@ -295,7 +306,8 @@ def _load_model(base_path: Path, seed: int, lr: float, *, initial_adapter=None):
     if initial_adapter is None:
         model = get_peft_model(model, adapter)
     else:
-        model = PeftModel.from_pretrained(model, Path(initial_adapter), is_trainable=True)
+        model = PeftModel.from_pretrained(
+            model, Path(initial_adapter), is_trainable=True, local_files_only=True)
     precision = verify_trainable(model, torch, permit_cast=True)
     names = list(getattr(model, "targeted_module_names", []) or [])
     if not names:
@@ -381,94 +393,75 @@ def probe_worker(args) -> dict:
                 pass
     result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
     result.setdefault("peak_cpu_rss_bytes", _cpu_peak())
+    result.setdefault("peak_cuda_allocated_bytes", 0)
+    result.setdefault("peak_cuda_reserved_bytes", 0)
+    result["fresh_process_id"] = f"{os.getpid()}-{time.time_ns()}"
+    # NVML is optional on the Windows Lappy environment. Zero here means
+    # unavailable, never an invented nvidia-smi peak observation.
+    result["peak_nvml_used_bytes"] = 0
+    result["nvml_peak_status"] = "UNAVAILABLE_NOT_ESTIMATED"
     args.probe_result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
 
 def probe_sweep(args, output: Path, plan: dict) -> tuple[list[dict], dict | None, str]:
-    """One fresh OS process per attempt; stop ascending sweep at first OOM."""
-    sequence = [(n, 1) for n in SEQUENCES]
+    """Two ascending B1/B2 phases, fresh worker for every hardware attempt."""
     probes = []
     best = None
-    began = time.perf_counter()
-    position = 0
-    while position < len(sequence):
-        seq, batch = sequence[position]
-        remaining = plan["probe_budget_seconds"] - (time.perf_counter() - began)
-        if remaining <= 0:
-            return probes, best, "PROBE_BUDGET_EXHAUSTED"
-        artifact = output / f"probe-{position:02d}.json"
-        command = [sys.executable, "-m", "trainingday.r18_qlora", "_probe_child",
-                   "--base-binding", str(args.base_binding), "--seed", str(args.seed),
-                   "--learning-rate", str(args.learning_rate),
-                   "--probe-seq", str(seq), "--probe-batch", str(batch),
-                   "--probe-result", str(artifact)]
-        if getattr(args, "initial_adapter", None) is not None:
-            command += ["--initial-adapter", str(args.initial_adapter),
-                        "--initial-adapter-model-sha256", args.initial_adapter_model_sha256,
-                        "--initial-adapter-config-sha256", args.initial_adapter_config_sha256]
-        try:
-            completed = subprocess.run(command, capture_output=True, text=True,
-                                       timeout=max(1, remaining), check=False)
-        except subprocess.TimeoutExpired:
-            probes.append({"max_seq_length": seq, "micro_batch_size": batch,
-                           "actual_tensor_shape": [batch, seq], "status": "TIMEOUT",
-                           "probe_is_synthetic": True})
-            return probes, best, "PROBE_BUDGET_EXHAUSTED"
-        if not artifact.is_file():
-            probes.append({"max_seq_length": seq, "micro_batch_size": batch,
-                           "actual_tensor_shape": [batch, seq], "status": "PROCESS_FAILED",
-                           "exit_code": completed.returncode, "probe_is_synthetic": True})
-            return probes, best, "PROBE_PROCESS_FAILED"
-        probe = json.loads(artifact.read_text(encoding="utf-8"))
-        probes.append(probe)
-        if completed.returncode != 0 or probe["status"] not in {"FIT", "OOM"}:
-            return probes, best, "PROBE_PROCESS_FAILED"
-        if probe["status"] == "OOM":
-            if batch == 1:
-                if best is None:
+    b1_highest = None
+    for batch in (1, 2):
+        for index, seq in enumerate(SEQUENCES):
+            if batch == 2 and (b1_highest is None or seq > b1_highest):
+                break
+            candidate_index = index + (0 if batch == 1 else len(SEQUENCES))
+            artifact = output / f"probe-{candidate_index:02d}.json"
+            command = [sys.executable, "-m", "trainingday.r18_qlora", "_probe_child",
+                       "--base-binding", str(args.base_binding), "--seed", str(args.seed),
+                       "--learning-rate", str(args.learning_rate),
+                       "--probe-seq", str(seq), "--probe-batch", str(batch),
+                       "--probe-result", str(artifact)]
+            if getattr(args, "initial_adapter", None) is not None:
+                command += ["--initial-adapter", str(args.initial_adapter),
+                            "--initial-adapter-model-sha256", args.initial_adapter_model_sha256,
+                            "--initial-adapter-config-sha256", args.initial_adapter_config_sha256]
+            try:
+                completed = subprocess.run(command, capture_output=True, text=True,
+                                           timeout=plan["probe_budget_seconds"], check=False)
+            except subprocess.TimeoutExpired:
+                probes.append({"config": candidate_schedule()[candidate_index],
+                               "candidate_index": candidate_index, "status": "TIMEOUT"})
+                return probes, best, "PROBE_BUDGET_EXHAUSTED"
+            if not artifact.is_file():
+                probes.append({"config": candidate_schedule()[candidate_index],
+                               "candidate_index": candidate_index,
+                               "status": "PROCESS_FAILED", "exit_code": completed.returncode})
+                return probes, best, "PROBE_PROCESS_FAILED"
+            probe = json.loads(artifact.read_text(encoding="utf-8"))
+            probe.update(schema=PROBE_SCHEMA, plan_sha256=canonical_sha(plan), arm="qlora",
+                         config=candidate_schedule()[candidate_index],
+                         candidate_index=candidate_index,
+                         actual_padded_sequence_length=seq,
+                         outcome=probe.get("status"), eval_access=False,
+                         data_partition="TRAIN_ONLY", checkpoint_selection=False,
+                         optimizer_step_completed=probe.get("status") == "FIT")
+            probe.setdefault("fresh_process_id", f"synthetic-{candidate_index}")
+            probe.setdefault("peak_nvml_used_bytes", 0)
+            probe.setdefault("failure_artifact_sha256", None)
+            probe["elapsed_seconds"] = max(0.001, float(probe.get("elapsed_seconds", 0.001)))
+            probes.append(probe)
+            if completed.returncode != 0 or probe["status"] not in {"FIT", "OOM"}:
+                return probes, best, "PROBE_PROCESS_FAILED"
+            if probe["status"] == "OOM":
+                if batch == 1 and best is None:
                     return probes, None, "BASE_4B_QLORA_OOM"
-                sequence.append((best["max_seq_length"], 2))
-            break
-        best = {"max_seq_length": seq, "micro_batch_size": batch,
-                "effective_batch_size": EFFECTIVE_BATCH,
-                "gradient_accumulation": EFFECTIVE_BATCH // batch}
-        position += 1
-        if position == len(SEQUENCES):
-            sequence.append((best["max_seq_length"], 2))
-    # Batch=2 followup only after the ascending B1 sweep completed/OOMed.
-    if sequence[-1][1] == 2 and probes[-1]["micro_batch_size"] == 1:
-        seq, batch = sequence[-1]
-        remaining = plan["probe_budget_seconds"] - (time.perf_counter() - began)
-        if remaining <= 0:
-            return probes, best, "PROBE_BUDGET_EXHAUSTED"
-        artifact = output / f"probe-{len(probes):02d}.json"
-        command = [sys.executable, "-m", "trainingday.r18_qlora", "_probe_child",
-                   "--base-binding", str(args.base_binding), "--seed", str(args.seed),
-                   "--learning-rate", str(args.learning_rate),
-                   "--probe-seq", str(seq), "--probe-batch", "2",
-                   "--probe-result", str(artifact)]
-        if getattr(args, "initial_adapter", None) is not None:
-            command += ["--initial-adapter", str(args.initial_adapter),
-                        "--initial-adapter-model-sha256", args.initial_adapter_model_sha256,
-                        "--initial-adapter-config-sha256", args.initial_adapter_config_sha256]
-        try:
-            complete = subprocess.run(command, capture_output=True, text=True,
-                                      timeout=max(1, remaining), check=False)
-        except subprocess.TimeoutExpired:
-            probes.append({"max_seq_length": seq, "micro_batch_size": 2,
-                           "actual_tensor_shape": [2, seq], "status": "TIMEOUT",
-                           "probe_is_synthetic": True})
-            return probes, best, "PROBE_BUDGET_EXHAUSTED"
-        if not artifact.is_file():
-            return probes, best, "PROBE_PROCESS_FAILED"
-        followup = json.loads(artifact.read_text(encoding="utf-8"))
-        probes.append(followup)
-        if complete.returncode != 0 or followup["status"] not in {"FIT", "OOM"}:
-            return probes, best, "PROBE_PROCESS_FAILED"
-        if followup["status"] == "FIT":
-            best = {"max_seq_length": seq, "micro_batch_size": 2,
-                    "effective_batch_size": 8, "gradient_accumulation": 4}
+                break
+            if batch == 1:
+                b1_highest = seq
+            chosen = {"max_seq_length": seq, "micro_batch_size": batch,
+                      "effective_batch_size": EFFECTIVE_BATCH,
+                      "gradient_accumulation": EFFECTIVE_BATCH // batch}
+            if (best is None or seq * batch > best["max_seq_length"] * best["micro_batch_size"]):
+                best = chosen
     return probes, best, "FIT" if best else "BASE_4B_QLORA_OOM"
 
 
@@ -483,6 +476,7 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
         initial_adapter=getattr(args, "initial_adapter", None))
     receipt["cold_model_and_optimizer_load_seconds"] = round(
         time.perf_counter() - load_started, 3)
+    setup_started = time.perf_counter()
     converted = _tensorize(tokenizer, examples)
     receipt["training_input_sha256"] = canonical_sha([
         {"id": x["id"], "input_ids": x["input_ids"], "labels": x["labels"]}
@@ -502,17 +496,20 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                    fp32_before=precision, target_coverage=coverage,
                    gradient_accumulation=accumulation, micro_batch_size=batch_size,
                    max_seq_length=seq,
-                   max_untruncated_example_tokens=max(len(r["input_ids"]) for r in converted))
+                   max_untruncated_example_tokens=max(len(r["input_ids"]) for r in converted),
+                   max_prepared_example_tokens=max(len(r["input_ids"]) for r in converted))
     if args.expected_initial_digest and before != args.expected_initial_digest:
         raise RuntimeError("R18 initial FP32 adapter digest differs from paired zero control")
     torch.cuda.reset_peak_memory_stats()
-    started = time.perf_counter()
+    setup_elapsed = time.perf_counter() - setup_started
+    started_ns = time.perf_counter_ns()
+    deadline_ns = started_ns + round(receipt["training_budget_seconds"] * 1e9)
     unique = set()
     steps = presentations = input_tokens = target_tokens = tensor_tokens = 0
     try:
-        if args.control != "zero":
+        if args.control not in {"frozen", "zero"}:
             for offset in range(0, len(converted), EFFECTIVE_BATCH):
-                if time.perf_counter() - started >= receipt["training_budget_seconds"]:
+                if time.perf_counter_ns() >= deadline_ns:
                     break
                 optimizer.zero_grad(set_to_none=True)
                 for index in range(offset, offset + EFFECTIVE_BATCH, batch_size):
@@ -534,7 +531,8 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                 steps += 1
         torch.cuda.synchronize()
     finally:
-        elapsed = time.perf_counter() - started
+        stop_ns = time.perf_counter_ns()
+        elapsed = (stop_ns - started_ns) / 1e9
         overshoot = max(0., elapsed - receipt["training_budget_seconds"])
         tolerance = max(30., receipt["training_budget_seconds"] * 0.05)
         receipt.update(optimizer_steps=steps, unique_examples_seen=len(unique),
@@ -550,7 +548,12 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                        training_budget_overshoot_seconds=round(overshoot, 3),
                        training_budget_tolerance_seconds=round(tolerance, 3),
                        training_budget_within_tolerance=(overshoot <= tolerance),
-                       measured_training_window_excludes_load_and_fit=True)
+                       measured_training_window_excludes_load_and_fit=True,
+                       train_start_monotonic_ns=started_ns,
+                       train_stop_monotonic_ns=stop_ns,
+                       train_deadline_monotonic_ns=deadline_ns)
+    if stop_ns > deadline_ns:
+        raise RuntimeError("R18 strict equal-time deadline exceeded by completed step")
     after, count_after = _parameter_digest(model, torch)
     delta_squared = 0.
     delta_max = 0.
@@ -562,8 +565,8 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
         delta_squared += float(delta.double().square().sum().item())
         delta_max = max(delta_max, float(delta.abs().max().item()))
         delta_elements += int(torch.count_nonzero(delta).item())
-    if (count != count_after or (before == after) != (args.control == "zero")
-            or (args.control != "zero" and steps == 0)):
+    if (count != count_after or (before == after) != (args.control in {"frozen", "zero"})
+            or (args.control in {"correct", "corrupt"} and steps == 0)):
         raise RuntimeError("R18 no actual FP32 LoRA delta or invalid zero control")
     after_precision = verify_trainable(model, torch, permit_cast=False)
     allocated, reserved = _cuda_peak(torch)
@@ -579,6 +582,7 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                    adapter_delta_observed=(before != after),
                    runtime={"torch": torch.__version__})
     adapter_path = output / "adapter"
+    save_started = time.perf_counter()
     model.save_pretrained(adapter_path, safe_serialization=True)
     for name, field in (("adapter_model.safetensors", "adapter_model_sha256"),
                         ("adapter_config.json", "adapter_config_sha256")):
@@ -586,6 +590,12 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
         if not target.is_file():
             raise RuntimeError("R18 adapter save incomplete")
         receipt[field] = _hash_file(target)
+    receipt["stage_seconds"] = {
+        "load": receipt["cold_model_and_optimizer_load_seconds"],
+        "setup": round(setup_elapsed, 3),
+        "train": receipt["optimizer_window_seconds"],
+        "save": round(time.perf_counter() - save_started, 3), "eval": 0.,
+    }
     return receipt
 
 
@@ -632,6 +642,7 @@ def run(args) -> dict:
         receipt.update(status="NOT_TRAINED_FIT_INCOMPLETE", fit_status="PROBE_ERROR",
                        error_type=type(exc).__name__, error_summary=str(exc)[:350])
     receipt["total_benchmark_wall_seconds"] = round(time.perf_counter() - wall_started, 3)
+    receipt["external_process_wall_seconds"] = receipt["total_benchmark_wall_seconds"]
     (output / "r18-qlora-receipt.json").write_text(
         json.dumps(receipt, sort_keys=True, indent=2, default=str) + "\n", encoding="utf-8")
     return receipt
@@ -648,7 +659,7 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--run-id")
-    parser.add_argument("--control", choices=["zero", "correct", "corrupt"])
+    parser.add_argument("--control", choices=["frozen", "zero", "correct", "corrupt"])
     parser.add_argument("--cases", type=int, default=64)
     parser.add_argument("--producer-git-head", default=R16_PRODUCER_HEAD)
     parser.add_argument("--expected-initial-digest")
