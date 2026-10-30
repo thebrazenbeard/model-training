@@ -210,14 +210,20 @@ class R18EvaluatorTests(unittest.TestCase):
     def test_private_custody_requires_owner_only_permissions(self):
         path = self.root / "private-seal.json"
         path.write_text("{}", encoding="utf-8")
-        if os.name != "nt":
-            path.chmod(0o644)
-        with self.assertRaises(AdmissionError):
-            _json(path, private=True)
         if os.name == "nt":
-            from trainingday.r18_benchmark import _protect_private_path
+            # A child of a protected directory may already have a safe DACL.
+            # Simulate an independent ACL-verifier rejection to prove that
+            # private reads fail closed, then secure and verify the real file.
+            from trainingday.r18_benchmark import BenchmarkError, _protect_private_path
+            with patch("trainingday.r18_benchmark._windows_verify_owner_only",
+                       side_effect=BenchmarkError("unsafe ACL")):
+                with self.assertRaises(AdmissionError):
+                    _json(path, private=True)
             _protect_private_path(path, directory=False)
         else:
+            path.chmod(0o644)
+            with self.assertRaises(AdmissionError):
+                _json(path, private=True)
             path.chmod(0o600)
         self.assertEqual(_json(path, private=True), {})
 
@@ -290,7 +296,12 @@ class R18EvaluatorTests(unittest.TestCase):
                                sum(r["nll_sum"] for r in rows) / 192)
         self.assertEqual(report["protocol"], PROTOCOL)
         self.assertFalse(report["automatic_promotion"])
-        self.assertEqual(oct(self.args.private_output.stat().st_mode & 0o777), "0o600")
+        if os.name == "nt":
+            from trainingday.r18_benchmark import _windows_owner_sid, _windows_verify_owner_only
+            _windows_verify_owner_only(self.args.private_output, _windows_owner_sid(),
+                                       directory=False)
+        else:
+            self.assertEqual(oct(self.args.private_output.stat().st_mode & 0o777), "0o600")
         public_contents = self.args.output.read_text()
         for word in ("prompt", "expected", "prediction", "blind_case_sha256",
                      '"outcomes"', '"id"'):
