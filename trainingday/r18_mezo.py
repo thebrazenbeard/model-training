@@ -478,6 +478,7 @@ def fit_sweep(model, tensors, torch, tokenizer, prepared, args) -> dict:
     max_input = max(len(row["input_ids"]) for row in prepared)
     probes = []
     stopped_after_oom = False
+    failure_details = None
     for length in lengths:
         for batch in batches:
             if length < max_input:
@@ -505,6 +506,10 @@ def fit_sweep(model, tensors, torch, tokenizer, prepared, args) -> dict:
                 if not _oom(exc, torch):
                     raise
                 outcome = "oom"
+                failure_details = {"exception_type": type(exc).__name__,
+                                   "batch_size": batch, "sequence_length": length,
+                                   "actual_tensor_shape": [batch, length],
+                                   "error": str(exc)[:2048]}
             probes.append({"batch_size": batch, "sequence_length": length,
                            "actual_tensor_shape": [batch, length],
                            "actual_nonpad_tokens": sum(r["input_tokens"] for r in sample),
@@ -525,7 +530,8 @@ def fit_sweep(model, tensors, torch, tokenizer, prepared, args) -> dict:
             break
     return {"probes": probes, "fit_probe_sha256": canonical_hash(probes),
             "status": "GPU_FIT_PROBED_NO_TRAINING",
-            "stopped_after_oom_requires_fresh_process": stopped_after_oom}
+            "stopped_after_oom_requires_fresh_process": stopped_after_oom,
+            "failure_details": failure_details}
 
 
 def _gpu_stack(args, model_path: Path):
@@ -606,6 +612,13 @@ def run(args) -> dict:
         final, _ = parameter_attestation(tensors, torch, initial)
         if final["digest"] != before["digest"]:
             raise RuntimeError("fit sweep mutated adapter weights")
+        if result["failure_details"]:
+            # Persist a real failure artifact, not an invented SHA receipt.
+            failure_path = args.output_root / f"{args.run_id}-fit-oom.json"
+            with failure_path.open("x", encoding="utf-8") as stream:
+                json.dump(result["failure_details"], stream, sort_keys=True, indent=2)
+            result["failure_artifact_sha256"] = _hash_file(failure_path)
+            result["failure_artifact_path"] = str(failure_path)
         return {**preflight, **result, "trainable_digest_before": before["digest"],
                 "trainable_digest_after": final["digest"]}
     output, contract, resumed_step, previously_elapsed, state = prepare_run(args, preflight)
@@ -622,7 +635,8 @@ def run(args) -> dict:
     cold_start_seconds = time.perf_counter() - cold_started
     counters = {"example_presentations": resumed_step * args.examples_per_update,
                 "input_tokens_presented": 0, "supervised_target_tokens": 0,
-                "forward_sample_tokens": 0, "backward_sample_tokens": 0,
+                "forward_sample_tokens": 0, "padded_forward_tokens": 0,
+                "backward_sample_tokens": 0, "padded_backward_tokens": 0,
                 "paired_forward_calls": 0, "zo_directions": resumed_step}
     if state:
         counters = dict(state["counters"])
@@ -648,7 +662,8 @@ def run(args) -> dict:
             counters["example_presentations"] += len(selected)
             counters["input_tokens_presented"] += sum(r["input_tokens"] for r in selected)
             counters["supervised_target_tokens"] += sum(r["target_tokens"] for r in selected)
-            counters["forward_sample_tokens"] += 2 * len(selected) * args.max_seq_length
+            counters["forward_sample_tokens"] += 2 * sum(r["input_tokens"] for r in selected)
+            counters["padded_forward_tokens"] += 2 * len(selected) * args.max_seq_length
             counters["paired_forward_calls"] += 2 * len(selected) // args.micro_batch_size
             counters["zo_directions"] += 1
             directional_log.append({"step": completed, "loss_plus": plus,
@@ -692,9 +707,13 @@ def run(args) -> dict:
                "unperturbed_loss": unperturbed_loss,
                "unperturbed_loss_seconds": unperturbed_loss_seconds,
                "diagnostic_forward_calls": len(diagnostic_rows) // args.micro_batch_size,
-               "diagnostic_forward_sample_tokens": len(diagnostic_rows) * args.max_seq_length,
+               "diagnostic_forward_sample_tokens": sum(r["input_tokens"] for r in diagnostic_rows),
+               "diagnostic_padded_forward_tokens": len(diagnostic_rows) * args.max_seq_length,
                "total_forward_sample_tokens_including_diagnostic": (
-                   counters["forward_sample_tokens"] + len(diagnostic_rows) * args.max_seq_length),
+                   counters["forward_sample_tokens"] +
+                   sum(r["input_tokens"] for r in diagnostic_rows)),
+               "total_padded_forward_tokens_including_diagnostic": (
+                   counters["padded_forward_tokens"] + len(diagnostic_rows) * args.max_seq_length),
                "frozen_parameter_sha256_before": frozen_before,
                "frozen_parameter_sha256_after": frozen_after,
                "frozen_parameter_bytes_hashed": frozen_byte_count,
@@ -709,6 +728,7 @@ def run(args) -> dict:
                "directional_updates": directional_log,
                "eval_accuracy": None, "eval_nll": None,
                "eval_examples": 0, "eval_target_tokens": 0,
+               "eval_nll_sum": None, "eval_case_receipt_sha256": None,
                "eval_set_sha256": None,
                "fit_probe_sha256": args.fit_probe_sha256,
                "evidence_limit": ("saved LoRA only; no independent reload or heldout score; "
