@@ -438,11 +438,12 @@ def test_windows_private_acl_owner_only_and_no_broad_inheritance(tmp_path, monke
     path = tmp_path / "new-private-dir"
     path.mkdir()
     _protect_private_path(path, directory=True, is_windows=True)
-    assert [a[0] for a in recorded] == ["whoami", "icacls", "icacls", "icacls",
+    assert [a[0] for a in recorded] == ["whoami", "icacls", "icacls", "icacls", "icacls",
                                            "powershell.exe"]
     assert recorded[1][2:] == ["/inheritance:r"]
     assert recorded[2][2:] == ["/grant:r", f"*{owner_sid}:(OI)(CI)F"]
-    assert recorded[3][2:] == ["/verify"]
+    assert recorded[3][2:] == ["/setowner", f"*{owner_sid}"]
+    assert recorded[4][2:] == ["/verify"]
     assert all(isinstance(argv, list) for argv in recorded)
 
 
