@@ -173,6 +173,28 @@ def calculate(x: int, y: int) -> int:
         row = code_row("def arithmetic(a,b):\n    return (a*2 + b)//3\n")
         self.assertEqual(derive_cases(row, per_file=8), derive_cases(row, per_file=8))
 
+    def test_duplicate_derived_ids_fail_closed_even_with_matching_shard_hash(self):
+        source = "def f(x):\n    return x + 1\n"
+        root = self.tmp / "source"
+        root.mkdir()
+        manifest_path, _ = make_corpus(root, source)
+        row = (json.dumps(code_row(source)) + "\n").encode()
+        doubled = row + row
+        (root / "train/000000.jsonl").write_bytes(doubled)
+        manifest = json.loads(manifest_path.read_text())
+        manifest["shards"][0].update(bytes=len(doubled), count=2,
+                                     sha256=digest(doubled))
+        manifest["counts"]["train"] = 2
+        manifest_bytes = (json.dumps(manifest, sort_keys=True) + "\n").encode()
+        manifest_path.write_bytes(manifest_bytes)
+        with self.assertRaisesRegex(AdmissionError, "duplicate derived training example"):
+            build_verified_code_corpus(
+                manifest_path, self.tmp / "derived",
+                expected_manifest_sha256=digest(manifest_bytes),
+                producer_git_head="b" * 40, max_cases=8, per_file=4,
+            )
+        self.assertFalse((self.tmp / "derived/manifest.json").exists())
+
     def test_arithmetic_common_mode_falsifier_caught(self):
         source = "def f(x):\n    return x + 1\n"
         from trainingday import program_supervision as impl
