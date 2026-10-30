@@ -40,7 +40,9 @@ class QloraContractTests(unittest.TestCase):
                 "actual_padded_sequence_length": 256, "micro_batch_size": 1,
                 "effective_batch_size": 8, "offload": False,
                 "truncation_allowed": False},
-            "eval_bank_source": "R18_NEW_SEALED", "eval_custody_sha256": "c" * 64,
+            "eval_bank_source": q.EVAL_SOURCE, "eval_custody_sha256": "c" * 64,
+            "eval_index_sha256": "f" * 64,
+            "source_admission_status": "ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE",
             "training_budget_seconds": 60, "probe_budget_seconds": 120,
         }
         plan_path = self.root / "plan.json"
@@ -70,8 +72,8 @@ class QloraContractTests(unittest.TestCase):
             q.selected_id_digest(self.rows + [self.rows[0]])
 
     def test_plan_accepts_only_ascending_full_tensor_sweep_without_offload(self):
-        self.assertEqual([x["max_seq_length"] for x in q.candidate_schedule()],
-                         [64, 128, 256, 384, 512, 768, 1024])
+        self.assertEqual([x["actual_padded_sequence_length"] for x in q.candidate_schedule()],
+                         [64, 128, 256, 384, 512, 768, 1024] * 2)
         q._validate_fit_plan(self.plan)
         self.plan["fit_candidates"][0]["offload"] = True
         with self.assertRaisesRegex(AdmissionError, "fit policy"):
@@ -188,7 +190,7 @@ class QloraContractTests(unittest.TestCase):
         with patch.object(q.subprocess, "run", side_effect=fake_process):
             probes, selected, status = q.probe_sweep(self.args, self.root, self.plan)
         self.assertEqual(observed, [(64, 1), (128, 1), (256, 1),
-                                    (384, 1), (512, 1), (384, 2)])
+                                    (384, 1), (512, 1), (64, 2)])
         self.assertEqual(status, "FIT")
         self.assertEqual(selected["max_seq_length"], 384)
         self.assertEqual(selected["micro_batch_size"], 1)
