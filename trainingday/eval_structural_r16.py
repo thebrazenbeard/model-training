@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 
 from trainingday.admission import AdmissionError, _hash_file
+from trainingday.checkpoint_custody import canonical_sha, validate_custody
 from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
 from trainingday.reload_verify import validate_receipt
 from trainingday.structural_eval import preregister_r15_fresh_structural64
@@ -27,6 +28,9 @@ OLD_ID_SHA256 = "212cc8d173c012743899f2ddf610468bd5fed3e318c35fcf90ce08635fb9165
 OLD_EVAL_SHA256 = "f7a8078ac9f67ad7fda36368060f80cdcfaf9560dca48a153f1c89b9e1e7573"
 CORPUS_SHA256 = "90b55cf8742f9222c91f88e5727dcd0113322e4721e4fd3d1bdcdf65f40d0836"
 PROTOCOL = "R16_FRESH_STRUCTURAL64_SCORED16_EXCLUDED_DEV_V1"
+R16_RECIPE = "TRAININGDAY_QWEN35_QLORA_R16_CHECKPOINTABLE_MATCHED"
+R16_STATUS = "R16_ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED"
+R16_PRODUCER_HEAD = "1d38e4f25b5663bf8a84ff5e139875d4152e3680"
 
 
 def _old_ids(receipt_path: Path) -> list[str]:
@@ -92,6 +96,112 @@ def _zero_adapter(receipt_path: Path, binding_path: Path, producer_head: str) ->
     return receipt, adapter
 
 
+def _r16_adapter(receipt_path: Path, binding_path: Path, *,
+                 producer_head: str, required_mode: str) -> tuple[dict, Path]:
+    """Admit an R16 adapter using its actual run/checkpoint custody.
+
+    Byte custody is NOT proof of optimizer resume equivalence, model behavior,
+    or fresh-process tensor reload. Those remain separate qualification gates.
+    """
+    if required_mode not in {"zero", "correct", "corrupt"}:
+        raise AdmissionError("unsupported R16 adapter arm")
+    if (not receipt_path.is_file() or receipt_path.is_symlink()
+            or receipt_path.parent.is_symlink()):
+        raise AdmissionError("R16 training receipt missing/unsafe")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    contract_path = receipt_path.parent / "r16-run-contract.json"
+    if not contract_path.is_file() or contract_path.is_symlink():
+        raise AdmissionError("R16 run contract absent")
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    digest = canonical_sha(contract)
+    corpus = receipt.get("corpus")
+    if (producer_head != R16_PRODUCER_HEAD
+            or contract.get("schema") != "VERA_TRAININGDAY_R16_RUN_CONTRACT_V1"
+            or contract.get("recipe") != R16_RECIPE
+            or contract.get("question_contract") != NUMERIC_QUESTION_CONTRACT
+            or contract.get("manifest_sha256") != CORPUS_SHA256
+            or contract.get("producer_git_head") != producer_head
+            or contract.get("mode") != required_mode
+            or contract.get("base_model") != "Qwen/Qwen3.5-4B"
+            or not isinstance(contract.get("base_revision"), str)
+            or re.fullmatch(r"[0-9a-f]{40}", contract["base_revision"]) is None
+            or contract.get("base_binding_sha256") != _hash_file(binding_path)
+            or contract.get("optimizer") != "adamw_bnb_8bit"
+            or contract.get("gradient_accumulation") != 8
+            or contract.get("lora_r") != 4
+            or contract.get("lora_alpha") != 16
+            or contract.get("max_length") != 512
+            or contract.get("save_strategy") != "steps"
+            or contract.get("save_steps") != 8
+            or type(contract.get("cases")) is not int
+            or not 1 <= contract["cases"] <= 1024
+            or type(contract.get("seed")) is not int
+            or type(contract.get("learning_rate")) not in (float, int)
+            or not 0 < contract["learning_rate"] <= 0.0002
+            or not isinstance(contract.get("run_id"), str)
+            or contract["run_id"] != receipt_path.parent.name
+            or not isinstance(contract.get("training_input_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", contract["training_input_sha256"]) is None
+            or receipt.get("r16_run_contract_sha256") != digest
+            or receipt.get("status") != R16_STATUS
+            or receipt.get("recipe") != R16_RECIPE
+            or receipt.get("question_contract") != NUMERIC_QUESTION_CONTRACT
+            or receipt.get("mode") != required_mode
+            or receipt.get("base_model") != contract.get("base_model")
+            or receipt.get("base_revision") != contract.get("base_revision")
+            or receipt.get("base_binding_sha256") != contract.get("base_binding_sha256")
+            or receipt.get("training_input_sha256") != contract.get("training_input_sha256")
+            or not isinstance(corpus, dict)
+            or corpus.get("manifest_sha256") != CORPUS_SHA256
+            or corpus.get("producer_git_head") != producer_head
+            or receipt.get("seed") != contract.get("seed")):
+        raise AdmissionError("R16 recipe/run/manifest/base contract mismatch")
+    initial = receipt.get("trainable_digest_before")
+    final = receipt.get("trainable_digest_after")
+    if any(not isinstance(v, str) or re.fullmatch(r"[0-9a-f]{64}", v) is None
+           for v in (initial, final)):
+        raise AdmissionError("R16 tensor digest/initialization invalid")
+    adapter = receipt_path.parent / "adapter"
+    if not adapter.is_dir() or adapter.is_symlink():
+        raise AdmissionError("R16 adapter directory absent")
+    for name, key in (("adapter_model.safetensors", "adapter_model_sha256"),
+                      ("adapter_config.json", "adapter_config_sha256")):
+        path = adapter / name
+        if not path.is_file() or path.is_symlink() or _hash_file(path) != receipt.get(key):
+            raise AdmissionError("R16 adapter bytes changed")
+
+    if required_mode == "zero":
+        if (contract.get("steps") != 0 or receipt.get("new_optimizer_steps") != 0
+                or receipt.get("resumed_from_step") != 0 or initial != final
+                or contract.get("initial_digest") not in (None, initial)
+                or any(key in receipt for key in ("checkpoint_step", "checkpoint_custody_file_sha256"))):
+            raise AdmissionError("R16 zero control was not a zero-update")
+        return receipt, adapter
+
+    step = contract.get("steps")
+    resumed = receipt.get("resumed_from_step")
+    if (contract.get("initial_digest") != initial
+            or type(step) is not int or step < 8 or step > 32 or step % 8
+            or contract["cases"] < step * 8
+            or type(resumed) is not int or resumed < 0 or resumed >= step
+            or resumed % 8 or receipt.get("new_optimizer_steps") != step - resumed
+            or initial == final or receipt.get("checkpoint_step") != step
+            or receipt.get("optimizer_resume_equivalence") !=
+            "UNVERIFIED_REQUIRES_UNINTERRUPTED_MATCH"
+            or not isinstance(receipt.get("optimizer_identity"), dict)):
+        raise AdmissionError("R16 optimizer/step/continuation receipt inconsistent")
+    checkpoint = receipt_path.parent / "trainer-work" / f"checkpoint-{step}"
+    custody_path = receipt_path.parent / "latest-checkpoint-custody.json"
+    if (not custody_path.is_file() or custody_path.is_symlink()
+            or _hash_file(custody_path) != receipt.get("checkpoint_custody_file_sha256")):
+        raise AdmissionError("R16 checkpoint custody receipt tampered")
+    custody = json.loads(custody_path.read_text(encoding="utf-8"))
+    if (validate_custody(checkpoint, custody, contract_sha256=digest) != step
+            or receipt.get("checkpoint_custody_state") != custody.get("state")):
+        raise AdmissionError("R16 checkpoint file/step mismatch")
+    return receipt, adapter
+
+
 def evaluate(args) -> dict:
     if args.mode not in {"frozen", "zero", "correct", "corrupt"}:
         raise AdmissionError("invalid R16 control arm")
@@ -108,7 +218,13 @@ def evaluate(args) -> dict:
     if args.mode != "frozen":
         if args.adapter_receipt is None:
             raise AdmissionError("trained arm requires adapter receipt")
-        if args.mode == "zero":
+        contents = json.loads(args.adapter_receipt.read_text(encoding="utf-8"))
+        if contents.get("recipe") == R16_RECIPE:
+            receipt, adapter_dir = _r16_adapter(
+                args.adapter_receipt, args.base_binding,
+                producer_head=args.producer_git_head, required_mode=args.mode,
+            )
+        elif args.mode == "zero":
             receipt, adapter_dir = _zero_adapter(
                 args.adapter_receipt, args.base_binding, args.producer_git_head,
             )
