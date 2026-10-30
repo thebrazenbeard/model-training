@@ -133,7 +133,6 @@ class R18MathTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             plan_path = root / "plan.json"
-            plan_path.write_text('{"probe_budget_seconds":30}')
             args = argparse.Namespace(output_root=root, run_id="fit-only",
                                       manifest=root / "manifest", base_binding=root / "binding",
                                       plan=plan_path, work_root=root, seed=41,
@@ -146,6 +145,9 @@ class R18MathTests(unittest.TestCase):
                         "offload": False, "truncation_allowed": False}
                        for batch in (1, 2)
                        for length in (64, 128, 256, 384, 512, 768, 1024)]
+            plan = {"probe_budget_seconds": 30, "primary_training_config": configs[1]}
+            plan_path.write_text(json.dumps(plan))
+            plan_sha = canonical_hash(plan)
             called = []
 
             def fake_subprocess(command, **_kwargs):
@@ -153,17 +155,24 @@ class R18MathTests(unittest.TestCase):
                 output = Path(command[command.index("--probe-result") + 1])
                 called.append((index, command.count("--probe-child")))
                 item = {"schema": "VERA_TRAININGDAY_R18_FIT_PROBE_V1",
-                        "arm": "mezo", "plan_sha256": "a" * 64,
+                        "arm": "mezo", "plan_sha256": plan_sha,
                         "candidate_index": index, "config": configs[index],
                         "outcome": "OOM" if index in (2, 8) else "FIT",
                         "fresh_process_id": f"pid:{index}",
-                        "actual_padded_sequence_length": configs[index]["actual_padded_sequence_length"]}
+                        "actual_padded_sequence_length": configs[index]["actual_padded_sequence_length"],
+                        "data_partition": "TRAIN_ONLY", "eval_access": False,
+                        "checkpoint_selection": False,
+                        "optimizer_step_completed": index not in (2, 8),
+                        "elapsed_seconds": 2.0, "peak_cuda_allocated_bytes": 500,
+                        "peak_cuda_reserved_bytes": 600, "peak_cpu_rss_bytes": 100,
+                        "peak_nvml_used_bytes": 700,
+                        "failure_artifact_sha256": "b" * 64 if index in (2, 8) else None}
                 output.write_text(json.dumps(item))
                 return argparse.Namespace(returncode=0)
 
             with patch("trainingday.r18_mezo._fit_configurations", return_value=configs), \
                  patch("trainingday.r18_mezo.subprocess.run", side_effect=fake_subprocess):
-                result = run_fit_sweep(args, {"plan_sha256": "a" * 64})
+                result = run_fit_sweep(args, {"plan_sha256": plan_sha})
             self.assertEqual([x[0] for x in called], [0, 1, 2, 7, 8])
             self.assertTrue(all(child == 1 for _, child in called))
             self.assertEqual(len(result["probes"]), 5)
