@@ -20,6 +20,10 @@ from trainingday.r18_benchmark import (
     validate_arm_receipt, validate_fit_probes,
     validate_plan,
 )
+from trainingday.r18_eval_source import generate_novel_r18_cases
+
+
+TEST_PRIVATE_NONCE = "ab" * 32
 
 
 H = "a" * 64
@@ -49,7 +53,8 @@ def _plan():
         r16_holdout_ids=[f"r16-fresh64-{i}" for i in range(64)],
         base_revision="1" * 40, base_binding_sha256=H,
         tokenizer_binding_sha256=J, corpus_manifest_sha256="c" * 64,
-        eval_custody_sha256="d" * 64, r16_eval_custody_sha256="e" * 64,
+        eval_custody_sha256="d" * 64, eval_source_manifest_sha256="f" * 64,
+        r16_eval_custody_sha256="e" * 64,
         seed=41, training_budget_seconds=100.0, probe_budget_seconds=5.0,
     )
 
@@ -172,6 +177,7 @@ def test_sealed_eval_rejects_overlap_answers_prompt_duplicate_or_r16_reuse():
         eval_index=_eval_index(), r16_holdout_ids=[f"r16-fresh64-{i}" for i in range(64)],
         base_revision="1" * 40, base_binding_sha256=H, tokenizer_binding_sha256=J,
         corpus_manifest_sha256="c" * 64, eval_custody_sha256="d" * 64,
+        eval_source_manifest_sha256="f" * 64,
         r16_eval_custody_sha256="e" * 64, seed=41,
         training_budget_seconds=100.0, probe_budget_seconds=5.0,
     )
@@ -284,7 +290,8 @@ def test_source_only_cli_preregisters_and_never_overwrites(tmp_path, capsys):
         eval_index=_eval_index(), r16_holdout_ids=[f"r16-fresh64-{i}" for i in range(64)],
         base_revision="1" * 40, base_binding_sha256=H,
         tokenizer_binding_sha256=J, corpus_manifest_sha256="c" * 64,
-        eval_custody_sha256="d" * 64, r16_eval_custody_sha256="e" * 64,
+        eval_custody_sha256="d" * 64, eval_source_manifest_sha256="f" * 64,
+        r16_eval_custody_sha256="e" * 64,
         seed=41, training_budget_seconds=100.0, probe_budget_seconds=5.0,
     )
     inputs_file = tmp_path / "admitted-source-index.json"
@@ -309,7 +316,8 @@ def test_preregister_real_labyrinth_replayed_train_only_row_shape():
         r16_holdout_ids=[f"r16-fresh64-{i}" for i in range(64)],
         base_revision="1" * 40, base_binding_sha256=H,
         tokenizer_binding_sha256=J, corpus_manifest_sha256="c" * 64,
-        eval_custody_sha256="d" * 64, r16_eval_custody_sha256="e" * 64,
+        eval_custody_sha256="d" * 64, eval_source_manifest_sha256="f" * 64,
+        r16_eval_custody_sha256="e" * 64,
         seed=41, training_budget_seconds=100.0, probe_budget_seconds=5.0,
     )
     assert plan["source_admission_status"] == "ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE"
@@ -327,8 +335,9 @@ def _custodian_fixture(tmp_path, monkeypatch):
     old16 = [f"reasoning-{'a' * 60}{i:04x}" for i in range(16)]
     r16_cases = [{"id": f"r16-{i}", "prompt": f"r16 question {i}",
                   "expected": str(i)} for i in range(64)]
-    r18_cases = [{"id": f"r18-{i}", "prompt": f"r18 question {i}",
-                  "expected": f"PRIVATE_ANSWER_{i}"} for i in range(64)]
+    r18_cases = generate_novel_r18_cases(private_nonce_hex=TEST_PRIVATE_NONCE)
+    monkeypatch.setattr("trainingday.r18_benchmark.secrets.token_hex",
+                        lambda size: TEST_PRIVATE_NONCE if size == 32 else None)
     r16_hash = hashlib.sha256("\n".join(c["id"] for c in r16_cases).encode()).hexdigest()
     train = [{"id": f"train-{i}", "family": "verified_integer_chains",
               "prompt": f"train question {i}", "answer": str(i)} for i in range(1024)]
@@ -350,15 +359,11 @@ def _custodian_fixture(tmp_path, monkeypatch):
     structural.R15_V2_MANIFEST_SHA256 = neural.R16_V2_MANIFEST_SHA256
     structural.R15_SCORED_SIGNATURE_COUNT = 13
     structural.preregister_r15_fresh_structural64 = lambda manifest, **k: {
-        "selected_count": 64, "selected_id_sha256": r16_hash,
+        "selected_count": 64, "selected_id_sha256": r16_hash, "signature_count": 64,
         "cases": r16_cases}
 
-    def fresh64(manifest, **kwargs):
-        assert len(kwargs["previously_scored_ids"]) == 80
-        assert kwargs["expected_scored_signature_count"] == 77
-        assert kwargs["expected_scored_ids_sha256"] == hashlib.sha256(
-            "\n".join(old16 + [c["id"] for c in r16_cases]).encode()).hexdigest()
-        return {"selected_count": 64, "cases": r18_cases}
+    def fresh64(*args, **kwargs):
+        raise AssertionError("v2 eval exhausted; must NEVER reselect a v2 structural bank")
 
     structural.select_structural_cases = fresh64
     monkeypatch.setitem(sys.modules, "trainingday.structural_eval", structural)
@@ -386,12 +391,24 @@ def test_cpu_custodian_seals_fresh64_excluding_all_prior80_and_public_no_answers
     plan = json.loads(kwargs["plan_output"].read_text(encoding="utf-8"))
     assert public["plan_sha256"] == validate_plan(plan)
     assert plan["eval_bank_source"] == EVAL_SOURCE
-    assert "PRIVATE_ANSWER" not in kwargs["plan_output"].read_text(encoding="utf-8")
+    assert "Start with" not in kwargs["plan_output"].read_text(encoding="utf-8")
+    assert TEST_PRIVATE_NONCE not in kwargs["plan_output"].read_text(encoding="utf-8")
+    assert TEST_PRIVATE_NONCE not in json.dumps(public)
     private = kwargs["private_output_dir"] / "r18-evaluator-sealed-private.json"
     payload = json.loads(private.read_text(encoding="utf-8"))
     assert payload["cases"] == r18_cases
+    public_source = kwargs["plan_output"].parent / "r18-external-chain6-source-manifest.json"
+    source_metadata = json.loads(public_source.read_text(encoding="utf-8"))
+    assert plan["eval_source_manifest_sha256"] == canonical_sha256(source_metadata)
+    assert source_metadata["selected_unique_signature_count"] == 64
+    assert source_metadata["protocol"] == "R18_EXTERNAL_LONG_CHAIN64_OOD_V1"
+    assert source_metadata["private_nonce_sha256"] == hashlib.sha256(
+        bytes.fromhex(TEST_PRIVATE_NONCE)).hexdigest()
+    assert TEST_PRIVATE_NONCE not in public_source.read_text(encoding="utf-8")
+    assert "Start with" not in public_source.read_text(encoding="utf-8")
+    assert payload["private_nonce_hex"] == TEST_PRIVATE_NONCE
     assert payload["eval_custody_sha256"] == canonical_sha256({
-        "manifest": plan["corpus_manifest_sha256"], "cases": r18_cases})
+        "source_manifest_sha256": plan["eval_source_manifest_sha256"], "cases": r18_cases})
     if os.name == "nt":
         owner_sid = _windows_owner_sid()
         _windows_verify_owner_only(private, owner_sid, directory=False)
