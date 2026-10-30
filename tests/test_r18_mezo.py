@@ -14,7 +14,8 @@ from trainingday.admission import AdmissionError
 from trainingday.r18_mezo import (
     BASE_REVISION, canonical_hash, direction_seed, finite_difference,
     run_fit_sweep, paired_zo_step, prepare_run, selected_id_digest, selected_rows,
-    tokenize_cases, validate_source,
+    tokenize_cases, validate_source, next_step_guard_seconds,
+    may_begin_paired_update, training_budget_status,
 )
 
 
@@ -129,6 +130,48 @@ class R18SourceTests(unittest.TestCase):
 
 
 class R18MathTests(unittest.TestCase):
+    def test_conservative_guard_checks_full_paired_step_before_start(self):
+        deadline_ns = 531 * 10**9
+        # The physical first-step probe measured 40s, requiring 62s reserved.
+        allowed, reserve, remaining = may_begin_paired_update(
+            deadline_ns - 62 * 10**9, deadline_ns, 40.0, [])
+        self.assertTrue(allowed)
+        self.assertEqual((reserve, remaining), (62.0, 62.0))
+        allowed, reserve, remaining = may_begin_paired_update(
+            deadline_ns - 61 * 10**9, deadline_ns, 40.0, [])
+        self.assertFalse(allowed)
+        # After physical training updates, use the SLOWEST actual training
+        # duration, not a faster average or the original synthetic probe.
+        self.assertEqual(next_step_guard_seconds(40.0, [20.0, 50.0, 30.0]), 77.0)
+        allowed, reserve, remaining = may_begin_paired_update(
+            deadline_ns - 76 * 10**9, deadline_ns, 40.0, [20, 50, 30])
+        self.assertFalse(allowed)
+        self.assertEqual(reserve, 77.0)
+
+    def test_guarded_sequence_leaves_unused_budget_and_cannot_claim_overrun(self):
+        deadline = 531 * 10**9
+        clock = 0
+        observed = []
+        for _ in range(20):
+            allowed, _, remaining = may_begin_paired_update(clock, deadline, 55., observed)
+            if not allowed:
+                break
+            # Simulated actual completed 50s step (no GPU, no partial step).
+            clock += 50 * 10**9
+            observed.append(50.)
+        self.assertEqual(len(observed), 10)
+        self.assertEqual(clock, 500 * 10**9)
+        self.assertEqual((deadline - clock) / 1e9, 31.0)
+        self.assertEqual(training_budget_status("correct", len(observed), 0, 0.),
+                         "TRAINED_UNSCORED")
+        self.assertEqual(training_budget_status("correct", len(observed), 0, 0.01),
+                         "TIME_BUDGET_OVERRUN_INVALID")
+        self.assertEqual(training_budget_status("correct", 0, 0, 0.),
+                         "NOT_TRAINED_INSUFFICIENT_SAFE_WINDOW")
+        self.assertEqual(training_budget_status("zero", 0, 0, 0.), "TRAINED_UNSCORED")
+        with self.assertRaisesRegex(AdmissionError, "no truthful positive"):
+            next_step_guard_seconds(float("nan"), [])
+
     def test_fit_sweep_new_process_per_preregistered_synthetic_candidate(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
