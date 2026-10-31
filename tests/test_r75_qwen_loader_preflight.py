@@ -126,6 +126,74 @@ class LoaderPreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(LoaderPreflightError, "local_files_only"):
             audit(path, expected_config_sha256=digest, source_root=self.sources)
 
+    def test_loader_symbol_cannot_be_disguised_by_alias_or_shadowing(self) -> None:
+        path, digest = self._valid()
+        source = self.sources / "trainingday" / "r18_mezo.py"
+        hostile_sources = (
+            "from transformers import Qwen3_5ForCausalLM, AutoTokenizer\n"
+            "base = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n"
+            "tok = AutoTokenizer.from_pretrained('remote', local_files_only=False)\n",
+            "from transformers import Qwen3_5ForCausalLM\n"
+            "import transformers as t\n"
+            "base = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n"
+            "other = t.models.some.Model.from_pretrained('remote', local_files_only=False)\n",
+            "from transformers import Qwen3_5ForCausalLM\n"
+            "from otherlib import ForeignModel as Model\n"
+            "base = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n"
+            "other = Model.from_pretrained('remote', local_files_only=False)\n",
+            "from transformers import Qwen3_5ForCausalLM\n"
+            "import transformers as t\n"
+            "decoy = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n"
+            "actual = t.Qwen3_5ForConditionalGeneration.from_pretrained('base', local_files_only=False)\n",
+            "from transformers import Qwen3_5ForCausalLM, Qwen3_5ForConditionalGeneration as Model\n"
+            "decoy = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n"
+            "actual = Model.from_pretrained('base', local_files_only=False)\n",
+            "from transformers import Qwen3_5ForCausalLM, AutoModelForCausalLM as Model\n"
+            "decoy = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n"
+            "actual = Model.from_pretrained('base', local_files_only=False)\n",
+            "from .transformers import Qwen3_5ForCausalLM\n"
+            "model = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n",
+            "from ..transformers import Qwen3_5ForCausalLM\n"
+            "model = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n",
+            "from transformers import Qwen3_5ForConditionalGeneration as Qwen3_5ForCausalLM\n"
+            "model = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n",
+            "from transformers import AutoModel as Qwen3_5ForCausalLM\n"
+            "model = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n",
+            "if False:\n"
+            "    from transformers import Qwen3_5ForCausalLM\n"
+            "class Qwen3_5ForCausalLM:\n"
+            "    @classmethod\n"
+            "    def from_pretrained(cls, *a, **kw): return object()\n"
+            "model = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n",
+            "from transformers import Qwen3_5ForCausalLM\n"
+            "Qwen3_5ForCausalLM = object()\n"
+            "model = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n",
+            "if False:\n"
+            "    from transformers import Qwen3_5ForCausalLM\n"
+            "model = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n",
+            "from transformers import Qwen3_5ForCausalLM\n"
+            "def load(path, Qwen3_5ForCausalLM):\n"
+            "    return Qwen3_5ForCausalLM.from_pretrained(path, local_files_only=True)\n",
+            "from transformers import Qwen3_5ForCausalLM\n"
+            "if False:\n"
+            "    model = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n",
+            "def unrelated():\n"
+            "    from transformers import Qwen3_5ForCausalLM\n"
+            "def load(path):\n"
+            "    return Qwen3_5ForCausalLM.from_pretrained(path, local_files_only=True)\n",
+            "from transformers import Qwen3_5ForCausalLM\n"
+            "import Qwen3_5ForCausalLM.submodule\n"
+            "model = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n",
+            "from transformers import Qwen3_5ForCausalLM\n"
+            "from something_unknown import *\n"
+            "model = Qwen3_5ForCausalLM.from_pretrained('base', local_files_only=True)\n",
+        )
+        for hostile in hostile_sources:
+            with self.subTest(hostile=hostile.splitlines()[0]):
+                source.write_text(hostile, encoding="utf-8")
+                with self.assertRaises(LoaderPreflightError):
+                    audit(path, expected_config_sha256=digest, source_root=self.sources)
+
     def test_symlinked_config_is_rejected(self) -> None:
         path, digest = self._valid()
         config = self.snapshot / "config.json"
