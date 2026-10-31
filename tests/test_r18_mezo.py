@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from trainingday.admission import AdmissionError
+from trainingday.r34_r18_mezo_selection_v2 import make_frozen_selection_v2
 from trainingday.r18_mezo import (
     BASE_REVISION, canonical_hash, direction_seed, finite_difference,
     run_fit_sweep, paired_zo_step, prepare_run, selected_id_digest, selected_rows,
@@ -56,7 +57,12 @@ class R18SourceTests(unittest.TestCase):
         )
         self.summary = {"selected_id_sha256": selected_id_digest(ROWS),
                         "manifest_sha256": "b" * 64,
+                        "selected_count": len(ROWS),
                         "status": "ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE"}
+        self.args.selection_v2_binding = self.root / "selection-v2-frozen.json"
+        self.args.selection_v2_binding.write_text(json.dumps(make_frozen_selection_v2(
+            plan_sha256="c" * 64, summary=self.summary, selected_rows=ROWS)),
+            encoding="utf-8")
         self.admit = patch("trainingday.r18_mezo.admit",
                            return_value=(self.summary, ROWS)).start()
         self.base = patch("trainingday.r18_mezo._required_base",
@@ -75,6 +81,7 @@ class R18SourceTests(unittest.TestCase):
     def test_source_preflight_is_read_only_and_matches_r16_selection_order(self):
         preflight, cases, path = validate_source(self.args)
         self.assertEqual(preflight["selected_id_sha256"], selected_id_digest(ROWS))
+        self.assertEqual(len(preflight["selected_id_v2_sha256"]), 64)
         self.assertEqual(path, self.root)
         self.assertEqual([x["id"] for x in cases], ["case-1", "case-2"])
         self.assertEqual(cases[0]["prompt"],
@@ -85,6 +92,27 @@ class R18SourceTests(unittest.TestCase):
                         for c in cases], sort_keys=True, ensure_ascii=False)
             .encode("utf-8")).hexdigest())
         self.assertFalse((self.output_root / self.args.run_id).exists())
+
+    def test_mezo_preflight_rejects_missing_frozen_v2_binding(self):
+        self.args.selection_v2_binding = self.root / "not-created.json"
+        with self.assertRaisesRegex(AdmissionError, "frozen V2 selection gate"):
+            validate_source(self.args)
+
+    def test_mezo_preflight_rejects_swapped_order_that_matches_legacy_sha(self):
+        # Two different selections produce the same newline-delimited digest.
+        source = [{"id": "a\nb", "family": "arithmetic", "prompt": "1 + 2?", "answer": "3"},
+                  {"id": "c", "family": "arithmetic", "prompt": "2 + 4?", "answer": "6"}]
+        mutated = [{**source[0], "id": "a"}, {**source[1], "id": "b\nc"}]
+        self.assertEqual(selected_id_digest(source), selected_id_digest(mutated))
+        self.summary = {**self.summary, "selected_id_sha256": selected_id_digest(source)}
+        self.args.selection_v2_binding.write_text(json.dumps(make_frozen_selection_v2(
+            plan_sha256="c" * 64, summary=self.summary, selected_rows=source)),
+            encoding="utf-8")
+        self.admit.stop()
+        self.admit = patch("trainingday.r18_mezo.admit",
+                           return_value=(self.summary, mutated)).start()
+        with self.assertRaisesRegex(AdmissionError, "V2 selected IDs"):
+            validate_source(self.args)
 
     def test_periodic_checkpoint_option_rejected_before_run_output(self):
         # The R18 loop only saves a final checkpoint after stopping. An
@@ -216,7 +244,8 @@ class R18MathTests(unittest.TestCase):
             plan_path = root / "plan.json"
             args = argparse.Namespace(output_root=root, run_id="fit-only",
                                       manifest=root / "manifest", base_binding=root / "binding",
-                                      plan=plan_path, work_root=root, seed=41,
+                                      plan=plan_path, selection_v2_binding=root / "v2.json",
+                                      work_root=root, seed=41,
                                       budget_seconds=531, learning_rate=.001, epsilon=.001,
                                       initial_adapter=None, initial_adapter_sha256=None,
                                       initial_adapter_config_sha256=None)
@@ -233,6 +262,8 @@ class R18MathTests(unittest.TestCase):
 
             def fake_subprocess(command, **_kwargs):
                 index = int(command[command.index("--probe-index") + 1])
+                self.assertEqual(command[command.index("--selection-v2-binding") + 1],
+                                 str(args.selection_v2_binding))
                 output = Path(command[command.index("--probe-result") + 1])
                 called.append((index, command.count("--probe-child")))
                 item = {"schema": "VERA_TRAININGDAY_R18_FIT_PROBE_V1",

@@ -34,6 +34,9 @@ from pathlib import Path
 from trainingday.admission import AdmissionError, _canonical_prompt, _hash_file, admit
 from trainingday.labyrinth_intake import SCHEMA as LABYRINTH_SCHEMA, admit_labyrinth
 from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
+from trainingday.r34_r18_mezo_selection_v2 import (
+    FrozenSelectionV2Error, verify_frozen_selection_v2,
+)
 from trainingday.train_neural import (BASE_ID, R16_PRODUCER_HEAD,
                                      R16_V2_MANIFEST_SHA256, _required_base)
 
@@ -193,12 +196,26 @@ def validate_source(args) -> tuple[dict, list[dict], Path]:
             or args.producer_git_head != R16_PRODUCER_HEAD):
         raise AdmissionError("R18 requires exact PR140 R16 v2 corpus and producer")
     plan = _validate_prereg_plan(args, summary, base, train_content_sha)
+    # The historical V1 R18 plan records a newline-joined selected-ID hash.
+    # It is ambiguous for distinct ID sequences containing newlines. New MeZO
+    # runs must check the same admitted row order against a separately frozen,
+    # typed V2 sidecar BEFORE torch import, CUDA fit, or output creation.
+    try:
+        v2_selection = verify_frozen_selection_v2(
+            binding_path=getattr(args, "selection_v2_binding", None),
+            plan_sha256=plan["_validated_plan_sha256"],
+            summary=summary, selected_rows=rows)
+    except FrozenSelectionV2Error as exc:
+        raise AdmissionError(f"R18 MeZO frozen V2 selection gate: {exc}") from exc
     preflight = {
         "schema": SCHEMA, "recipe": RECIPE, "status": "SOURCE_ONLY_PREFLIGHT",
         "arm": "mezo", "control": args.mode, "run_id": args.run_id,
         "seed": args.seed, "base_model": BASE_ID, "base_revision": base["revision"],
         "base_binding_sha256": _hash_file(args.base_binding),
         "corpus": summary, "selected_id_sha256": summary["selected_id_sha256"],
+        "selected_id_v2_schema": v2_selection["selected_id_v2_schema"],
+        "selected_id_v2_sha256": v2_selection["selected_id_v2_sha256"],
+        "frozen_v2_binding_file_sha256": v2_selection["frozen_v2_binding_file_sha256"],
         "train_content_sha256": train_content_sha,
         "corpus_manifest_sha256": summary["manifest_sha256"],
         "source_admission_status": summary["status"],
@@ -803,6 +820,7 @@ def run_fit_sweep(args, preflight: dict) -> dict:
         command = [sys.executable, "-m", "trainingday.r18_mezo", "--probe-child",
                    "--manifest", str(args.manifest), "--base-binding", str(args.base_binding),
                    "--plan", str(args.plan), "--work-root", str(args.work_root),
+                   "--selection-v2-binding", str(args.selection_v2_binding),
                    "--output-root", str(args.output_root), "--run-id", args.run_id,
                    "--mode", "zero", "--seed", str(args.seed),
                    "--budget-seconds", str(args.budget_seconds),
@@ -1171,6 +1189,8 @@ def main() -> None:
     parser.add_argument("--expected-plan-sha256")
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--plan", type=Path, required=True)
+    parser.add_argument("--selection-v2-binding", type=Path, required=True,
+                        help="Externally frozen typed selected-ID V2 sidecar; legacy-only R18 is blocked")
     parser.add_argument("--producer-git-head", default=None)
     parser.add_argument("--base-binding", type=Path, required=True)
     parser.add_argument("--work-root", type=Path, required=True)
