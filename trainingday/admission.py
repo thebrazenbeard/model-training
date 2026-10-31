@@ -32,6 +32,7 @@ HEX40 = re.compile(r"^[0-9a-f]{40}$")
 MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 MAX_JSONL_ROW_BYTES = 1024 * 1024
 MAX_JSON_DEPTH = 64
+SELECTED_ID_V2_SCHEMA = "VERA_TRAININGDAY_SELECTED_ID_DIGEST_V2"
 
 
 class AdmissionError(ValueError):
@@ -241,6 +242,15 @@ def admit(manifest_path: Path, work_root: Path, *, sample_size: int = 64) -> tup
     _require(counts["train"] >= sample_size, "insufficient admitted training rows")
     _require(counts["dev"] > 0 and counts["test"] > 0, "dev/test splits required")
     selected = [item[2] for item in sorted(sampled, key=lambda t: (-t[0], t[1]))]
+    selection_ids = [row["id"] for row in selected]
+    # V2 is a typed ordered JSON list, domain-separated from every other
+    # receipt hash. Legacy newline concatenation is collision-prone when IDs
+    # contain newlines and is retained only for older R18 consumers.
+    selected_id_v2 = hashlib.sha256(
+        SELECTED_ID_V2_SCHEMA.encode("ascii") + b"\x00"
+        + json.dumps(selection_ids, ensure_ascii=False,
+                     separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     summary = {"status": "ADMITTED_SOURCE_ONLY_NOT_TRAINED", "schema": SCHEMA,
                "corpus_id": manifest["corpus_id"], "source_commit": manifest["source_commit"],
                # Bind this receipt to the bytes actually decoded, not a later
@@ -248,6 +258,9 @@ def admit(manifest_path: Path, work_root: Path, *, sample_size: int = 64) -> tup
                "manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
                "rows_by_split": dict(counts), "licenses": dict(licenses),
                "origins": dict(origins), "selected_count": len(selected),
+               "selected_id_v2_schema": SELECTED_ID_V2_SCHEMA,
+               "selected_id_v2_sha256": selected_id_v2,
+               "selected_id_sha256_status": "LEGACY_DELIMITER_AMBIGUOUS_DO_NOT_USE_ALONE",
                "selected_id_sha256": hashlib.sha256(
-                   "\n".join(row["id"] for row in selected).encode("utf-8")).hexdigest()}
+                   "\n".join(selection_ids).encode("utf-8")).hexdigest()}
     return summary, selected

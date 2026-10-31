@@ -37,6 +37,15 @@ private bank data, authentic credentials, or GPU compute.
    bytes admitted by the parser. A concurrent producer mutation cannot
    silently change the receipt to describe a different later version. This
    is receipt fidelity, not an atomic immutable-filesystem guarantee.
+7. The ordered selection now also carries `selected_id_v2_schema` and
+   `selected_id_v2_sha256`: SHA-256 of ASCII
+   `VERA_TRAININGDAY_SELECTED_ID_DIGEST_V2`, a zero-byte separator, and the
+   UTF-8 encoding of a compact JSON array of the selected IDs in order
+   (`ensure_ascii=False`, separators `(',', ':')`). Unlike joining ID strings
+   with newlines, this is unambiguous even when IDs contain embedded newlines.
+   The existing `selected_id_sha256` is retained for R18 consumer compatibility
+   but explicitly labelled by `selected_id_sha256_status` as
+   `LEGACY_DELIMITER_AMBIGUOUS_DO_NOT_USE_ALONE`.
 
 ## Evidence / repeatability
 
@@ -54,7 +63,12 @@ A follow-up independent hostile review exposed two more production gaps:
 coerced/missing `evaluation_holdout` and manifest-receipt TOCTOU. Three new
 direct-entrypoint regressions ran RED (3 failures) before their repair, and
 the `true` holdout control already passed. After the second production change,
-**20/20 R29** and **8/8 R28** tests passed on the branch. The existing pytest-based
+20/20 R29 and 8/8 R28 passed. A further independent hostile review then
+demonstrated that two distinct, fully admitted ID lists (`['a\nb', 'c']`
+versus `['a', 'b\nc']`) collided under the legacy selection digest despite
+different manifests. Its direct-entrypoint regression ran RED (missing V2
+receipt field), then GREEN: **21/21 R29** plus **8/8 R28** tests passed.
+The existing pytest-based
 `tests/test_trainingday_admission.py` could not run in this sandbox because
 `pytest` was not installed; it remains a required upstream CI check.
 
@@ -70,3 +84,8 @@ the `true` holdout control already passed. After the second production change,
   elimination, archive supply-chain authenticity, or preemptive prevention of
   every possible non-JSON malicious input. R28's toy-only wrapper remains
   separate; independent exact-head review is required before integration.
+- Existing R18 MeZO/QLoRA/benchmark/evaluation consumers still recompute the
+  legacy newline-delimited digest; they have **not** been migrated to V2.
+  Accordingly any release or admission whose identity depends solely on that
+  legacy digest remains **source-only HOLD** until a separately owned, tested
+  consumer migration and cross-receipt verification are complete.
