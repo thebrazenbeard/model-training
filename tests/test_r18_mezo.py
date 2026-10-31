@@ -20,6 +20,8 @@ from trainingday.r18_mezo import (
     save_checkpoint,
     tokenize_cases, validate_source, next_step_guard_seconds,
     may_begin_paired_update, training_budget_status, step_timing_integrity_failure,
+    _fit_configurations, PROBE_SCHEMA, run,
+    _read_json, _read_strict_json_value,
 )
 
 
@@ -77,6 +79,97 @@ class R18SourceTests(unittest.TestCase):
             "training_budget_seconds": self.args.budget_seconds,
         }).start()
         self.addCleanup(patch.stopall)
+
+    def _fit_receipt(self, step_seconds=100.0):
+        configs = _fit_configurations()
+        plan = {"probe_budget_seconds": 120.0,
+                "primary_training_config": configs[0]}
+        self.args.plan.write_text(json.dumps(plan), encoding="utf-8")
+        digest = canonical_hash(plan)
+        preflight = {"plan_sha256": digest, "selected_fit_config": configs[0]}
+        rows = [{"schema": PROBE_SCHEMA, "arm": "mezo",
+                 "plan_sha256": digest, "candidate_index": index,
+                 "config": config, "outcome": "FIT",
+                 "fresh_process_id": f"test-{index}",
+                 "actual_padded_sequence_length": config["actual_padded_sequence_length"],
+                 "data_partition": "TRAIN_ONLY", "eval_access": False,
+                 "checkpoint_selection": False,
+                 "optimizer_step_completed": True,
+                 "elapsed_seconds": 102.0,
+                 "optimizer_step_seconds": step_seconds,
+                 "peak_cuda_allocated_bytes": 500,
+                 "peak_cuda_reserved_bytes": 600,
+                 "peak_cpu_rss_bytes": 100,
+                 "peak_nvml_used_bytes": 700,
+                 "failure_artifact_sha256": None}
+                for index, config in enumerate(configs)]
+        self.args.preflight_only = False
+        self.args.budget_seconds = 120.0
+        self.args.fit_probes_file = self.root / "fit-probes.json"
+        self.args.fit_probes_file.write_text(json.dumps(rows), encoding="utf-8")
+        self.args.fit_probe_sha256 = canonical_hash(rows)
+        return preflight, rows
+
+    def test_first_step_over_budget_rejected_without_model_loader(self):
+        preflight, rows = self._fit_receipt(100.0)
+        with patch("trainingday.r18_mezo.validate_source",
+                   return_value=(preflight, [], self.root)), \
+             patch("trainingday.r18_mezo._gpu_stack") as gpu_loader:
+            with self.assertRaisesRegex(AdmissionError, "first.*budget"):
+                run(self.args)
+            gpu_loader.assert_not_called()
+        self.assertFalse(any(self.output_root.iterdir()))
+        # Exact equality may reach the loader seam; later physical accounting
+        # still includes loading/setup before permitting an actual update.
+        self.args.budget_seconds = 152.0
+        with patch("trainingday.r18_mezo.validate_source",
+                   return_value=(preflight, [], self.root)), \
+             patch("trainingday.r18_mezo._gpu_stack",
+                   side_effect=RuntimeError("MOCK_GPU_SEAM")) as gpu_loader:
+            with self.assertRaisesRegex(RuntimeError, "MOCK_GPU_SEAM"):
+                run(self.args)
+            gpu_loader.assert_called_once()
+
+    def test_fit_receipt_duplicate_and_malformed_step_refused_before_loader(self):
+        preflight, rows = self._fit_receipt(1.0)
+        raw = self.args.fit_probes_file.read_text(encoding="utf-8")
+        duplicate = raw.replace('"optimizer_step_seconds": 1.0',
+                                '"optimizer_step_seconds": 100.0, "optimizer_step_seconds": 1.0', 1)
+        cases = [(duplicate, canonical_hash(json.loads(duplicate)))]
+        nested = raw.replace('"micro_batch_size": 1',
+                             '"micro_batch_size": 1, "micro_batch_size": 1', 1)
+        cases.append((nested, canonical_hash(json.loads(nested))))
+        nonfinite = raw.replace('"peak_nvml_used_bytes": 700',
+                                '"peak_nvml_used_bytes": 700, "opaque_nonfinite": 1e999', 1)
+        cases.append((nonfinite, canonical_hash(json.loads(nonfinite))))
+        for invalid in (True, 0, "1.0", 10**400):
+            rows[0]["optimizer_step_seconds"] = invalid
+            cases.append((json.dumps(rows), canonical_hash(rows)))
+        with patch("trainingday.r18_mezo.validate_source",
+                   return_value=(preflight, [], self.root)), \
+             patch("trainingday.r18_mezo._gpu_stack") as gpu_loader:
+            for raw_case, digest in cases:
+                with self.subTest(raw=raw_case[:80]):
+                    self.args.fit_probes_file.write_text(raw_case, encoding="utf-8")
+                    self.args.fit_probe_sha256 = digest
+                    with self.assertRaises(AdmissionError):
+                        run(self.args)
+                    gpu_loader.assert_not_called()
+
+    def test_deeply_nested_fit_and_checkpoint_json_fail_with_admission_error(self):
+        # The standard JSON decoder can raise RecursionError for otherwise
+        # syntactically balanced evidence that exceeds its recursion budget.
+        # Neither FIT custody nor checkpoint custody may leak that exception.
+        deeply_nested = "[" * 12000 + "0" + "]" * 12000
+        readers = (
+            ("fit probes", lambda path: _read_strict_json_value(path, context="fit probes")),
+            ("checkpoint", _read_json),
+        )
+        for context, reader in readers:
+            with self.subTest(context=context), \
+                    patch.object(Path, "read_text", return_value=deeply_nested):
+                with self.assertRaisesRegex(AdmissionError, f"invalid {context} JSON"):
+                    reader(self.root / "synthetic.json")
 
     def test_source_preflight_is_read_only_and_matches_r16_selection_order(self):
         preflight, cases, path = validate_source(self.args)
@@ -178,6 +271,26 @@ class R18SourceTests(unittest.TestCase):
 
 
 class R18MathTests(unittest.TestCase):
+    def test_timing_guard_rejects_spoofed_histories_and_impossible_deadlines(self):
+        for probe, history in (
+            (True, []), (float("nan"), [1.0]),
+            (1.0, [True]), (1.0, [float("inf")]),
+            (1.0, (1.0,)), (10**400, []),
+        ):
+            with self.subTest(probe=repr(probe), history=repr(history)):
+                with self.assertRaises(AdmissionError):
+                    next_step_guard_seconds(probe, history)
+        for now, deadline in ((0, 10**400),
+                              (0, 86_400 * 10**9 + 1),
+                              (2**63, 2**63 + 4 * 10**9)):
+            with self.subTest(now=str(now)[:15]):
+                with self.assertRaises(AdmissionError):
+                    may_begin_paired_update(now, deadline, 1.0, [])
+        max_ns = 2**63 - 1
+        self.assertEqual(may_begin_paired_update(max_ns - 4 * 10**9,
+                                                max_ns, 1.0, []),
+                         (True, 3.5, 4.0))
+
     def test_step_timing_fails_closed_on_suspension_like_delay_before_deadline(self):
         # An unusually slow completed step must invalidate the arm even if the
         # full run's deadline has not yet elapsed. It is not proof of sleep.
@@ -195,6 +308,15 @@ class R18MathTests(unittest.TestCase):
                          "CLOCK_DISCONTINUITY_SUSPECTED")
         with self.assertRaisesRegex(AdmissionError, "invalid step timing"):
             step_timing_integrity_failure(float("nan"), 1., 32.)
+
+    def test_step_timing_rejects_giant_integers_as_custody_errors(self):
+        for index in range(3):
+            for huge in (10**400, -(10**400)):
+                with self.subTest(index=index, sign=huge > 0):
+                    values = [1.0, 1.0, 2.0]
+                    values[index] = huge
+                    with self.assertRaisesRegex(AdmissionError, "invalid step timing"):
+                        step_timing_integrity_failure(*values)
 
     def test_conservative_guard_checks_full_paired_step_before_start(self):
         deadline_ns = 531 * 10**9
@@ -439,6 +561,36 @@ class R18ResumeTests(unittest.TestCase):
         self.assertEqual(state["completed_steps"], 8)
         (directory / "lora-trainables.safetensors").write_bytes(b"tamper")
         with self.assertRaisesRegex(AdmissionError, "custody mismatch"):
+            prepare_run(self.args, self.preflight)
+
+    def test_checkpoint_and_contract_reject_ambiguous_duplicate_keys(self):
+        directory = self.checkpoint()
+        state_path = directory / "state.json"
+        contract_path = directory.parent / "run-contract.json"
+        original_state = state_path.read_text(encoding="utf-8")
+        original_contract = contract_path.read_text(encoding="utf-8")
+        for target, original, duplicate in (
+            (state_path, '"completed_steps": 8',
+             '"completed_steps": 999, "completed_steps": 8'),
+            (state_path, '"example_presentations": 64',
+             '"example_presentations": 1, "example_presentations": 64'),
+            (contract_path, '"schema": "VERA_TRAININGDAY_R18_MEZO_RUN_CONTRACT_V1"',
+             '"schema": "WRONG", "schema": "VERA_TRAININGDAY_R18_MEZO_RUN_CONTRACT_V1"'),
+        ):
+            with self.subTest(target=target.name, original=original):
+                state_path.write_text(original_state, encoding="utf-8")
+                contract_path.write_text(original_contract, encoding="utf-8")
+                value = target.read_text(encoding="utf-8")
+                self.assertIn(original, value)
+                target.write_text(value.replace(original, duplicate, 1), encoding="utf-8")
+                self.args.resume_receipt_sha256 = hashlib.sha256(state_path.read_bytes()).hexdigest()
+                with self.assertRaisesRegex(AdmissionError, "checkpoint JSON"):
+                    prepare_run(self.args, self.preflight)
+        state_path.write_text(original_state, encoding="utf-8")
+        contract_path.write_text(original_contract.replace('"checkpoint_every": 0',
+                                                         '"checkpoint_every": NaN', 1),
+                                 encoding="utf-8")
+        with self.assertRaisesRegex(AdmissionError, "checkpoint JSON"):
             prepare_run(self.args, self.preflight)
 
     def test_contract_mismatch_blocks_resume(self):

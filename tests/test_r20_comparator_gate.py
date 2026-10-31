@@ -10,6 +10,7 @@ import tempfile
 import unittest
 
 from trainingday.r18_benchmark import canonical_sha256, make_plan, selected_id_digest
+from trainingday.r18_qlora import effective_batch_token_loss_scale
 from trainingday.r20_comparator_gate import assess_precomparison, main
 
 
@@ -83,6 +84,33 @@ def _fixture():
 
 
 class R20ComparatorGateTests(unittest.TestCase):
+    def test_synthetic_ga8_microbatch_loss_equals_mezo_target_weighted_loss(self):
+        """Uneven completion lengths cannot make QLoRA average examples equally.
+
+        Both arm formulas must reduce to the same supervised-token-weighted
+        scalar for a complete effective eight-example update; no model/eval
+        or accelerator is required to test this algebraic source contract.
+        """
+        target_counts = [1, 7, 3, 9, 2, 5, 4, 12]
+        sample_losses = [0.25, 0.9, 1.2, 0.5, 2.0, 1.25, 0.3, 1.7]
+        effective = [{"target_tokens": tokens} for tokens in target_counts]
+        denominator = sum(target_counts)
+        mezo_objective = sum(loss * tokens for loss, tokens in
+                             zip(sample_losses, target_counts)) / denominator
+        for microbatch_size in (1, 2, 4, 8):
+            with self.subTest(microbatch_size=microbatch_size):
+                qlora_objective = 0.0
+                for start in range(0, 8, microbatch_size):
+                    microbatch = effective[start:start + microbatch_size]
+                    counts = target_counts[start:start + microbatch_size]
+                    losses = sample_losses[start:start + microbatch_size]
+                    mean_loss = sum(loss * count for loss, count in
+                                    zip(losses, counts)) / sum(counts)
+                    qlora_objective += mean_loss * effective_batch_token_loss_scale(
+                        microbatch, effective)
+                self.assertAlmostEqual(qlora_objective, mezo_objective,
+                                       places=13)
+
     def _invoke_cli(self, plan, evidence):
         with tempfile.TemporaryDirectory() as temp_dir:
             plan_file = Path(temp_dir) / "plan.json"
@@ -233,6 +261,171 @@ class R20ComparatorGateTests(unittest.TestCase):
         self.assertIn("EVIDENCE_NOT_CANONICAL_JSON", report["blockers"])
         self.assertIsNone(report["declared_evidence_sha256"])
         self.assertFalse(report["authorizes_gpu_start"])
+
+    def test_ten_thousand_nested_plain_lists_are_structured_hold(self):
+        """A small-node-count deep object must not crash json.dumps hashing."""
+        plan, evidence = _fixture()
+        nested = "observation"
+        for _ in range(10_000):
+            nested = [nested]
+        evidence["additional_observations"] = nested
+        report = assess_precomparison(plan, evidence, now_unix=2000)
+        self.assertEqual(report["status"], "HOLD_MISSING_PRECOMPARISON_EVIDENCE")
+        self.assertIn("EVIDENCE_NOT_CANONICAL_JSON", report["blockers"])
+        self.assertIsNone(report["declared_evidence_sha256"])
+        self.assertFalse(report["authorizes_gpu_start"])
+
+    def test_deep_evidence_json_cli_yields_machine_readable_hold(self):
+        """The JSON decoder's own recursion limit is also fail-closed."""
+        plan, evidence = _fixture()
+        evidence["additional_observations"] = None
+        original = json.dumps(evidence)
+        encoded = '"additional_observations": null'
+        self.assertIn(encoded, original)
+        nested = "[" * 10_000 + "null" + "]" * 10_000
+        with tempfile.TemporaryDirectory() as directory:
+            plan_path = Path(directory) / "plan.json"
+            evidence_path = Path(directory) / "evidence.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            evidence_path.write_text(original.replace(encoded,
+                '"additional_observations": ' + nested), encoding="utf-8")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = main(["--plan", str(plan_path), "--evidence",
+                                  str(evidence_path), "--now-unix", "2000"])
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 2)
+        self.assertIn("EVIDENCE_NOT_CANONICAL_JSON", report["blockers"])
+        self.assertIsNone(report["declared_evidence_sha256"])
+
+    def test_depth_boundary_and_cycles_retained_as_distinct_outcomes(self):
+        plan, evidence = _fixture()
+        nested = "observation"
+        # The root evidence object has depth zero, and its observation is at
+        # depth one.  Sixty-three nested lists put this leaf at depth 64.
+        for _ in range(63):
+            nested = [nested]
+        evidence["additional_observations"] = nested
+        report = assess_precomparison(plan, evidence, now_unix=2000)
+        self.assertEqual(report["status"],
+                         "EVIDENCE_SHAPES_COMPLETE_OWNER_VERIFICATION_REQUIRED")
+        self.assertIsNotNone(report["declared_evidence_sha256"])
+
+        evidence["additional_observations"] = [nested]
+        report = assess_precomparison(plan, evidence, now_unix=2000)
+        self.assertIn("EVIDENCE_NOT_CANONICAL_JSON", report["blockers"])
+        self.assertIsNone(report["declared_evidence_sha256"])
+
+        cyclic = []
+        cyclic.append(cyclic)
+        evidence["additional_observations"] = cyclic
+        report = assess_precomparison(plan, evidence, now_unix=2000)
+        self.assertIn("EVIDENCE_NOT_CANONICAL_JSON", report["blockers"])
+        self.assertIsNone(report["declared_evidence_sha256"])
+
+    def test_numeric_subclasses_are_not_canonical_evidence(self):
+        class ForgedNumber(float):
+            def __eq__(self, other):
+                return True
+
+        class ForgedInteger(int):
+            def __eq__(self, other):
+                return True
+
+        for untrusted in (ForgedNumber(1.0), ForgedInteger(1)):
+            with self.subTest(untrusted=type(untrusted).__name__):
+                plan, evidence = _fixture()
+                evidence["additional_observations"] = {"value": untrusted}
+                report = assess_precomparison(plan, evidence, now_unix=2000)
+                self.assertEqual(report["status"],
+                                 "HOLD_MISSING_PRECOMPARISON_EVIDENCE")
+                self.assertIn("EVIDENCE_NOT_CANONICAL_JSON", report["blockers"])
+                self.assertIsNone(report["declared_evidence_sha256"])
+
+    def test_forged_mapping_get_cannot_qualify_declared_source(self):
+        plan, evidence = _fixture()
+        authentic = copy.deepcopy(evidence["source"])
+
+        class ForgedSource(dict):
+            def get(self, key, default=None):
+                return authentic.get(key, default)
+
+        evidence["source"] = ForgedSource({
+            "objective_contract": "WRONG_ON_WIRE",
+            "checkpoint_policy": "WRONG_ON_WIRE",
+        })
+        report = assess_precomparison(plan, evidence, now_unix=2000)
+        self.assertEqual(report["status"], "HOLD_MISSING_PRECOMPARISON_EVIDENCE")
+        self.assertIn("EVIDENCE_NOT_CANONICAL_JSON", report["blockers"])
+        self.assertIsNone(report["declared_evidence_sha256"])
+
+    def test_forged_controls_list_never_qualifies(self):
+        plan, evidence = _fixture()
+
+        class ForgedControls(list):
+            def __eq__(self, other):
+                return True
+
+            def __ne__(self, other):
+                return False
+
+        evidence["experiment"]["controls"] = ForgedControls(["correct"])
+        report = assess_precomparison(plan, evidence, now_unix=2000)
+        self.assertEqual(report["status"], "HOLD_MISSING_PRECOMPARISON_EVIDENCE")
+        self.assertIn("EVIDENCE_NOT_CANONICAL_JSON", report["blockers"])
+        self.assertIsNone(report["declared_evidence_sha256"])
+
+    def test_huge_now_timestamp_is_rejected_without_overflow(self):
+        plan, evidence = _fixture()
+        with self.assertRaises(ValueError):
+            assess_precomparison(plan, evidence, now_unix=10**400)
+
+    def test_boolean_budget_cannot_equal_numeric_preregistration(self):
+        plan, evidence = _fixture()
+        plan["training_budget_seconds"] = 1.0
+        plan["probe_budget_seconds"] = 0.5
+        evidence["plan_sha256"] = canonical_sha256(plan)
+        for arm in ("mezo", "qlora"):
+            evidence["experiment"][f"{arm}_budget_seconds"] = 1.0
+            evidence["experiment"][f"{arm}_probe_budget_seconds"] = 0.5
+        evidence["experiment"]["mezo_budget_seconds"] = True
+        result = assess_precomparison(plan, evidence, now_unix=2000)
+        self.assertIn("BUDGET_OR_CONTROLS_UNMATCHED", result["blockers"])
+
+    def test_plan_dict_subclass_cannot_spoof_validated_fields(self):
+        plan, evidence = _fixture()
+        authentic = copy.deepcopy(plan)
+
+        class ForgedPlan(dict):
+            def get(self, key, default=None):
+                return authentic.get(key, default)
+
+        forged = ForgedPlan(plan)
+        forged["base_model"] = "WRONG_ON_WIRE"
+        evidence["plan_sha256"] = canonical_sha256(forged)
+        with self.assertRaises(ValueError):
+            assess_precomparison(forged, evidence, now_unix=2000)
+
+    def test_cli_duplicate_evidence_keys_yield_machine_readable_hold(self):
+        plan, evidence = _fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            plan_path = Path(directory) / "plan.json"
+            evidence_path = Path(directory) / "evidence.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            plain = json.dumps(evidence)
+            original = '"controls": ["frozen", "zero", "correct", "corrupt"]'
+            self.assertIn(original, plain)
+            ambiguous = plain.replace(original,
+                '"controls": ["correct"], ' + original, 1)
+            evidence_path.write_text(ambiguous, encoding="utf-8")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                exit_code = main(["--plan", str(plan_path), "--evidence",
+                                  str(evidence_path), "--now-unix", "2000"])
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 2)
+        self.assertIn("EVIDENCE_NOT_CANONICAL_JSON", report["blockers"])
+        self.assertIsNone(report["declared_evidence_sha256"])
 
     def test_cli_nonfinite_json_input_emits_machine_readable_hold(self):
         plan, evidence = _fixture()

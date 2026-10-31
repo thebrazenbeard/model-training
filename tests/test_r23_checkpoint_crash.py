@@ -104,7 +104,8 @@ class CrashCustodyTests(unittest.TestCase):
         state_path = directory / "state.json"
         state_path.write_text(json.dumps(state), encoding="utf-8")
         self.pin_receipt(state_path)
-        with self.assertRaisesRegex(AdmissionError, "wall-time budget malformed"):
+        # Strict JSON parsing rejects NaN before resume budget validation.
+        with self.assertRaisesRegex(AdmissionError, "invalid checkpoint JSON"):
             prepare_run(self.args, self.preflight)
 
 

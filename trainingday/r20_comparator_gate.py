@@ -21,6 +21,9 @@ CHECKPOINT_POLICY = "END_ONLY_NO_RESUME"
 ABORT_POLICY = "FAIL_CLOSED_ON_OVERRUN_OR_SUSPEND"
 MAX_OBSERVATION_AGE_SECONDS = 60
 MAX_LEASE_REMAINING_SECONDS = 600
+# JSON's recursive encoder/decoder has a finite interpreter stack.  Bound
+# untrusted in-memory evidence depth before constructing its digest.
+MAX_CANONICAL_JSON_DEPTH = 64
 # Exit 0 must never be mistaken by a shell runner for GPU launch authority.
 # Exit 2 means declarations are incomplete; exit 3 means declarations are
 # internally consistent but all external owner/host authority is still absent.
@@ -29,7 +32,51 @@ EXIT_COMPLETE_DECLARATIONS_NOT_AUTHORIZED = 3
 
 
 def _part(value: object) -> Mapping:
-    return value if isinstance(value, Mapping) else {}
+    return value if type(value) is dict else {}
+
+
+def _plain_json_evidence(value: object) -> bool:
+    """Only inspect values whose Python semantics match their JSON digest.
+
+    Subclassed mappings can override ``get``; subclassed lists/strings can
+    override comparisons.  Neither may be trusted to describe the bytes later
+    canonicalized into a source-only evidence receipt.  A bounded iterative
+    walk also rejects cycles, excessive nesting, and pathological in-memory
+    evidence objects before the recursive canonical JSON encoder is reached.
+    """
+    pending = [(value, 0)]
+    visited = set()
+    inspected = 0
+    while pending:
+        current, depth = pending.pop()
+        inspected += 1
+        if inspected > 100_000 or depth > MAX_CANONICAL_JSON_DEPTH:
+            return False
+        kind = type(current)
+        if current is None or kind in (str, bool):
+            continue
+        if kind is int:
+            if current.bit_length() > 63:
+                return False
+            continue
+        if kind is float:
+            if not math.isfinite(current):
+                return False
+            continue
+        if kind in (dict, list):
+            identity = id(current)
+            if identity in visited:
+                return False
+            visited.add(identity)
+            if kind is dict:
+                if any(type(key) is not str for key in current):
+                    return False
+                pending.extend((item, depth + 1) for item in current.values())
+            else:
+                pending.extend((item, depth + 1) for item in current)
+            continue
+        return False
+    return True
 
 
 def _sha(value: object, width: int = 64) -> bool:
@@ -38,7 +85,9 @@ def _sha(value: object, width: int = 64) -> bool:
 
 
 def _number(value: object) -> bool:
-    return type(value) in (int, float) and math.isfinite(value)
+    if type(value) is int:
+        return value.bit_length() <= 63
+    return type(value) is float and math.isfinite(value)
 
 
 def _byte_count(value: object) -> bool:
@@ -52,20 +101,49 @@ def _recent(timestamp: object, now_unix: float) -> bool:
             and now_unix - timestamp <= MAX_OBSERVATION_AGE_SECONDS)
 
 
+def _load_strict_json(path: Path) -> object:
+    """Refuse ambiguous JSON before any parsed-value digest or comparison."""
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate evidence JSON key")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError(f"nonstandard evidence JSON constant: {value}")
+
+    def finite_float(value):
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError("nonfinite evidence JSON number")
+        return result
+
+    return json.loads(path.read_text(encoding="utf-8"),
+                      object_pairs_hook=unique_keys,
+                      parse_constant=reject_constant,
+                      parse_float=finite_float)
+
+
 def assess_precomparison(plan: Mapping, evidence: object, *, now_unix: float) -> dict:
     """Reject absent/mismatched proof fields; NEVER authorize optimizer execution.
 
     Every status is a *source-level* result. Even an internally complete bundle
     requires separately authenticated live host leases and an operator review.
     """
+    if type(plan) is not dict or not _plain_json_evidence(plan):
+        raise ValueError("plan must contain only plain canonical JSON values")
     plan_digest = validate_plan(plan)
     if not _number(now_unix) or now_unix <= 0:
         raise ValueError("now_unix must be a current positive timestamp")
-    e = _part(evidence)
+    plain_evidence = (type(evidence) is dict
+                      and _plain_json_evidence(evidence))
+    e = evidence if plain_evidence else {}
     source, data = _part(e.get("source")), _part(e.get("data"))
     initial, host = _part(e.get("initial")), _part(e.get("host"))
     experiment = _part(e.get("experiment"))
-    blockers = []
+    blockers = [] if plain_evidence else ["EVIDENCE_NOT_CANONICAL_JSON"]
 
     if (e.get("schema") != SCHEMA or e.get("plan_sha256") != plan_digest
             or not _sha(e.get("source_head"), 40)):
@@ -141,6 +219,9 @@ def assess_precomparison(plan: Mapping, evidence: object, *, now_unix: float) ->
 
     if (not _sha(experiment.get("fit_mezo_sha256"))
             or not _sha(experiment.get("fit_qlora_sha256"))
+            or not all(_number(experiment.get(field)) for field in (
+                "mezo_budget_seconds", "qlora_budget_seconds",
+                "mezo_probe_budget_seconds", "qlora_probe_budget_seconds"))
             or experiment.get("mezo_budget_seconds") != plan["training_budget_seconds"]
             or experiment.get("qlora_budget_seconds") != plan["training_budget_seconds"]
             or experiment.get("mezo_probe_budget_seconds") != plan["probe_budget_seconds"]
@@ -150,13 +231,14 @@ def assess_precomparison(plan: Mapping, evidence: object, *, now_unix: float) ->
             or experiment.get("controls") != ["frozen", "zero", "correct", "corrupt"]):
         blockers.append("BUDGET_OR_CONTROLS_UNMATCHED")
 
-    try:
-        declared_evidence_sha256 = canonical_sha256(e)
-    except (TypeError, ValueError):
-        # Do not replace invalid evidence with a fabricated commitment.
-        # Nonfinite numbers and unsupported Python values must yield a HOLD.
-        declared_evidence_sha256 = None
-        blockers.append("EVIDENCE_NOT_CANONICAL_JSON")
+    declared_evidence_sha256 = None
+    if plain_evidence:
+        try:
+            declared_evidence_sha256 = canonical_sha256(e)
+        except (TypeError, ValueError, RecursionError):
+            # Do not replace invalid evidence with a fabricated commitment.
+            # Nonfinite numbers and unsupported Python values must yield a HOLD.
+            blockers.append("EVIDENCE_NOT_CANONICAL_JSON")
     return {
         "schema": SCHEMA + ".report",
         "status": ("HOLD_MISSING_PRECOMPARISON_EVIDENCE" if blockers else
@@ -179,11 +261,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--now-unix", type=float, required=True)
     args = parser.parse_args(argv)
-    report = assess_precomparison(
-        json.loads(args.plan.read_text(encoding="utf-8")),
-        json.loads(args.evidence.read_text(encoding="utf-8")),
-        now_unix=args.now_unix,
-    )
+    plan = _load_strict_json(args.plan)
+    try:
+        evidence = _load_strict_json(args.evidence)
+    except (OSError, ValueError, RecursionError):
+        # A corrupt receipt is explicitly HOLD, never a last-key-wins claim.
+        evidence = None
+    report = assess_precomparison(plan, evidence, now_unix=args.now_unix)
     print(json.dumps(report, sort_keys=True))
     return (EXIT_INCOMPLETE_DECLARATIONS if report["blockers"]
             else EXIT_COMPLETE_DECLARATIONS_NOT_AUTHORIZED)
