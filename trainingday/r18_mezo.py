@@ -272,11 +272,23 @@ def next_step_guard_seconds(probe_step_seconds: float,
     against ordinary device/host variability; it is not a hard real-time
     bound, so an unexpected overrun is separately marked INVALID.
     """
+    # Validate the probe even after physical steps exist: a malformed pinned
+    # probe must never become acceptable just because the history is nonempty.
+    _required_step_seconds(probe_step_seconds)
+    if type(observed_step_seconds) is not list:
+        raise AdmissionError("malformed completed step timing history")
+    for value in observed_step_seconds:
+        _required_step_seconds(value)
     source = max(observed_step_seconds) if observed_step_seconds else probe_step_seconds
-    if not math.isfinite(source) or source <= 0 or any(
-            not math.isfinite(x) or x <= 0 for x in observed_step_seconds):
-        raise AdmissionError("no truthful positive completed step timing for budget guard")
     return 1.5 * source + 2.0
+
+
+def _required_step_seconds(value: object) -> float:
+    """A bounded primitive time, safe from custom coercion and int overflow."""
+    if (type(value) not in (int, float) or not 0 < value <= 86_400
+            or not math.isfinite(value)):
+        raise AdmissionError("no truthful positive completed step timing for budget guard")
+    return float(value)
 
 
 def may_begin_paired_update(now_monotonic_ns: int, deadline_monotonic_ns: int,
@@ -285,6 +297,10 @@ def may_begin_paired_update(now_monotonic_ns: int, deadline_monotonic_ns: int,
     """Return (start_allowed, required_seconds, remaining_seconds)."""
     if (type(now_monotonic_ns) is not int or type(deadline_monotonic_ns) is not int
             or now_monotonic_ns < 0 or deadline_monotonic_ns < now_monotonic_ns):
+        raise AdmissionError("invalid monotonic deadline/clock")
+    if (now_monotonic_ns > (1 << 63) - 1
+            or deadline_monotonic_ns > (1 << 63) - 1
+            or deadline_monotonic_ns - now_monotonic_ns > 86_400 * 10**9):
         raise AdmissionError("invalid monotonic deadline/clock")
     required = next_step_guard_seconds(probe_step_seconds, observed_step_seconds)
     remaining = (deadline_monotonic_ns - now_monotonic_ns) / 1e9
@@ -300,7 +316,9 @@ def step_timing_integrity_failure(monotonic_seconds: float, wall_seconds: float,
     A wall/monotonic divergence may also reflect OS clock adjustment, which
     invalidates clock custody for this run rather than proving a power event.
     """
-    if any(type(value) not in (int, float) or not math.isfinite(value)
+    if any(type(value) not in (int, float)
+           or (type(value) is int and not -(1 << 63) <= value <= (1 << 63) - 1)
+           or not math.isfinite(value)
            for value in (monotonic_seconds, wall_seconds, admitted_reserve_seconds)) \
             or admitted_reserve_seconds <= 0:
         raise AdmissionError("invalid step timing or admitted reserve")
@@ -506,12 +524,37 @@ def frozen_parameter_digest(model, torch) -> tuple[str, int]:
     return digest.hexdigest(), total_bytes
 
 
-def _read_json(path: Path) -> dict:
+def _read_strict_json_value(path: Path, *, context: str) -> object:
+    def unique_object_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate custody JSON key")
+            result[key] = value
+        return result
+
+    def reject_non_json_constant(value):
+        raise ValueError(f"non-JSON custody constant: {value}")
+
+    def finite_json_float(text):
+        value = float(text)
+        if not math.isfinite(value):
+            raise ValueError("nonfinite JSON numeric exponent")
+        return value
+
     try:
-        result = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise AdmissionError("invalid checkpoint JSON") from exc
-    if not isinstance(result, dict):
+        result = json.loads(path.read_text(encoding="utf-8"),
+                            object_pairs_hook=unique_object_keys,
+                            parse_constant=reject_non_json_constant,
+                            parse_float=finite_json_float)
+    except (OSError, ValueError, RecursionError) as exc:
+        raise AdmissionError(f"invalid {context} JSON") from exc
+    return result
+
+
+def _read_json(path: Path) -> dict:
+    result = _read_strict_json_value(path, context="checkpoint")
+    if type(result) is not dict:
         raise AdmissionError("checkpoint JSON not an object")
     return result
 
@@ -935,9 +978,19 @@ def run(args) -> dict:
         raise AdmissionError("training needs externally pinned full MeZO fit probe receipt")
     if not args.fit_probes_file.is_file() or args.fit_probes_file.is_symlink():
         raise AdmissionError("MeZO fit probe evidence file absent/symlinked")
-    probe_records = json.loads(args.fit_probes_file.read_text(encoding="utf-8"))
-    if (not isinstance(probe_records, list)
-            or canonical_hash(probe_records) != args.fit_probe_sha256
+    probe_records = _read_strict_json_value(args.fit_probes_file,
+                                            context="fit probe")
+    if type(probe_records) is not list or any(type(row) is not dict
+                                               for row in probe_records):
+        raise AdmissionError("fit probe JSON is not a list of records")
+    # Do not accept the canonical parsed hash until every FIT timing has been
+    # checked. Otherwise last-wins or bool-numeric evidence can misstate fit.
+    for row in probe_records:
+        if row.get("outcome") == "FIT":
+            step_seconds = row.get("optimizer_step_seconds",
+                                   row.get("elapsed_seconds"))
+            _required_step_seconds(step_seconds)
+    if (canonical_hash(probe_records) != args.fit_probe_sha256
             or not all(row.get("schema") == PROBE_SCHEMA
                        and row.get("plan_sha256") == preflight["plan_sha256"]
                        and row.get("arm") == "mezo" for row in probe_records)
@@ -952,7 +1005,8 @@ def run(args) -> dict:
     # probes have total load+step time, a larger conservative first-step proxy.
     first_step_reference_seconds = primary_probe.get(
         "optimizer_step_seconds", primary_probe["elapsed_seconds"])
-    next_step_guard_seconds(first_step_reference_seconds, [])
+    if next_step_guard_seconds(first_step_reference_seconds, []) > args.budget_seconds:
+        raise AdmissionError("first paired MeZO update cannot fit training budget")
     if args.resume_checkpoint:
         raise AdmissionError("resumed process cannot satisfy strict single-window R18 budget custody")
     # GPU-heavy load occurs strictly after full manifest, rights and pin gates.

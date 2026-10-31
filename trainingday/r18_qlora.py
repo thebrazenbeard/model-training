@@ -108,16 +108,21 @@ def next_step_guard_seconds(completed_step_seconds: list[float]) -> float:
     conservative predictor, not a guarantee against an unexpected slow step:
     any actual deadline breach remains a failed, non-comparable run.
     """
+    if type(completed_step_seconds) is not list:
+        raise ValueError("R18 step guard requires a primitive completed-step list")
     if not completed_step_seconds:
         return 120.0
-    if any(type(x) not in (int, float) or x <= 0 for x in completed_step_seconds):
-        raise ValueError("R18 step guard requires positive completed-step timings")
+    if any(not _valid_seconds(x) for x in completed_step_seconds):
+        raise ValueError("R18 step guard requires finite positive bounded completed-step timings")
     return max(30.0, 1.5 * max(completed_step_seconds) + 2.0)
 
 
 def may_start_full_step(remaining_seconds: float,
                         completed_step_seconds: list[float]) -> bool:
     """A partial GA8 update is never an admitted use of the time budget."""
+    if (type(remaining_seconds) not in (int, float)
+            or not (-86400 <= remaining_seconds <= 86400)):
+        raise ValueError("R18 remaining budget must be a finite bounded number")
     return remaining_seconds >= next_step_guard_seconds(completed_step_seconds)
 
 

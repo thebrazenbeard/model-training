@@ -279,6 +279,37 @@ class QloraContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "positive"):
             q.next_step_guard_seconds([0.0])
 
+    def test_step_guard_rejects_nonfinite_and_spoofed_clock_evidence(self):
+        class FakeFloat(float):
+            pass
+
+        class FakeHistory(list):
+            pass
+
+        for history in (
+            [float("nan")], [float("inf")], [float("-inf")],
+            [True], [False], ["1.0"], [FakeFloat(1.0)],
+            [10**400], [86401.0], FakeHistory([]), (), "1.0",
+        ):
+            with self.subTest(history=repr(history)[:60]):
+                with self.assertRaises(ValueError):
+                    q.next_step_guard_seconds(history)
+                with self.assertRaises(ValueError):
+                    q.may_start_full_step(120.0, history)
+
+        for remaining in (
+            float("nan"), float("inf"), float("-inf"),
+            True, False, "120.0", FakeFloat(120.0), 10**400,
+        ):
+            with self.subTest(remaining=repr(remaining)[:60]):
+                with self.assertRaises(ValueError):
+                    q.may_start_full_step(remaining, [])
+
+        self.assertFalse(q.may_start_full_step(-1.0, []))
+        self.assertFalse(q.may_start_full_step(0.0, []))
+        self.assertFalse(q.may_start_full_step(119.999, []))
+        self.assertTrue(q.may_start_full_step(120.0, []))
+
     def test_effective_batch_token_objective_matches_mezo_for_variable_targets(self):
         # MeZO's reference is token-weighted across the entire eight-example
         # update. A flat 1/GA8 scale is wrong when completion lengths differ.
