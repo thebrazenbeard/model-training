@@ -229,6 +229,9 @@ def _check_base_unchanged(binding: Path, expected_sha256: str,
 
 
 def validate_run(args) -> tuple[dict, list[dict], dict, Path]:
+    if (type(args.steps) is not int or type(args.cases) is not int
+            or type(args.seed) is not int):
+        raise AdmissionError("steps, cases, and seed must be exact integers")
     step_cap = 32 if _r16(args) else 8
     if not (args.mode == "zero" and args.steps == 0
             or args.mode in {"correct", "corrupt"} and 1 <= args.steps <= step_cap):

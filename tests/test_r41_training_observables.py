@@ -14,7 +14,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from trainingday.admission import AdmissionError
-from trainingday.train_neural import BASE_REVISION, _parameter_digest, _required_base, train
+from trainingday.train_neural import (BASE_REVISION, _parameter_digest,
+                                      _required_base, train, validate_run)
 from test_r39_reload_proof import _Tensor, _Model, _fake_runtime
 
 
@@ -38,6 +39,29 @@ def _args(root: Path, *, mode: str = "zero", steps: int = 0) -> argparse.Namespa
 
 
 class R41ControlSourceTests(unittest.TestCase):
+    def test_boolean_numeric_api_inputs_cannot_masquerade_as_integer_controls(self):
+        # argparse's CLI type=int protects the command line, not direct callers
+        # of validate_run()/train() through the Python API.
+        for key, bad_value in (("steps", True), ("cases", True), ("seed", True)):
+            with self.subTest(key=key):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    args = (_args(root, mode="zero", steps=0) if key == "cases"
+                            else _args(root, mode="correct", steps=1))
+                    args.manifest = root / "manifest.json"
+                    args.manifest.write_text(json.dumps({"schema": "synthetic"}), encoding="utf-8")
+                    args.work_root = root
+                    setattr(args, key, bad_value)
+                    selected = [{"id": "case-1", "family": "arithmetic",
+                                 "prompt": "Compute 1+1", "answer": "2"}]
+                    with patch("trainingday.train_neural.admit", return_value=(
+                        _SUMMARY, selected,
+                    )), patch("trainingday.train_neural._required_base", return_value=(
+                        {"model_id": "Qwen/Qwen3.5-4B", "revision": BASE_REVISION}, root,
+                    )):
+                        with self.assertRaisesRegex(AdmissionError, "integer"):
+                            validate_run(args)
+
     def test_zero_preflight_exposes_frozen_control_source_commitment(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
