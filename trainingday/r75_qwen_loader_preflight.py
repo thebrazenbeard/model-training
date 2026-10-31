@@ -90,22 +90,99 @@ def _source_loader(path: Path) -> tuple[str, str]:
     except (SyntaxError, UnicodeError, ValueError, RecursionError) as exc:
         raise LoaderPreflightError("runner source cannot be parsed") from exc
 
-    imported = set()
+    # This is a deliberately narrow *source declaration* check. AST Name.id
+    # alone is not an imported class identity: an alias can hide a different
+    # Transformers model, and any later local binding can shadow an import.
+    # Require one literal, unaliased import in an unconditional lexical suite.
+    parents = {id(child): node for node in ast.walk(tree)
+               for child in ast.iter_child_nodes(node)}
+
+    def lexical_scope(node: ast.AST) -> ast.AST:
+        parent = parents.get(id(node))
+        while parent is not None and not isinstance(
+                parent, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            parent = parents.get(id(parent))
+        return parent if parent is not None else tree
+
+    imports: list[ast.ImportFrom] = []
+    transformers_symbols: set[str] = set()
+    peft_symbols: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "transformers":
-            imported.update((alias.asname or alias.name) for alias in node.names)
+        if isinstance(node, ast.Name) and node.id == RUNNER_LOADER and isinstance(
+                node.ctx, (ast.Store, ast.Del)):
+            raise LoaderPreflightError("runner loader name has a local rebinding")
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
+                and node.name == RUNNER_LOADER:
+            raise LoaderPreflightError("runner loader name is locally defined")
+        if isinstance(node, ast.arg) and node.arg == RUNNER_LOADER:
+            raise LoaderPreflightError("runner loader name is a function parameter")
+        if isinstance(node, ast.ExceptHandler) and node.name == RUNNER_LOADER:
+            raise LoaderPreflightError("runner loader name is an exception binding")
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if isinstance(node, ast.ImportFrom) and alias.name == "*":
+                    raise LoaderPreflightError("wildcard import cannot preserve loader provenance")
+                bound_name = (alias.asname or (alias.name.split(".")[0]
+                                             if isinstance(node, ast.Import) else alias.name))
+                if isinstance(node, ast.ImportFrom) and node.module == "transformers":
+                    if node.level == 0:
+                        transformers_symbols.add(bound_name)
+                    if (alias.name.startswith(("Qwen3_5For", "AutoModel"))
+                            and (alias.name != RUNNER_LOADER or alias.asname is not None
+                                 or node.level != 0)):
+                        raise LoaderPreflightError("unexpected source loader transformers model import")
+                if (isinstance(node, ast.ImportFrom) and node.module == "peft"
+                        and node.level == 0 and alias.name == "PeftModel"
+                        and alias.asname is None):
+                    peft_symbols.add("PeftModel")
+                if bound_name != RUNNER_LOADER:
+                    continue
+                if (not isinstance(node, ast.ImportFrom)
+                        or node.module != "transformers"
+                        or node.level != 0
+                        or alias.name != RUNNER_LOADER
+                        or alias.asname is not None):
+                    raise LoaderPreflightError("runner loader import is disguised or foreign")
+                scope = lexical_scope(node)
+                if (not isinstance(scope, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef))
+                        or node not in scope.body):
+                    raise LoaderPreflightError("runner loader import is conditional or nested")
+                imports.append(node)
+
+    if len(imports) != 1:
+        raise LoaderPreflightError("source loader requires one unaliased transformers import")
 
     model_loads = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "from_pretrained"
-                and isinstance(node.func.value, ast.Name)):
+                and node.func.attr == "from_pretrained"):
             continue
+        if not isinstance(node.func.value, ast.Name):
+            raise LoaderPreflightError("unexpected source loader nested pretrained call")
         name = node.func.value.id
-        if not (name.startswith("Qwen3_5For") or name.startswith("AutoModel")):
+        if name == "AutoTokenizer":
+            local_flags = [kw.value for kw in node.keywords if kw.arg == "local_files_only"]
+            if (name not in transformers_symbols or len(local_flags) != 1
+                    or not isinstance(local_flags[0], ast.Constant)
+                    or local_flags[0].value is not True):
+                raise LoaderPreflightError("tokenizer pretrained load is not statically offline")
             continue
-        if name not in imported:
-            raise LoaderPreflightError("model source loader not imported from transformers")
+        if name == "PeftModel" and name in peft_symbols:
+            # An adapter load is not a second base-model load. Its bytes and
+            # path require separate custody; this AST check cannot attest them.
+            continue
+        if name != RUNNER_LOADER:
+            raise LoaderPreflightError("unexpected model source loader")
+        call_scope = lexical_scope(node)
+        declaration_scope = lexical_scope(imports[0])
+        direct_stmt = parents.get(id(node))
+        if (not isinstance(call_scope, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef))
+                or not isinstance(direct_stmt, (ast.Assign, ast.AnnAssign, ast.Return, ast.Expr))
+                or getattr(direct_stmt, "value", None) is not node
+                or direct_stmt not in call_scope.body
+                or declaration_scope not in (call_scope, tree)
+                or imports[0].lineno >= node.lineno):
+            raise LoaderPreflightError("runner loader call is conditional, nested, or unbound")
         local_flags = [kw.value for kw in node.keywords if kw.arg == "local_files_only"]
         if len(local_flags) != 1 or not isinstance(local_flags[0], ast.Constant) or local_flags[0].value is not True:
             raise LoaderPreflightError("model loader does not statically require local_files_only=True")
