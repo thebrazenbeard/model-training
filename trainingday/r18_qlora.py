@@ -390,6 +390,13 @@ def _is_oom(exc: BaseException) -> bool:
             or "cuda error: memory allocation" in message)
 
 
+def _require_finite_trainables(model, torch) -> None:
+    """Fail closed on any nonfinite updated adapter before step/fit credit."""
+    for name, param in model.named_parameters():
+        if param.requires_grad and not bool(torch.isfinite(param.detach()).all().item()):
+            raise RuntimeError(f"R18 nonfinite FP32 trainable: {name}")
+
+
 def probe_worker(args) -> dict:
     """A single synthetic, full-tensor-length optimizer step in a child process."""
     result = {"max_seq_length": args.probe_seq, "micro_batch_size": args.probe_batch,
@@ -420,6 +427,7 @@ def probe_worker(args) -> dict:
             raise RuntimeError("non-finite synthetic probe loss")
         loss.backward()
         optimizer.step()  # Exercise actual nonpaged 8-bit optimizer allocation.
+        _require_finite_trainables(model, torch)
         optimizer.zero_grad(set_to_none=True)
         allocated, reserved = _cuda_peak(torch)
         result.update(status="FIT", peak_cuda_allocated_bytes=allocated,
@@ -534,6 +542,7 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
     accumulation = chosen["gradient_accumulation"]
     if batch_size * accumulation != 8:
         raise RuntimeError("R18 effective batch size is not eight")
+    _require_finite_trainables(model, torch)
     before, count = _parameter_digest(model, torch)
     initial_fp32 = {name: param.detach().to(device="cpu", dtype=torch.float32).clone()
                     for name, param in model.named_parameters() if param.requires_grad}
@@ -587,6 +596,7 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                 # CUDA work is asynchronous; timing must cover a *completed*
                 # backward/optimizer update before predicting the next one.
                 torch.cuda.synchronize()
+                _require_finite_trainables(model, torch)
                 completed_step_seconds.append(
                     (time.perf_counter_ns() - step_started_ns) / 1e9)
                 steps += 1
@@ -626,6 +636,7 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
         raise RuntimeError("R18 strict equal-time deadline exceeded by completed step")
     if args.control in {"correct", "corrupt"} and steps == 0:
         raise RuntimeError("R18 fail-closed: no complete optimizer step fits training budget")
+    _require_finite_trainables(model, torch)
     after, count_after = _parameter_digest(model, torch)
     delta_squared = 0.
     delta_max = 0.

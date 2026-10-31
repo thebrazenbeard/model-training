@@ -342,6 +342,17 @@ def _restore_trainables(tensors, torch, saved) -> None:
             p.copy_(saved[name])
 
 
+def _require_finite_trainables(tensors, torch) -> None:
+    """Do not attest or count a LoRA update with NaN/Inf parameter values."""
+    # Older CPU source-only tests pass torch=None and scalar dictionaries to
+    # exercise perturbation/restoration; the physical caller always has torch.
+    if torch is None:
+        return
+    for name, p in tensors:
+        if not bool(torch.isfinite(p.detach()).all().item()):
+            raise RuntimeError(f"R18 nonfinite FP32 trainable: {name}")
+
+
 def paired_zo_step(tensors, torch, *, seed: int, epsilon: float,
                    learning_rate: float, loss_fn) -> tuple[float, float, float]:
     """Exact two-sided finite-difference update; restoration on loss failure.
@@ -349,6 +360,7 @@ def paired_zo_step(tensors, torch, *, seed: int, epsilon: float,
     The loss_fn must evaluate the same effective sample set under each sign
     and return target-token-weighted cross entropy. It does NOT call backward.
     """
+    _require_finite_trainables(tensors, torch)
     original = _snapshot_trainables(tensors)
     try:
         _noise_delta(tensors, torch, seed, epsilon)
@@ -362,7 +374,14 @@ def paired_zo_step(tensors, torch, *, seed: int, epsilon: float,
     derivative = finite_difference(plus, minus, epsilon)
     if derivative == 0.0:
         raise RuntimeError("zero directional difference; no real update attested")
-    _noise_delta(tensors, torch, seed, -learning_rate * derivative)
+    try:
+        _noise_delta(tensors, torch, seed, -learning_rate * derivative)
+        _require_finite_trainables(tensors, torch)
+    except Exception:
+        # The original CPU snapshots still exist; reject and restore this
+        # candidate rather than allowing a poisonous adapter checkpoint.
+        _restore_trainables(tensors, torch, original)
+        raise
     return plus, minus, derivative
 
 
@@ -440,6 +459,7 @@ def paired_batch_loss(model, torch, tokenizer, selected: list[dict],
 
 
 def parameter_attestation(tensors, torch, initial=None):
+    _require_finite_trainables(tensors, torch)
     digest = hashlib.sha256()
     changed, delta_sq, total = 0, 0.0, 0
     capture = {} if initial is None else None
