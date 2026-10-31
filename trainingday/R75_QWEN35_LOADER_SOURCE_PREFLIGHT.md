@@ -35,8 +35,13 @@ python -m trainingday.r75_qwen_loader_preflight \
 The audit requires the expected revision, ID, loader, a regular bounded local
 `config.json`, a matching producer-declared SHA, a matching separately
 provided SHA, and an exact observed full-model architecture/config family.
-It parses each source AST to require one explicit `Qwen3_5ForCausalLM`
-`from_pretrained` model call with `local_files_only=True` in both R18 arms.
+It parses each source AST to require one literal, unaliased
+`from transformers import Qwen3_5ForCausalLM` statement in an unconditional
+module/function suite and one direct `Qwen3_5ForCausalLM.from_pretrained`
+model call with `local_files_only=True` in both R18 arms. It fails closed
+on static shadow bindings, misleading class aliases, and conditional/nested
+import or loader statements. This is deliberately narrower than general
+Python loader syntax; alternate valid source layouts require a new review.
 It reports the two source SHA-256 values, installed distribution metadata if
 available, and the source-declaration mismatch. It does not print local file
 paths or read model weight shards.
