@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +16,7 @@ from trainingday.admission import AdmissionError
 from trainingday.r18_mezo import (
     BASE_REVISION, canonical_hash, direction_seed, finite_difference,
     run_fit_sweep, paired_zo_step, prepare_run, selected_id_digest, selected_rows,
+    save_checkpoint,
     tokenize_cases, validate_source, next_step_guard_seconds,
     may_begin_paired_update, training_budget_status,
 )
@@ -43,7 +46,7 @@ class R18SourceTests(unittest.TestCase):
             output_root=self.output_root, run_id="r18-correct", mode="correct",
             steps=8, cases=2, seed=41, learning_rate=1e-3, epsilon=1e-3,
             micro_batch_size=1, examples_per_update=8, max_seq_length=512,
-            budget_seconds=531.0, checkpoint_every=8,
+            budget_seconds=531.0, checkpoint_every=0,
             expected_initial_digest="a" * 64, fit_probe_sha256=None,
             preflight_only=True, fit_sweep_only=False,
             sweep_batches=[1], sweep_lengths=[64, 128, 256, 384, 512, 768, 1024],
@@ -82,6 +85,23 @@ class R18SourceTests(unittest.TestCase):
                         for c in cases], sort_keys=True, ensure_ascii=False)
             .encode("utf-8")).hexdigest())
         self.assertFalse((self.output_root / self.args.run_id).exists())
+
+    def test_periodic_checkpoint_option_rejected_before_run_output(self):
+        # The R18 loop only saves a final checkpoint after stopping. An
+        # interval of eight must not be accepted as a recoverability promise.
+        self.args.checkpoint_every = 8
+        with self.assertRaisesRegex(AdmissionError, "periodic.*unsupported"):
+            validate_source(self.args)
+        self.assertFalse((self.output_root / self.args.run_id).exists())
+
+    def test_resume_option_rejected_during_source_preflight(self):
+        # A resume flag must not pass preflight and then be rejected only once
+        # the GPU run has already progressed to the expensive setup stage.
+        self.args.checkpoint_every = 0
+        self.args.resume_checkpoint = self.root / "old-checkpoint"
+        self.args.resume_receipt_sha256 = "c" * 64
+        with self.assertRaisesRegex(AdmissionError, "resume.*unsupported"):
+            validate_source(self.args)
 
     def test_corrupt_control_uses_same_ids_but_changes_labels(self):
         correct, _, _ = validate_source(self.args)
@@ -337,7 +357,7 @@ class R18ResumeTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.args = argparse.Namespace(output_root=self.root, run_id="mezo-resume",
-                                       checkpoint_every=8, steps=16,
+                                       checkpoint_every=0, steps=16,
                                        expected_initial_digest="a" * 64,
                                        resume_checkpoint=None,
                                        resume_receipt_sha256=None,
@@ -376,6 +396,29 @@ class R18ResumeTests(unittest.TestCase):
         self.checkpoint()
         self.preflight["selected_id_sha256"] = "c" * 64
         with self.assertRaisesRegex(AdmissionError, "contract unsafe"):
+            prepare_run(self.args, self.preflight)
+
+    def test_interrupted_final_checkpoint_cannot_be_reused_as_complete_run(self):
+        output, contract, _, _, _ = prepare_run(self.args, self.preflight)
+
+        def crash_mid_serialization(_data, path):
+            Path(path).write_bytes(b"incomplete-safetensors")
+            raise InterruptedError("simulated disk interruption")
+
+        fake_torch_submodule = types.ModuleType("safetensors.torch")
+        fake_torch_submodule.save_file = crash_mid_serialization
+        fake_torch_package = types.ModuleType("safetensors")
+        fake_torch_package.torch = fake_torch_submodule
+        with patch.dict(sys.modules, {"safetensors": fake_torch_package,
+                                      "safetensors.torch": fake_torch_submodule}):
+            with self.assertRaisesRegex(InterruptedError, "disk interruption"):
+                save_checkpoint(output, [], object(), contract, 1, 10.0, {})
+
+        partial = output / "checkpoint-1"
+        self.assertTrue((partial / "lora-trainables.safetensors").exists())
+        self.assertFalse((partial / "state.json").exists())
+        self.assertFalse((output / "r18-mezo-receipt.json").exists())
+        with self.assertRaisesRegex(AdmissionError, "already occupied"):
             prepare_run(self.args, self.preflight)
 
 

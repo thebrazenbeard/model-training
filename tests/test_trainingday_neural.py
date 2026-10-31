@@ -20,7 +20,7 @@ def _base(tmp_path):
         files[name] = hashlib.sha256(content).hexdigest()
     binding = tmp_path / "base-binding.json"
     binding.write_text(json.dumps({"schema": "TRAININGDAY_PINNED_BASE_V1",
-                                   "model_id": "Qwen/Qwen3.5-4B", "revision": "c" * 40,
+                                   "model_id": "Qwen/Qwen3.5-4B", "revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
                                    "loader_class": "Qwen3_5ForCausalLM",
                                    "quantization": "NF4_DOUBLE_BF16",
                                    "snapshot_path": str(root), "files": files}))

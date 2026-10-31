@@ -373,6 +373,19 @@ def validate_arm_receipt(receipt: Mapping, plan: Mapping, *,
         _check(_integer(receipt.get(key)), f"invalid arm counter {key}")
     _check(receipt["peak_cuda_reserved_bytes"] >= receipt["peak_cuda_allocated_bytes"],
            "GPU allocated memory exceeds reserved memory")
+    _check(receipt.get("peak_cuda_metric_scope") ==
+           "PRIMARY_TRAIN_PROCESS_AFTER_SETUP_RESET",
+           "training CUDA peak mixed with synthetic fit probes or missing scope")
+    _check(receipt.get("peak_nvml_metric_scope") in
+           {"SAMPLED_NVML", "UNAVAILABLE_NOT_ESTIMATED"},
+           "NVML physical observation scope missing or invented")
+    _check((receipt["peak_nvml_used_bytes"] > 0
+            if receipt["peak_nvml_metric_scope"] == "SAMPLED_NVML"
+            else receipt["peak_nvml_used_bytes"] == 0),
+           "NVML peak contradicts measured or unavailable observation scope")
+    _check(receipt.get("peak_cpu_rss_metric_scope") in
+           {"TRAINING_WINDOW_SAMPLED_RSS", "PROCESS_LIFETIME_PEAK_OR_CURRENT_RSS"},
+           "CPU RSS peak observation scope missing")
     _check(receipt["unique_examples_seen"] <= plan["selected_count"]
            and receipt["unique_examples_seen"] <= receipt["example_presentations"]
            and receipt["supervised_target_tokens"] <= receipt["input_tokens_presented"],
@@ -526,6 +539,7 @@ def compare_arms(plan: Mapping, receipts: Sequence[Mapping],
               "plan_sha256": validate_plan(plan),
               "decision": "NO_MODEL_PROMOTION_INDEPENDENT_REPLICATION_REQUIRED",
               "fresh_eval_bank": True, "control_arms_verified": 8,
+              "physical_vram_residency": "UNVERIFIED_BY_ALLOCATOR_OR_SAMPLED_NVML",
               "method_metrics": {}}
     for arm in ARMS:
         rec = keyed[(arm, "correct")]
@@ -550,8 +564,18 @@ def compare_arms(plan: Mapping, receipts: Sequence[Mapping],
             "optimizer_steps": rec["optimizer_steps"],
             "peak_cuda_allocated_bytes": rec["peak_cuda_allocated_bytes"],
             "peak_cuda_reserved_bytes": rec["peak_cuda_reserved_bytes"],
+            "peak_cuda_metric_scope": rec["peak_cuda_metric_scope"],
             "peak_nvml_used_bytes": rec["peak_nvml_used_bytes"],
+            "peak_nvml_metric_scope": rec["peak_nvml_metric_scope"],
             "peak_cpu_rss_bytes": rec["peak_cpu_rss_bytes"],
+            "peak_cpu_rss_metric_scope": rec["peak_cpu_rss_metric_scope"],
+            "fit_probe_peak_cuda_allocated_bytes": max(
+                (p["peak_cuda_allocated_bytes"] for p in probes if p["arm"] == arm), default=0),
+            "fit_probe_peak_cuda_reserved_bytes": max(
+                (p["peak_cuda_reserved_bytes"] for p in probes if p["arm"] == arm), default=0),
+            "fit_probe_peak_cpu_rss_bytes": max(
+                (p["peak_cpu_rss_bytes"] for p in probes if p["arm"] == arm), default=0),
+            "fit_probe_memory_scope": "ISOLATED_SYNTHETIC_FRESH_PROCESSES",
             "max_fit_frontier": fit[arm]["max_fit_config"],
             "productive_primary_shape": plan["primary_training_config"],
         }

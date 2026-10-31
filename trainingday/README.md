@@ -1,9 +1,10 @@
 # VERA::TRAININGDAY — neural training lane (source candidate)
 
-**Scope:** `thebrazenbeard/model-training`, branch
-`trainingday/neural-runner-r14-20261029`. Independent corpus-builder lane:
-`thebrazenbeard/labyrinth` Draft PR #59 at exact inspected head
-`188d3340e4498e69d8c54d66ebee9dabd6582d31`.
+**Scope:** `thebrazenbeard/model-training` source candidate. Independent
+corpus-builder lane: `thebrazenbeard/labyrinth`. The earlier inspected
+Draft PR #59 at `188d3340e4498e69d8c54d66ebee9dabd6582d31` is a
+historical reference, **not** an automatically authorized current producer.
+Reconfirm the intended producer PR/head and exact corpus before every pilot.
 Coordination: https://github.com/thebrazenbeard/chat-communication-bus/issues/404 .
 
 This code **does not train by being imported**. Its tests are CPU-only and
@@ -46,14 +47,20 @@ its parent corpus provenance is held for release. This runner creates a
 fresh, separate `r=4`, `all-linear` LoRA under NF4 double quant/BF16 compute,
 nonpaged AdamW8bit, with trainable FP32 tensors and completion-only loss.
 
-The base binding JSON (`TRAININGDAY_PINNED_BASE_V1`) requires model ID, exact
-40-hex revision, text-only loader class, quantization policy, absolute local
-snapshot path and SHA-256 for each base file (including every safetensors
-shard, `config.json`, and `tokenizer_config.json`). The binding is a custody
+The base binding JSON (`TRAININGDAY_PINNED_BASE_V1`) requires model ID, the
+explicit source-pinned revision above, text-only loader class, quantization
+policy, absolute local snapshot path and SHA-256 for **every** regular snapshot
+file, including nested tokenizer/templates, weights and configuration. Unbound
+files and symlinked snapshot or binding ancestors are rejected. The binding is a custody
 claim: independently verify the Hugging Face download revision and local
 file hashes before approval. Do not fabricate this binding for an absent base.
 
-Match controls on source manifest, selected IDs, base revision and seed:
+Match controls on source manifest, selected IDs, prompts, base binding and seed.
+The zero arm emits a `control_source_sha256` commitment. Each R15 trained arm
+must supply that value as `--expected-control-source-sha256` in addition to
+the zero arm's `--expected-initial-digest`. This checks equality against the
+operator-frozen control source; it does not independently authenticate the
+producer, rights, host, or control-arm execution.
 
 - `zero`, 0 optimizer steps: save initialized LoRA and record FP32 digest.
 - `correct`, 1–8 steps: require the **exact zero-arm initial digest** and
@@ -62,30 +69,31 @@ Match controls on source manifest, selected IDs, base revision and seed:
   the same initial digest and a separate saved adapter. An improvement also
   found in this arm does not prove reasoning learning.
 
-Example *source preflight* (replace with **existing**, verified paths; it
-loads no GPU and does not train):
+Example *source preflight* using generic verified paths (loads no GPU and does
+not train). The selected producer revision below is only an example argument:
 
-```powershell
-& 'C:\ProgramData\ProRun\model-env\Scripts\python.exe' -m trainingday.train_neural `
-  --manifest D:\VERA\scratch\trainingday-corpus-20261029\corpus-v1-100k\manifest.json `
-  --producer-git-head 188d3340e4498e69d8c54d66ebee9dabd6582d31 `
-  --base-binding D:\VERA\.scratch\trainingday-neural-r14-20261029\base-binding.json `
-  --work-root D:\VERA\.scratch\trainingday-neural-r14-20261029 `
-  --output-root D:\VERA\.scratch\trainingday-neural-r14-20261029 `
-  --run-id zero-r14a --mode zero --steps 0 --cases 64 --preflight-only
+```bash
+python -m trainingday.train_neural \
+  --manifest "<verified-corpus-manifest>" \
+  --producer-git-head "<verified-producer-commit-sha>" \
+  --base-binding "<verified-base-binding.json>" \
+  --work-root "<isolated-work-root>" \
+  --output-root "<isolated-output-root>" \
+  --run-id zero-example --mode zero --steps 0 --cases 64 --preflight-only
 ```
 
 Remove `--preflight-only` only after every source and host gate passes. The
-Lappy GPU has 4 GiB VRAM; source enforces >=3900 MiB capacity, >=3500 MiB
-runtime-free VRAM, and >=9 GiB free system RAM. Pausing Ollama/PreActive is
-authorized by Patrick for this training work, provided process identity and
-restart state are read back, service restoration is verified, and unrelated
-jobs remain untouched. Do not disable protections, delete model caches, or
-reuse an output run ID. A failed run's files remain for forensics.
+source enforces at least 3900 MiB GPU capacity, 3200 MiB torch-visible free
+VRAM, and 9 GiB available system RAM. Host ownership, GPU exclusivity,
+temperature/power budget, cancellation and restoration require separate live
+authorization and verification. Do not stop unrelated workloads, disable
+protections, delete model caches, or reuse an output run ID. Preserve failed
+run artifacts for forensics.
 
 ## Evidence ceiling
 
-The in-job receipt records manifest hash, selected-ID hash, mode-specific
+The in-job receipt records the frozen control-source digest, manifest hash,
+selected-ID hash, mode-specific
 training-input hash, base revision, FP32 before/after digest, optimizer steps,
 save hashes and runtime. Its status is deliberately
 `ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED` until a separate fresh-process

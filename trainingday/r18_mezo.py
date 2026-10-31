@@ -8,6 +8,11 @@ applies an actual weight update. No autograd/gradient surrogate is used.
 
 Import/preflight is CPU-only. A CUDA run requires explicit operator authority;
 this module does not pause services, reserve GPUs, or invoke evaluation.
+
+Checkpoint custody for this strict single-window experiment is FINAL-ONLY:
+periodic saving and cross-process resume are intentionally unsupported. The
+deprecated --checkpoint-every option accepts only 0, refusing to promise
+recoverability that the optimizer loop cannot provide.
 """
 
 from __future__ import annotations
@@ -121,7 +126,8 @@ def validate_source(args) -> tuple[dict, list[dict], Path]:
         raise AdmissionError("examples per update must divide into complete microbatches")
     _positive_int(args.max_seq_length, "sequence length", 2048)
     _positive_int(args.seed, "seed", 2**31 - 1)
-    _positive_int(args.checkpoint_every, "checkpoint interval", 4096)
+    if type(args.checkpoint_every) is not int or args.checkpoint_every != 0:
+        raise AdmissionError("periodic MeZO checkpoints unsupported; use --checkpoint-every 0 (final-only)")
     if (not math.isfinite(args.budget_seconds) or not 0 < args.budget_seconds <= 86400):
         raise AdmissionError("time budget must be 0–86400 seconds")
     if (not math.isfinite(args.learning_rate) or not 0 < args.learning_rate <= 1.0
@@ -131,16 +137,12 @@ def validate_source(args) -> tuple[dict, list[dict], Path]:
             or args.output_root.is_symlink() or not args.work_root.is_dir()
             or args.work_root.is_symlink()):
         raise AdmissionError("unsafe run ID or output/work root")
-    if (args.resume_checkpoint is None) != (args.resume_receipt_sha256 is None):
-        raise AdmissionError("resume checkpoint and pinned receipt SHA must be supplied together")
-    if args.resume_receipt_sha256 and not HEX64.fullmatch(args.resume_receipt_sha256):
-        raise AdmissionError("resume receipt SHA malformed")
-    if args.fit_sweep_only and args.resume_checkpoint:
-        raise AdmissionError("fit sweep never resumes weights")
+    if args.resume_checkpoint is not None or args.resume_receipt_sha256 is not None:
+        raise AdmissionError("R18 MeZO resume unsupported for strict single-window budget; start a new run ID")
     if args.preflight_only and args.fit_sweep_only:
         raise AdmissionError("choose source preflight or GPU fit sweep")
     if not args.resume_checkpoint and (args.output_root / args.run_id).exists():
-        raise AdmissionError("run output exists; never silently overwrite")
+        raise AdmissionError("run output exists: INCOMPLETE_OR_UNVERIFIED; never silently overwrite")
     if not args.resume_checkpoint and (args.output_root / args.run_id).is_symlink():
         raise AdmissionError("symlinked run output")
     if (args.expected_initial_digest is not None
@@ -480,7 +482,7 @@ def prepare_run(args, preflight: dict) -> tuple[Path, dict, int, float, dict | N
     contract_path = output / "run-contract.json"
     if not args.resume_checkpoint:
         if output.exists() or output.is_symlink():
-            raise AdmissionError("run output already occupied")
+            raise AdmissionError("run output already occupied: INCOMPLETE_OR_UNVERIFIED")
         output.mkdir(exist_ok=False)
         with contract_path.open("x", encoding="utf-8") as stream:
             json.dump(contract, stream, sort_keys=True, indent=2)
@@ -1043,9 +1045,13 @@ def run(args) -> dict:
                "train_deadline_monotonic_ns": train_deadline_ns,
                "peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated(0),
                "peak_cuda_reserved_bytes": torch.cuda.max_memory_reserved(0),
+               "peak_cuda_metric_scope": "PRIMARY_TRAIN_PROCESS_AFTER_SETUP_RESET",
                "peak_nvml_used_bytes": peak_nvml,
+               "peak_nvml_metric_scope": ("SAMPLED_NVML" if nvml_supported
+                                          else "UNAVAILABLE_NOT_ESTIMATED"),
                "nvml_available": nvml_supported,
                "peak_cpu_rss_bytes": sampled_peak_rss,
+               "peak_cpu_rss_metric_scope": "TRAINING_WINDOW_SAMPLED_RSS",
                "max_prepared_example_tokens": token_report["max_input_tokens"],
                "cold_start_and_diagnostic_seconds": cold_start_seconds,
                "unperturbed_loss": unperturbed_loss,
@@ -1124,7 +1130,8 @@ def main() -> None:
     parser.add_argument("--examples-per-update", type=int, default=8)
     parser.add_argument("--max-seq-length", type=int, default=512)
     parser.add_argument("--budget-seconds", type=float, required=True)
-    parser.add_argument("--checkpoint-every", type=int, default=8)
+    parser.add_argument("--checkpoint-every", type=int, default=0,
+                        help="Deprecated; only 0 (final-only) accepted. Periodic checkpoints unsupported")
     parser.add_argument("--expected-initial-digest", default=None)
     parser.add_argument("--fit-probe-sha256", default=None)
     parser.add_argument("--fit-probes-file", type=Path)
@@ -1138,8 +1145,10 @@ def main() -> None:
     parser.add_argument("--initial-adapter-sha256", help="Exact SHA256 of its adapter_model.safetensors")
     parser.add_argument("--initial-adapter-config-sha256",
                         help="Exact SHA256 of R16 zero adapter_config.json")
-    parser.add_argument("--resume-checkpoint", type=Path)
-    parser.add_argument("--resume-receipt-sha256")
+    parser.add_argument("--resume-checkpoint", type=Path,
+                        help="Unsupported in strict single-window R18; rejected before GPU load")
+    parser.add_argument("--resume-receipt-sha256",
+                        help="Unsupported in strict single-window R18; rejected before GPU load")
     args = parser.parse_args()
     if args.probe_child:
         if (not args.probe_result or not 0 <= args.probe_index < 14
