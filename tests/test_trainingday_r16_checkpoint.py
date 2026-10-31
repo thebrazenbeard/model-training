@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from trainingday.admission import AdmissionError
+import trainingday.checkpoint_custody as custody_module
 from trainingday.checkpoint_custody import create_custody, validate_custody, write_external_custody
 from trainingday.train_neural import _r16_prepare_output
 
@@ -154,6 +157,233 @@ class R16CheckpointCustodyTest(unittest.TestCase):
         output, checkpoint, _, _ = self.prepare_resume()
         with self.assertRaisesRegex(AdmissionError, "unsafe"):
             write_external_custody(checkpoint, output / "internal-custody.json")
+
+    def test_external_receipt_rejects_dotdot_alias_into_run_output(self):
+        output, checkpoint, _, _ = self.prepare_resume()
+        (self.root / "outside").mkdir()
+        alias = self.root / "outside" / ".." / "outputs" / output.name / "alias-custody.json"
+        self.assertEqual(alias.resolve().parent, output.resolve())
+        with self.assertRaisesRegex(AdmissionError, "unsafe"):
+            write_external_custody(checkpoint, alias)
+        self.assertFalse((output / "alias-custody.json").exists())
+
+    def test_external_receipt_staging_sync_failure_never_publishes_target(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        destination = self.root / "fsync-fault-custody.json"
+        with patch("trainingday.checkpoint_custody.os.fsync", side_effect=OSError("disk fault")):
+            with self.assertRaisesRegex(AdmissionError, "staging failed"):
+                write_external_custody(checkpoint, destination)
+        self.assertFalse(destination.exists())
+
+    def test_external_receipt_parent_sync_failure_is_unknown_after_publication(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        destination = self.root / "parent-sync-fault-custody.json"
+        original_sync = os.fsync
+        count = 0
+
+        def fail_second_sync(fd):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise RuntimeError("injected post-publish parent sync failure")
+            return original_sync(fd)
+
+        with patch("trainingday.checkpoint_custody.os.fsync", side_effect=fail_second_sync):
+            with self.assertRaisesRegex(AdmissionError, "POST_PUBLISH_DURABILITY_UNKNOWN"):
+                write_external_custody(checkpoint, destination)
+        self.assertEqual(count, 2)
+        self.assertTrue(destination.is_file())
+        self.assertEqual(json.loads(destination.read_text())["step"], 8)
+
+    def test_external_receipt_link_uncertain_after_publication_is_unknown(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        destination = self.root / "link-uncertain-custody.json"
+        original_link = os.link
+
+        def link_then_lose_ack(source, target, **kwargs):
+            original_link(source, target, **kwargs)
+            raise RuntimeError("publication acknowledged outcome unknown")
+
+        with patch("trainingday.checkpoint_custody.os.link", side_effect=link_then_lose_ack):
+            with self.assertRaisesRegex(AdmissionError, "POST_PUBLISH_DURABILITY_UNKNOWN"):
+                write_external_custody(checkpoint, destination)
+        self.assertTrue(destination.is_file())
+
+    def test_external_receipt_destination_race_never_overwrites_winner(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        destination = self.root / "raced-custody.json"
+        original_link = os.link
+
+        def concurrent_create(source, target, **kwargs):
+            Path(target).write_bytes(b"concurrent-owner")
+            return original_link(source, target, **kwargs)
+
+        with patch("trainingday.checkpoint_custody.os.link", side_effect=concurrent_create):
+            with self.assertRaisesRegex(AdmissionError, "unsafe"):
+                write_external_custody(checkpoint, destination)
+        self.assertEqual(destination.read_bytes(), b"concurrent-owner")
+
+    def test_external_receipt_staging_symlink_swap_cannot_forge_success(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        destination = self.root / "stage-swap-custody.json"
+        impostor = self.root / "impostor.json"
+        impostor.write_bytes(b"another payload")
+        original_link = os.link
+
+        def replace_stage(source, target, **kwargs):
+            source = Path(source)
+            source.rename(source.with_name(source.name + "-displaced"))
+            source.symlink_to(impostor)
+            return original_link(source, target, **kwargs)
+
+        with patch("trainingday.checkpoint_custody.os.link", side_effect=replace_stage):
+            with self.assertRaisesRegex(AdmissionError, "POST_PUBLISH_DURABILITY_UNKNOWN"):
+                write_external_custody(checkpoint, destination)
+        self.assertTrue(destination.exists() or destination.is_symlink())
+
+    def test_external_receipt_preserves_replaced_staging_member_after_link(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        destination = self.root / "post-link-replaced-stage.json"
+        original_link = os.link
+        replaced = []
+
+        def replace_stage_after_link(source, target, **kwargs):
+            original_link(source, target, **kwargs)
+            source = Path(source)
+            source.rename(source.with_name(source.name + "-displaced"))
+            source.write_bytes(b"not-our-staging-file")
+            replaced.append(source)
+
+        with patch("trainingday.checkpoint_custody.os.link", side_effect=replace_stage_after_link):
+            with self.assertRaisesRegex(AdmissionError, "POST_PUBLISH_DURABILITY_UNKNOWN"):
+                write_external_custody(checkpoint, destination)
+        self.assertTrue(destination.is_file())
+        self.assertEqual(len(replaced), 1)
+        self.assertEqual(replaced[0].read_bytes(), b"not-our-staging-file")
+
+    def test_external_receipt_parent_rebound_to_symlink_after_sync_is_unknown(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        parent = self.root / "external-parent"
+        parent.mkdir()
+        destination = parent / "receipt.json"
+        relocated = self.root / "external-parent-relocated"
+        original_sync = custody_module._sync_directory
+
+        def sync_then_rebind(directory):
+            original_sync(directory)
+            if Path(directory) == parent:
+                parent.rename(relocated)
+                parent.symlink_to(relocated, target_is_directory=True)
+
+        with patch("trainingday.checkpoint_custody._sync_directory", side_effect=sync_then_rebind):
+            with self.assertRaisesRegex(AdmissionError, "POST_PUBLISH_DURABILITY_UNKNOWN"):
+                write_external_custody(checkpoint, destination)
+        self.assertTrue(parent.is_symlink())
+        self.assertEqual((relocated / "receipt.json").read_bytes(), destination.read_bytes())
+
+    def test_external_receipt_target_swapped_to_symlink_after_sync_is_unknown(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        destination = self.root / "post-sync-target-custody.json"
+        relocated = self.root / "post-sync-target-custody-displaced.json"
+        impostor = self.root / "impostor-post-sync.json"
+        impostor.write_bytes(b"not the committed custody receipt")
+        original_sync = custody_module._sync_directory
+
+        def sync_then_replace_target(directory):
+            original_sync(directory)
+            if Path(directory) == destination.parent:
+                destination.rename(relocated)
+                destination.symlink_to(impostor)
+
+        with patch("trainingday.checkpoint_custody._sync_directory", side_effect=sync_then_replace_target):
+            with self.assertRaisesRegex(AdmissionError, "POST_PUBLISH_DURABILITY_UNKNOWN"):
+                write_external_custody(checkpoint, destination)
+        self.assertTrue(destination.is_symlink())
+        self.assertTrue(relocated.is_file())
+
+    def test_external_receipt_fileexists_ack_after_actual_link_is_unknown(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        destination = self.root / "post-link-exists-ack.json"
+        original_link = os.link
+
+        def link_then_raise_exists(source, target, **kwargs):
+            original_link(source, target, **kwargs)
+            raise FileExistsError("ack ambiguous after actual link")
+
+        with patch("trainingday.checkpoint_custody.os.link", side_effect=link_then_raise_exists):
+            with self.assertRaisesRegex(AdmissionError, "POST_PUBLISH_DURABILITY_UNKNOWN"):
+                write_external_custody(checkpoint, destination)
+        self.assertTrue(destination.is_file())
+
+    def test_external_receipt_replaced_while_final_fd_open_is_unknown(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        destination = self.root / "final-fd-swap-custody.json"
+        displaced = self.root / "final-fd-swap-displaced.json"
+        impostor = self.root / "final-fd-swap-impostor.json"
+        impostor.write_bytes(b"malicious target")
+        original_open = os.open
+        target_opens = 0
+
+        def open_then_swap_target(path, flags, *args, **kwargs):
+            nonlocal target_opens
+            descriptor = original_open(path, flags, *args, **kwargs)
+            if Path(path) == destination:
+                target_opens += 1
+                if target_opens == 2:
+                    destination.rename(displaced)
+                    destination.symlink_to(impostor)
+            return descriptor
+
+        with patch("trainingday.checkpoint_custody.os.open", side_effect=open_then_swap_target):
+            with self.assertRaisesRegex(AdmissionError, "POST_PUBLISH_DURABILITY_UNKNOWN"):
+                write_external_custody(checkpoint, destination)
+        self.assertEqual(target_opens, 2)
+        self.assertTrue(destination.is_symlink())
+        self.assertTrue(displaced.is_file())
+
+    def test_external_receipt_success_never_unlinks_a_substituted_stage(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        destination = self.root / "stage-cleanup-custody.json"
+        original_unlink = Path.unlink
+        attempted_stage_unlinks = []
+
+        def replace_stage_before_unlink(path, *args, **kwargs):
+            path = Path(path)
+            if ".r16-stage-" in path.name:
+                displaced = path.with_name(path.name + "-displaced")
+                path.rename(displaced)
+                path.write_bytes(b"unrelated substituted receipt")
+                attempted_stage_unlinks.append(path)
+            return original_unlink(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", new=replace_stage_before_unlink):
+            result = write_external_custody(checkpoint, destination)
+        self.assertEqual(result["receipt_sha256"], _hash(destination))
+        self.assertEqual(attempted_stage_unlinks, [], "stage cleanup cannot atomically verify its target")
+        retained = list(self.root.glob(".stage-cleanup-custody.json.r16-stage-*"))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0].read_bytes(), destination.read_bytes())
+
+    def test_external_receipt_ancestor_rebound_after_sync_is_unknown(self):
+        _, checkpoint, _, _ = self.prepare_resume()
+        outer = self.root / "outer-custody"
+        inner = outer / "inner"
+        inner.mkdir(parents=True)
+        relocated = self.root / "outer-custody-relocated"
+        destination = inner / "receipt.json"
+        original_sync = custody_module._sync_directory
+
+        def sync_then_rebind_ancestor(directory):
+            original_sync(directory)
+            if Path(directory) == inner:
+                outer.rename(relocated)
+                outer.symlink_to(relocated, target_is_directory=True)
+
+        with patch("trainingday.checkpoint_custody._sync_directory", side_effect=sync_then_rebind_ancestor):
+            with self.assertRaisesRegex(AdmissionError, "POST_PUBLISH_DURABILITY_UNKNOWN"):
+                write_external_custody(checkpoint, destination)
+        self.assertTrue(outer.is_symlink())
+        self.assertTrue((relocated / "inner" / "receipt.json").is_file())
 
 
 if __name__ == "__main__":
