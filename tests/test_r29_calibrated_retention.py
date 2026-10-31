@@ -11,6 +11,7 @@ from trainingday.r25_multigeneration_retention import (
     GenerationEvidence, PublicBankManifest, case_order_sha256,
     public_score_vector_sha256,
 )
+from trainingday.admission import AdmissionError
 from trainingday.r27_pilot_preregistration import (
     PilotCase, PilotProtocol, preregister_pilot,
 )
@@ -237,6 +238,79 @@ class CalibratedRetentionTests(unittest.TestCase):
         self.assertEqual(args[8], original_roles)
         self.assertEqual(result["preregistered_manifest_sha256"], args[7].manifest_sha256)
         self.assertEqual(result["hold_reasons"], ["DECLARED_ONLY_NO_INDEPENDENT_EVIDENCE"])
+
+    def test_r31_spoofed_public_case_id_cannot_launder_through_deepcopy(self):
+        args = list(fixture())
+        expected = args[0].case_ids[0]
+        calls = []
+
+        class Spoof:
+            def __deepcopy__(self, memo):
+                calls.append("executed")
+                return expected
+
+        args[0] = replace(args[0], case_ids=(Spoof(),) + args[0].case_ids[1:])
+        with self.assertRaises(AdmissionError):
+            case_order_sha256(args[0].case_ids)
+        with self.assertRaisesRegex(CalibratedRetentionError, "SOURCE.*INVALID"):
+            score(tuple(args))
+        self.assertEqual(calls, [], "caller __deepcopy__ hook must never run")
+
+    def test_r31_spoofed_nested_pilot_and_sample_scalars_rejected_precopy(self):
+        for place in ("pilot", "sample", "receipt", "generation"):
+            with self.subTest(place=place):
+                args = list(fixture())
+                calls = []
+
+                class Spoof:
+                    def __deepcopy__(self, memo):
+                        calls.append("executed")
+                        return {"pilot": args[2].cases[0].case_id,
+                                "sample": 0.88,
+                                "receipt": args[7].manifest_sha256,
+                                "generation": args[1][0].name}[place]
+
+                if place == "pilot":
+                    rows = list(args[2].cases)
+                    rows[0] = replace(rows[0], case_id=Spoof())
+                    args[2] = replace(args[2], cases=tuple(rows))
+                elif place == "sample":
+                    arm = next(k for k, v in args[8].items() if v == "CORRECT_LABEL")
+                    key = args[0].case_ids[0]
+                    args[9]["C"][arm][key] = replace(args[9]["C"][arm][key],
+                                                      confidence=Spoof())
+                elif place == "receipt":
+                    args[7] = replace(args[7], manifest_sha256=Spoof())
+                else:
+                    args[1] = (replace(args[1][0], name=Spoof()),) + args[1][1:]
+                with self.assertRaisesRegex(CalibratedRetentionError, "SOURCE.*INVALID"):
+                    score(tuple(args))
+                self.assertEqual(calls, [])
+
+    def test_r31_hidden_dataclass_fields_cannot_trigger_deepcopy_hooks(self):
+        for place in ("manifest", "pilot_case", "sample", "generation"):
+            with self.subTest(place=place):
+                args = list(fixture())
+                calls = []
+
+                class Spy:
+                    def __deepcopy__(self, memo):
+                        calls.append("executed")
+                        return "source-laundered"
+
+                if place == "manifest":
+                    target = args[0]
+                elif place == "pilot_case":
+                    target = args[2].cases[0]
+                elif place == "sample":
+                    arm = next(k for k, v in args[8].items() if v == "CORRECT_LABEL")
+                    target = args[9]["C"][arm][args[0].case_ids[0]]
+                else:
+                    target = args[1][0]
+                object.__setattr__(target, "_unexpected_hidden_extra", Spy())
+                with self.assertRaisesRegex(CalibratedRetentionError, "SOURCE.*INVALID"):
+                    score(tuple(args))
+                self.assertEqual(calls, [], "hidden source hook must not run")
         args = list(fixture())
         args[1] = (replace(args[1][0], score_vector_sha256=sha("stale")),) + args[1][1:]
         with self.assertRaises(CalibratedRetentionError):

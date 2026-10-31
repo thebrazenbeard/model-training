@@ -7,7 +7,7 @@ every outcome, hash and control; this module authenticates none of them.
 from __future__ import annotations
 
 import copy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import hashlib
 import json
 import math
@@ -17,7 +17,7 @@ from trainingday.r25_multigeneration_retention import (
     GenerationEvidence, PublicBankManifest, RetentionPolicy,
     assess_generation_retention, case_order_sha256,
 )
-from trainingday.r27_pilot_preregistration import PilotProtocol, PreregReceipt
+from trainingday.r27_pilot_preregistration import PilotCase, PilotProtocol, PreregReceipt
 from trainingday.r28_calibration import (
     CalibrationError, CalibrationPlan, CalibrationReceipt, CalibrationSample,
     preregister_calibration, score_synthetic_calibration,
@@ -50,6 +50,63 @@ class CalibratedRetentionReceipt:
     independent_oracle_authenticated: bool = False
     physical_model_outputs_verified: bool = False
     release_authorized: bool = False
+
+
+_SOURCE_DATACLASSES = frozenset((
+    PublicBankManifest, GenerationEvidence, PilotCase, PilotProtocol,
+    PreregReceipt, CalibrationPlan, CalibrationReceipt, CalibrationSample,
+    CalibratedRetentionPlan, CalibratedRetentionReceipt,
+))
+
+
+def _require_exact_builtin_source(*roots: object) -> None:
+    """Reject custom copy/iteration/equality hooks before touching deepcopy.
+
+    This is a bounded iterative walk through only exact builtin containers,
+    scalar values and our exact known data classes. It deliberately does not
+    coerce, compare, hash, copy or call any caller-supplied custom object.
+    Semantic/hash validation still belongs to the R25/R27/R28 gates.
+    """
+    pending = list(roots)
+    seen_containers: set[int] = set()
+    visited = 0
+    while pending:
+        visited += 1
+        if visited > 100_000:
+            raise CalibratedRetentionError("R29_SOURCE_NODES_INVALID")
+        value = pending.pop()
+        kind = type(value)
+        if kind in (str, int, float, bool, type(None)):
+            continue
+        if kind is not tuple and kind is not dict and kind not in _SOURCE_DATACLASSES:
+            raise CalibratedRetentionError("R29_SOURCE_NONBUILTIN_INVALID")
+        identity = id(value)
+        if identity in seen_containers:
+            continue
+        seen_containers.add(identity)
+        if kind is tuple:
+            if len(value) > 4096:
+                raise CalibratedRetentionError("R29_SOURCE_COLLECTION_INVALID")
+            pending.extend(value)
+        elif kind is dict:
+            if len(value) > 4096:
+                raise CalibratedRetentionError("R29_SOURCE_COLLECTION_INVALID")
+            for key, item in value.items():
+                pending.extend((key, item))
+        else:
+            declared_fields = fields(kind)
+            # Frozen dataclasses are not slot-sealed. An attacker can inject
+            # undeclared instance attributes with object.__setattr__, and
+            # deepcopy would traverse/execute their arbitrary copy hooks.
+            # Read the exact builtin instance dictionary; reject extra keys
+            # BEFORE either deepcopy or any overloaded attribute access.
+            state = object.__getattribute__(value, "__dict__")
+            if (type(state) is not dict or
+                    len(state) != len(declared_fields) or
+                    any(type(key) is not str for key in state) or
+                    set(state) != {field.name for field in declared_fields}):
+                raise CalibratedRetentionError("R29_SOURCE_HIDDEN_FIELD_INVALID")
+            pending.extend(state[field.name] for field in declared_fields)
 
 
 def _roles(pilot: PilotProtocol, role_by_arm: object) -> dict[str, str]:
@@ -163,6 +220,10 @@ def score_synthetic_calibrated_retention(
                 type(row.case_passes) is not tuple or
                 len(row.case_passes) > 512 for row in generation_records)):
         raise CalibratedRetentionError("R29_SOURCE_SNAPSHOT_INVALID")
+    _require_exact_builtin_source(
+        manifest, generation_records, pilot, pilot_receipt, calibration_plan,
+        calibration_receipt, plan, plan_receipt, role_by_arm,
+        samples_by_generation)
     frozen_manifest = copy.deepcopy(manifest)
     frozen_pilot = copy.deepcopy(pilot)
     frozen_pilot_receipt = copy.deepcopy(pilot_receipt)

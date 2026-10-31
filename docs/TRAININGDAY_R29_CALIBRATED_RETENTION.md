@@ -45,6 +45,24 @@ role swap can alter the source state used for R29 aggregation. Two deterministic
 monkeypatch regressions were introduced after independent hostile review found
 these TOCTOU aliasing defects in the original R29 commit.
 
+R31 independent hostile review additionally demonstrated a spoofed case-ID
+object with a custom `__deepcopy__` that replaced itself with a valid string.
+All caller-supplied nested source values now undergo a bounded, iterative
+**exact-builtin** type walk before any copying, coercion, or delegated assessor
+call. The walk permits only builtin scalar/tuple/dict types and the named
+exact data classes; custom copy/equality hooks never run. R31 regressions
+cover malicious case IDs, pilot-case scalars, confidence, manifest receipt,
+and generation identities. These are source-integrity constraints, not
+independent authentication of labels or model execution.
+
+A further exact-head review found that even an exact frozen dataclass can
+carry undeclared instance attributes injected using `object.__setattr__`.
+The pre-copy walk therefore checks that each known dataclass has an exact
+builtin `__dict__` whose keys are **precisely** its declared fields, rejecting
+hidden extras before a potentially hostile `__deepcopy__` hook could run.
+Regression tests cover hidden extras on the manifest, nested pilot case,
+calibration sample and generation evidence.
+
 Example negative: case 0 passes in generation A, then fails in C, while a
 different previously failing case begins passing. Aggregate success can
 increase and ECE can improve. R29 still records the explicit forgotten case
