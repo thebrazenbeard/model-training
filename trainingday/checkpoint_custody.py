@@ -10,7 +10,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
+import uuid
 from pathlib import Path
 
 from trainingday.admission import AdmissionError, _hash_file
@@ -82,11 +85,150 @@ def validate_custody(directory: Path, custody: dict, *, contract_sha256: str) ->
     return step
 
 
+def _sync_directory(directory: Path) -> None:
+    """Require a directory flush; lack of host support is *not* durable proof."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(directory, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _publish_external_receipt(output_receipt: Path, payload: bytes) -> str:
+    """No-overwrite publication of complete bytes; never authorize resume.
+
+    Hard-link publication is exclusive and uses a staging file in the same
+    directory. The stage is intentionally retained: unlinking a pathname
+    after checking its inode could delete an adversary's last-moment
+    substitution. Its later cleanup requires separate trusted ownership.
+    A missing directory-fsync capability results in a controlled unknown
+    outcome, never an assertion of physical crash durability.
+    """
+    stage = output_receipt.with_name(
+        f".{output_receipt.name}.r16-stage-{uuid.uuid4().hex}"
+    )
+    file_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    published = False
+    expected_hash = hashlib.sha256(payload).hexdigest()
+    try:
+        # These path checks attest a bounded source-level snapshot, not
+        # immutable custody against future concurrent filesystem mutation.
+        parent = output_receipt.parent
+        admitted_ancestors = tuple((ancestor, ancestor.lstat())
+                                   for ancestor in output_receipt.parents)
+        if any(not stat.S_ISDIR(pinned.st_mode) for _, pinned in admitted_ancestors):
+            raise AdmissionError("external custody output ancestor is not a real directory")
+
+        def require_original_parent() -> None:
+            # A stable immediate-parent inode is insufficient: the parent can
+            # become reachable through a replaced symlinked outer ancestor.
+            for ancestor, pinned in admitted_ancestors:
+                current = ancestor.lstat()
+                if (not stat.S_ISDIR(current.st_mode)
+                        or (current.st_dev, current.st_ino)
+                        != (pinned.st_dev, pinned.st_ino)):
+                    raise AdmissionError("external custody output ancestor identity changed")
+
+        fd = os.open(stage, file_flags, 0o600)
+        with os.fdopen(fd, "wb") as out:
+            out.write(payload)
+            out.flush()
+            os.fsync(out.fileno())
+            staged_stat = os.fstat(out.fileno())
+        if (not stat.S_ISREG(staged_stat.st_mode)
+                or staged_stat.st_size != len(payload) or staged_stat.st_nlink != 1):
+            raise AdmissionError("external custody staging file identity invalid")
+
+        # Both names must be in the same directory, so link() is an atomic,
+        # no-overwrite publication boundary. The final target is verified from
+        # a no-follow file descriptor before this function returns success.
+        try:
+            require_original_parent()
+            os.link(stage, output_receipt, follow_symlinks=False)
+        except FileExistsError:
+            # A late FileExistsError may be a lost acknowledgement after our
+            # hardlink was actually published. Distinguish that case by inode
+            # without mistaking an unrelated competing destination for ours.
+            try:
+                candidate = output_receipt.lstat()
+                if (stat.S_ISREG(candidate.st_mode)
+                        and (candidate.st_dev, candidate.st_ino)
+                        == (staged_stat.st_dev, staged_stat.st_ino)):
+                    published = True
+            except OSError:
+                pass
+            raise
+        except Exception:
+            # A failed acknowledgement need not mean the filesystem did not
+            # publish the hard link. Preserve an unknown outcome for custody.
+            if output_receipt.exists() or output_receipt.is_symlink():
+                published = True
+            raise
+        published = True
+        read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        committed_fd = os.open(output_receipt, read_flags)
+        with os.fdopen(committed_fd, "rb") as committed:
+            actual_stat = os.fstat(committed.fileno())
+            committed_bytes = committed.read()
+        if (not stat.S_ISREG(actual_stat.st_mode)
+                or (actual_stat.st_dev, actual_stat.st_ino)
+                != (staged_stat.st_dev, staged_stat.st_ino)
+                or committed_bytes != payload):
+            raise AdmissionError("external custody published bytes/identity mismatch")
+        # Confirm the stage has not already been replaced. Do not unlink it:
+        # an inode check followed by pathname deletion is not atomic, so an
+        # attacker could substitute another file between those operations.
+        current_stage = stage.lstat()
+        if (not stat.S_ISREG(current_stage.st_mode)
+                or (current_stage.st_dev, current_stage.st_ino)
+                != (staged_stat.st_dev, staged_stat.st_ino)):
+            raise AdmissionError("external custody staging identity changed after publication")
+        _sync_directory(output_receipt.parent)
+        # Directory synchronization is not the last custody observation:
+        # a substituted parent or target after it must never yield success.
+        require_original_parent()
+        verified_fd = os.open(output_receipt, read_flags)
+        with os.fdopen(verified_fd, "rb") as verified:
+            verified_stat = os.fstat(verified.fileno())
+            verified_bytes = verified.read()
+        if (not stat.S_ISREG(verified_stat.st_mode)
+                or (verified_stat.st_dev, verified_stat.st_ino)
+                != (staged_stat.st_dev, staged_stat.st_ino)
+                or verified_bytes != payload):
+            raise AdmissionError("external custody final published identity/bytes mismatch")
+        # A verified descriptor alone is insufficient if its directory entry
+        # was replaced while those bytes were being read.
+        final_entry = output_receipt.lstat()
+        if (not stat.S_ISREG(final_entry.st_mode)
+                or (final_entry.st_dev, final_entry.st_ino)
+                != (staged_stat.st_dev, staged_stat.st_ino)):
+            raise AdmissionError("external custody final directory entry changed")
+        require_original_parent()
+        return expected_hash
+    except FileExistsError as exc:
+        if published:
+            raise AdmissionError(
+                f"external custody POST_PUBLISH_DURABILITY_UNKNOWN target={output_receipt}"
+            ) from exc
+        raise AdmissionError("external checkpoint custody output unsafe/existing") from exc
+    except Exception as exc:
+        if published:
+            raise AdmissionError(
+                f"external custody POST_PUBLISH_DURABILITY_UNKNOWN target={output_receipt}"
+            ) from exc
+        raise AdmissionError("external custody staging failed") from exc
+
+
 def write_external_custody(checkpoint: Path, output_receipt: Path) -> dict:
-    """Create an immutable external receipt for a completed Trainer checkpoint.
+    """Create a no-overwrite source-level receipt for a completed Trainer checkpoint.
 
     Use only after a checkpoint write is known to have completed. Do not use
     this helper to create fake runtime evidence from arbitrary local bytes.
+    A separate, hidden staging hard link is intentionally retained for
+    trusted host-owned cleanup, because deleting an untrusted pathname is
+    unsafe under concurrent substitution. The returned hash is a verified
+    source snapshot, not an immutable future filesystem or resume attestation.
     """
     checkpoint, output_receipt = Path(checkpoint), Path(output_receipt)
     run_output = checkpoint.parent.parent
@@ -94,17 +236,18 @@ def write_external_custody(checkpoint: Path, output_receipt: Path) -> dict:
     if (not checkpoint.is_absolute() or not output_receipt.is_absolute()
             or not contract_file.is_file() or contract_file.is_symlink()
             or output_receipt.exists() or output_receipt.is_symlink()
-            or not output_receipt.parent.is_dir() or output_receipt.parent.is_symlink()
-            or output_receipt.is_relative_to(run_output)):
+            or not output_receipt.parent.is_dir()
+            or any(parent.is_symlink() for parent in output_receipt.parents)
+            or ".." in output_receipt.parts
+            or output_receipt.resolve().is_relative_to(run_output.resolve())):
         raise AdmissionError("external checkpoint custody output unsafe")
     contract = json.loads(contract_file.read_text(encoding="utf-8"))
     if contract.get("schema") != "VERA_TRAININGDAY_R16_RUN_CONTRACT_V1":
         raise AdmissionError("run contract schema invalid")
     custody = create_custody(checkpoint, contract_sha256=canonical_sha(contract))
-    # Exclusive creation: refuse an existing file rather than overwriting a pin.
-    with output_receipt.open("x", encoding="utf-8") as out:
-        out.write(json.dumps(custody, sort_keys=True, indent=2) + "\n")
-    return {"step": custody["step"], "receipt_sha256": _hash_file(output_receipt),
+    encoded = (json.dumps(custody, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    receipt_sha = _publish_external_receipt(output_receipt, encoded)
+    return {"step": custody["step"], "receipt_sha256": receipt_sha,
             "state": custody["state"]}
 
 
