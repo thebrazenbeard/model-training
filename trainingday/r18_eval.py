@@ -530,6 +530,25 @@ def _preunseal_inventory(args, plan: dict, plan_sha: str) -> tuple[str, dict, di
     return expected, pinned, saved_files
 
 
+def _require_independent_preunseal_attestation() -> None:
+    """Hold the private bank shut until a real host-attester is integrated.
+
+    Local SHA pins, arm receipts, and an evaluator-supplied freeze inventory
+    prove internal byte consistency only. They cannot establish which trainer
+    produced those bytes, that the eight runs occurred, or which principal
+    will read the sealed bank. No independent attester, trust anchor, or
+    bank-access audit is wired into this source-only evaluator yet.
+
+    In particular, an environment flag, CLI-provided digest, self-signed
+    document, or mockable source receipt must not authorize unsealing.
+    The trusted host integration must replace this fail-closed boundary and
+    qualify it independently before any real private evaluation is run.
+    """
+    raise AdmissionError(
+        "independent pre-unseal attestation unavailable: "
+        "R18 source receipt custody cannot authorize private evaluation")
+
+
 def _cuda_preflight() -> None:
     """Reject an ineligible CUDA host before private answers are opened."""
     try:
@@ -627,7 +646,12 @@ class _InferenceSession:
         self.model = None
         self.tokenizer = None
         self.torch = None
-        gc.collect()
+        try:
+            gc.collect()
+        except Exception:
+            # Closing while handling a bank-custody error must not mask the
+            # original error with a best-effort collection failure.
+            pass
 
 
 def _load_model(model_path: Path, adapter: Path | None,
@@ -636,24 +660,42 @@ def _load_model(model_path: Path, adapter: Path | None,
     import torch
     from transformers import AutoTokenizer, BitsAndBytesConfig, Qwen3_5ForCausalLM
 
-    _cuda_preflight()
-    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
-    if not tokenizer.chat_template or type(tokenizer.eos_token_id) is not int:
-        raise RuntimeError("pinned tokenizer lacks chat or EOS contract")
-    quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                               bnb_4bit_use_double_quant=True,
-                               bnb_4bit_compute_dtype=torch.bfloat16)
-    model = Qwen3_5ForCausalLM.from_pretrained(
-        model_path, quantization_config=quant, device_map=0,
-        dtype=torch.bfloat16, local_files_only=True)
-    if adapter is not None:
-        from peft import PeftModel
-        model = PeftModel.from_pretrained(model, adapter, is_trainable=True)
-        digest, count = _parameter_digest(model, torch)
-        if (digest != receipt["trainable_digest_after"]
-                or count != receipt["trainable_parameter_count"]):
-            raise RuntimeError("freshly loaded FP32 adapter digest/count mismatch")
-    model.eval()
+    model = tokenizer = None
+    try:
+        _cuda_preflight()
+        tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+        if not tokenizer.chat_template or type(tokenizer.eos_token_id) is not int:
+            raise RuntimeError("pinned tokenizer lacks chat or EOS contract")
+        quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                                   bnb_4bit_use_double_quant=True,
+                                   bnb_4bit_compute_dtype=torch.bfloat16)
+        model = Qwen3_5ForCausalLM.from_pretrained(
+            model_path, quantization_config=quant, device_map=0,
+            dtype=torch.bfloat16, local_files_only=True)
+        if adapter is not None:
+            from peft import PeftModel
+            model = PeftModel.from_pretrained(model, adapter, is_trainable=True)
+            digest, count = _parameter_digest(model, torch)
+            if (digest != receipt["trainable_digest_after"]
+                    or count != receipt["trainable_parameter_count"]):
+                raise RuntimeError("freshly loaded FP32 adapter digest/count mismatch")
+        model.eval()
+    except BaseException:
+        # A failed model/PEFT load occurs before closing() has a session to
+        # manage. Drop partially loaded tensors and release unoccupied cache;
+        # cleanup must not replace the original fail-closed load exception.
+        model = tokenizer = None
+        try:
+            gc.collect()
+        except Exception:
+            # GC is an optimization during a failed load, not the failure to
+            # report. Preserve the original tokenizer/model/adapter error.
+            pass
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        raise
     return _InferenceSession(torch, tokenizer, model)
 
 
@@ -757,11 +799,20 @@ def evaluate(args) -> dict:
         raise AdmissionError("peer must be a previously frozen private score")
     freeze_sha, pinned_receipts, pinned_adapters = _preunseal_inventory(
         args, plan, plan_sha)
+    _require_independent_preunseal_attestation()
     _cuda_preflight()
     # Preload the actual pinned NF4 model and saved adapter (including physical
     # tensor digest) BEFORE private answers. Reuse this same session to score;
     # full-load failure cannot reach _bank(). This is not host attestation.
     with closing(_load_model(model_path, adapter, receipt)) as session:
+        # A persistent on-disk swap while the loader reads the base must not
+        # reach the private bank. _required_base rehashes every pinned file;
+        # this narrows a race but cannot defeat a same-principal writer that
+        # swaps and restores bytes between observations. Real custody needs
+        # an immutable, independently controlled snapshot and bank broker.
+        loaded_base, loaded_path = _required_base(args.base_binding)
+        if loaded_base != base or loaded_path != model_path:
+            raise AdmissionError("pinned base binding changed during model preload")
         cases = _bank(args.manifest, args.old_base_eval, args.exclusions,
                       args.sealed_bank, plan, source_manifest)
         rows = _run_model(cases, session, plan_sha)

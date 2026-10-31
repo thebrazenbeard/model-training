@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -22,6 +23,7 @@ from trainingday.checkpoint_custody import canonical_sha, create_custody, valida
 
 
 BASE_ID = "Qwen/Qwen3.5-4B"
+BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 RECIPE = "TRAININGDAY_QWEN35_FRESH_QLORA_R15_NUMERIC_MATCHED"
 R16_RECIPE = "TRAININGDAY_QWEN35_QLORA_R16_CHECKPOINTABLE_MATCHED"
 R16_V2_MANIFEST_SHA256 = "90b55cf8742f9222c91f88e5727dcd0113322e4721e4fd3d1bdcdf65f40d0836"
@@ -96,17 +98,20 @@ def _r16_prepare_output(args, preflight: dict) -> tuple[Path, Path | None, int, 
 
 
 def _required_base(binding: Path) -> tuple[dict, Path]:
-    if not binding.is_file() or binding.is_symlink():
-        raise AdmissionError("base binding missing or symlinked")
+    if (not binding.is_file()
+            or any(path.is_symlink() or getattr(path, "is_junction", lambda: False)()
+                   for path in (binding, *binding.parents))):
+        raise AdmissionError("base binding missing or symlink/junction ancestor")
     data = json.loads(binding.read_text(encoding="utf-8"))
     if (data.get("schema") != "TRAININGDAY_PINNED_BASE_V1" or data.get("model_id") != BASE_ID
-            or not isinstance(data.get("revision"), str) or len(data["revision"]) != 40
-            or any(c not in "0123456789abcdef" for c in data["revision"])
+            or data.get("revision") != BASE_REVISION
             or data.get("loader_class") != "Qwen3_5ForCausalLM"
             or data.get("quantization") != "NF4_DOUBLE_BF16"):
-        raise AdmissionError("official base binding incomplete or unpinned")
+        raise AdmissionError("official base revision or binding incomplete or unpinned")
     directory = Path(data.get("snapshot_path", ""))
-    if not directory.is_absolute() or not directory.is_dir() or directory.is_symlink():
+    if (not directory.is_absolute() or not directory.is_dir()
+            or directory.is_symlink()
+            or any(parent.is_symlink() for parent in directory.parents)):
         raise AdmissionError("pinned local base snapshot absent")
     files = data.get("files")
     if not isinstance(files, dict) or not files:
@@ -116,18 +121,63 @@ def _required_base(binding: Path) -> tuple[dict, Path]:
             raise AdmissionError(f"base {name} hash missing")
     if not any(name.endswith(".safetensors") for name in files):
         raise AdmissionError("base weight tensors not pinned")
+    # A loader may read versioned tokenizer JSON and nested chat templates,
+    # not only *.safetensors. Require an exact recursive set of regular files,
+    # with canonical POSIX-relative names and a digest for every file.
     for name, expected in files.items():
-        if (not isinstance(name, str) or Path(name).name != name
-                or name in {".", ".."} or not isinstance(expected, str)
-                or len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected)):
+        if (not isinstance(name, str) or not name or name.startswith("/")
+                or "\\" in name or ":" in name or "\x00" in name
+                or any(part in {"", ".", ".."} for part in name.split("/"))
+                or not isinstance(expected, str) or len(expected) != 64
+                or any(c not in "0123456789abcdef" for c in expected)):
             raise AdmissionError("base file binding malformed")
-        path = directory / name
-        if not path.is_file() or path.is_symlink() or _hash_file(path) != expected:
+        path = directory.joinpath(*name.split("/"))
+        if (not path.is_file() or path.is_symlink()
+                or any(parent.is_symlink() for parent in path.parents
+                       if parent == directory or directory in parent.parents)
+                or not path.resolve().is_relative_to(directory.resolve())
+                or _hash_file(path) != expected):
             raise AdmissionError(f"base file custody mismatch:{name}")
-    frozen_tensors = {name for name in files if name.endswith(".safetensors")}
-    actual_tensors = {path.name for path in directory.glob("*.safetensors")}
-    if actual_tensors != frozen_tensors:
-        raise AdmissionError("unbound or missing safetensors in pinned base snapshot")
+
+    # The fast tokenizer may select a versioned filename from this JSON rather
+    # than tokenizer.json. Require every named candidate to be byte-pinned so
+    # a loader/version change cannot select an unbound local asset.
+    try:
+        tokenizer_config = json.loads((directory / "tokenizer_config.json").read_text(
+            encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AdmissionError("base tokenizer configuration unreadable") from exc
+    if not isinstance(tokenizer_config, dict):
+        raise AdmissionError("base tokenizer configuration invalid")
+    fast_files = tokenizer_config.get("fast_tokenizer_files", [])
+    if fast_files is None:
+        fast_files = []
+    if (not isinstance(fast_files, list)
+            or any(not isinstance(name, str) or name not in files
+                   for name in fast_files)):
+        raise AdmissionError("base fast tokenizer candidate unpinned")
+
+    actual = set()
+
+    def visit(folder: Path, prefix: tuple[str, ...]) -> None:
+        try:
+            entries = tuple(folder.iterdir())
+        except OSError as exc:
+            raise AdmissionError("base snapshot inventory unreadable") from exc
+        for entry in entries:
+            if entry.is_symlink():
+                raise AdmissionError("symlink in pinned base snapshot")
+            relative = prefix + (entry.name,)
+            if entry.is_dir():
+                visit(entry, relative)
+            elif entry.is_file():
+                actual.add("/".join(relative))
+            else:
+                raise AdmissionError("unsupported base snapshot entry")
+
+    visit(directory, ())
+    if actual != set(files):
+        raise AdmissionError("unbound or missing files in pinned base snapshot")
     return data, directory
 
 
@@ -158,6 +208,8 @@ def _parameter_digest(model, torch) -> tuple[str, int]:
             continue
         count += param.numel()
         value = param.detach().to(device="cpu", dtype=torch.float32).contiguous()
+        if not torch.isfinite(value).all().item():
+            raise RuntimeError("nonfinite trainable LoRA parameter")
         digest.update(name.encode("utf-8"))
         digest.update(str(tuple(value.shape)).encode("ascii"))
         digest.update(value.numpy().tobytes())
@@ -166,7 +218,20 @@ def _parameter_digest(model, torch) -> tuple[str, int]:
     return digest.hexdigest(), count
 
 
+def _check_base_unchanged(binding: Path, expected_sha256: str,
+                          expected_data: dict, expected_directory: Path) -> None:
+    """Detect persistent loader-side mutation, not same-principal atomic custody."""
+    if _hash_file(binding) != expected_sha256:
+        raise AdmissionError("base binding custody changed during training")
+    observed, directory = _required_base(binding)
+    if observed != expected_data or directory != expected_directory:
+        raise AdmissionError("base snapshot custody changed during training")
+
+
 def validate_run(args) -> tuple[dict, list[dict], dict, Path]:
+    if (type(args.steps) is not int or type(args.cases) is not int
+            or type(args.seed) is not int):
+        raise AdmissionError("steps, cases, and seed must be exact integers")
     step_cap = 32 if _r16(args) else 8
     if not (args.mode == "zero" and args.steps == 0
             or args.mode in {"correct", "corrupt"} and 1 <= args.steps <= step_cap):
@@ -213,12 +278,39 @@ def validate_run(args) -> tuple[dict, list[dict], dict, Path]:
 
 def train(args) -> dict:
     summary, cases, base, model_path = validate_run(args)
+    # The zero and trained arms must use one frozen source selection. A weight
+    # digest alone cannot bind the admitted corpus or intended control inputs.
+    # This is a local equality commitment, not independent rights attestation.
+    frozen_source = {
+        "schema": "TRAININGDAY_R15_CONTROL_SOURCE_V1",
+        "question_contract": NUMERIC_QUESTION_CONTRACT,
+        "manifest_sha256": summary["manifest_sha256"],
+        "selected_id_sha256": summary["selected_id_sha256"],
+        "selected_count": summary["selected_count"],
+        "producer_identity": (getattr(args, "producer_git_head", None)
+                              or summary.get("source_commit")),
+        "base_model": base["model_id"], "base_revision": base["revision"],
+        "base_binding_sha256": _hash_file(args.base_binding),
+        "seed": args.seed, "cases": args.cases,
+        "selected_prompt_sha256": hashlib.sha256(json.dumps(
+            [item["prompt"] for item in cases], ensure_ascii=False,
+            separators=(",", ":")
+        ).encode("utf-8")).hexdigest(),
+    }
+    control_source_sha256 = canonical_sha(frozen_source)
+    if not _r16(args) and args.mode != "zero":
+        expected = getattr(args, "expected_control_source_sha256", None)
+        if (not isinstance(expected, str) or len(expected) != 64
+                or any(char not in "0123456789abcdef" for char in expected)
+                or expected != control_source_sha256):
+            raise AdmissionError("trained arm control source does not match zero arm")
     preflight = {"status": "SOURCE_ONLY_PREFLIGHT",
                  "recipe": R16_RECIPE if _r16(args) else RECIPE,
                  "question_contract": NUMERIC_QUESTION_CONTRACT,
                  "corpus": summary, "base_model": base["model_id"],
                  "base_revision": base["revision"], "mode": args.mode,
                  "steps": args.steps, "new_optimizer_steps": 0,
+                 "control_source_sha256": control_source_sha256,
                  "training_input_sha256": hashlib.sha256(
                      json.dumps(cases, sort_keys=True, ensure_ascii=False).encode("utf-8")
                  ).hexdigest()}
@@ -277,6 +369,8 @@ def train(args) -> dict:
     model = stack["Qwen3_5ForCausalLM"].from_pretrained(
         model_path, quantization_config=config, device_map=0, dtype=torch.bfloat16,
     )
+    _check_base_unchanged(args.base_binding, frozen_source["base_binding_sha256"],
+                          base, model_path)
     model.config.use_cache = False
     model = stack["prepare_model_for_kbit_training"](
         model, use_gradient_checkpointing=True,
@@ -337,13 +431,20 @@ def train(args) -> dict:
                 resume_from_checkpoint=str(resume_checkpoint)
                 if _r16(args) and resume_checkpoint else None
             )
-        observed_steps = int(trainer.state.global_step)
+        if type(trainer.state.global_step) is not int:
+            raise RuntimeError("optimizer step counter is not an exact integer")
+        observed_steps = trainer.state.global_step
         if observed_steps != args.steps:
             raise RuntimeError(f"optimizer step count mismatch:{observed_steps}!={args.steps}")
         after, count_after = _parameter_digest(trainer.model, torch)
         if count_after != count or ((before == after) != (args.mode == "zero")):
             raise RuntimeError("invalid LoRA tensor-change outcome")
         precision_after = verify_trainable(trainer.model, torch, permit_cast=False)
+        training_loss = float(training_result.training_loss) if training_result else None
+        if training_loss is not None and not math.isfinite(training_loss):
+            raise RuntimeError("nonfinite training loss")
+        _check_base_unchanged(args.base_binding, frozen_source["base_binding_sha256"],
+                              base, model_path)
         adapter_dir = output / "adapter"
         trainer.model.save_pretrained(adapter_dir, safe_serialization=True)
         saved_model = adapter_dir / "adapter_model.safetensors"
@@ -363,7 +464,7 @@ def train(args) -> dict:
             "base_binding_sha256": _hash_file(args.base_binding),
             "token_budget": tokens, "target_coverage": coverage,
             "fp32_before": precision, "fp32_after": precision_after,
-            "training_loss": float(training_result.training_loss) if training_result else None,
+            "training_loss": training_loss,
             "optimizer_identity": optimizer_identity,
             "runtime": {"torch": torch.__version__, "transformers": stack["transformers"].__version__},
         }
@@ -404,6 +505,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=41)
     parser.add_argument("--learning-rate", type=float, default=0.00002)
     parser.add_argument("--expected-initial-digest", default=None)
+    parser.add_argument("--expected-control-source-sha256", default=None,
+                        help="Frozen control_source_sha256 emitted by the zero-update arm")
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--r16-checkpointable", action="store_true",
                         help="Bounded R16 experiment: 8–32 steps with optimizer/RNG checkpoint custody")

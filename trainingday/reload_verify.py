@@ -26,9 +26,12 @@ def validate_receipt(
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     if (receipt.get("status") != "ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED"
             or receipt.get("mode") not in {"correct", "corrupt"}
-            or not isinstance(receipt.get("new_optimizer_steps"), int)
+            or type(receipt.get("new_optimizer_steps")) is not int
             or receipt["new_optimizer_steps"] < 1):
         raise AdmissionError("no actual trained adapter indicated")
+    if (type(receipt.get("trainable_parameter_count")) is not int
+            or receipt["trainable_parameter_count"] < 1):
+        raise AdmissionError("trained adapter trainable parameter count malformed")
     if not binding_path.is_file() or binding_path.is_symlink():
         raise AdmissionError("base binding unavailable")
     if _hash_file(binding_path) != receipt.get("base_binding_sha256"):
@@ -91,11 +94,24 @@ def verify(receipt_path: Path, binding_path: Path, output_path: Path) -> dict:
         model_path, quantization_config=quant, device_map=0, dtype=torch.bfloat16,
     )
     reloaded = PeftModel.from_pretrained(model, adapter_dir, is_trainable=True)
+    for name, param in reloaded.named_parameters():
+        if not param.requires_grad:
+            continue
+        if param.dtype != torch.float32:
+            raise RuntimeError(f"reloaded trainable adapter tensor not native FP32:{name}")
+        if not bool(torch.isfinite(param.detach()).all().item()):
+            raise RuntimeError(f"reloaded trainable adapter tensor nonfinite:{name}")
     actual, count = _parameter_digest(reloaded, torch)
     if actual != receipt["trainable_digest_after"]:
         raise RuntimeError("freshly reloaded adapter tensor digest mismatch")
     if count != receipt["trainable_parameter_count"]:
         raise RuntimeError("freshly reloaded trainable count mismatch")
+    # The loader consumed the pinned base between the initial preflight and
+    # this proof. Reject persistent mutation of any bound file before
+    # certifying reload; this is not an atomic/same-principal custody proof.
+    if _hash_file(binding_path) != receipt["base_binding_sha256"]:
+        raise AdmissionError("base binding changed during independent reload")
+    _required_base(binding_path)
     report = {
         "status": "INDEPENDENT_ADAPTER_RELOAD_VERIFIED",
         "source_training_receipt": str(receipt_path.resolve()),

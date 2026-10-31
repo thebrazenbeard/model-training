@@ -113,8 +113,12 @@ def _receipt(plan, arm, control, *, probe_sha, selected_cfg):
         "supervised_target_tokens": 320 if trained else 0,
         "peak_cuda_allocated_bytes": 500_000,
         "peak_cuda_reserved_bytes": 600_000,
-        "peak_nvml_used_bytes": 700_000,
+        "peak_cuda_metric_scope": "PRIMARY_TRAIN_PROCESS_AFTER_SETUP_RESET",
+        "peak_nvml_used_bytes": 700_000 if arm == "mezo" else 0,
+        "peak_nvml_metric_scope": "SAMPLED_NVML" if arm == "mezo" else "UNAVAILABLE_NOT_ESTIMATED",
         "peak_cpu_rss_bytes": 800_000,
+        "peak_cpu_rss_metric_scope": ("TRAINING_WINDOW_SAMPLED_RSS" if arm == "mezo"
+                                      else "PROCESS_LIFETIME_PEAK_OR_CURRENT_RSS"),
         "trainable_digest_before": H,
         "trainable_digest_after": J if trained else H,
         "train_start_monotonic_ns": start,
@@ -232,8 +236,13 @@ def test_equal_time_comparison_never_autopromotes_small_gain():
     result = compare_arms(plan, receipts, probes)
     assert result["decision"] == "NO_MODEL_PROMOTION_INDEPENDENT_REPLICATION_REQUIRED"
     assert result["control_arms_verified"] == 8
+    assert result["physical_vram_residency"] == "UNVERIFIED_BY_ALLOCATOR_OR_SAMPLED_NVML"
     assert result["method_metrics"]["mezo"]["forward_sample_tokens"] == 12_800
     assert result["method_metrics"]["qlora"]["forward_sample_tokens"] == 6_400
+    assert result["method_metrics"]["mezo"]["fit_probe_peak_cuda_reserved_bytes"] == 600_000
+    assert result["method_metrics"]["qlora"]["fit_probe_peak_cuda_reserved_bytes"] == 600_000
+    assert result["method_metrics"]["qlora"]["peak_cuda_metric_scope"] == \
+        "PRIMARY_TRAIN_PROCESS_AFTER_SETUP_RESET"
     assert result["accuracy_delta_mezo_minus_qlora"] == 0
 
 
@@ -244,6 +253,8 @@ def test_equal_time_comparison_never_autopromotes_small_gain():
     ("eval_accuracy", 0.9),
     ("max_prepared_example_tokens", 1025),
     ("external_process_wall_seconds", 1.0),
+    ("peak_cuda_metric_scope", "SYNTHETIC_FIT_FRONTIER"),
+    ("peak_nvml_metric_scope", "MEASURED_PHYSICAL_VRAM_RESIDENCY"),
     ("selected_id_sha256", "b" * 64),
 ])
 def test_arm_receipt_rejects_time_compute_eval_and_binding_mismatch(key, value):
@@ -251,6 +262,18 @@ def test_arm_receipt_rejects_time_compute_eval_and_binding_mismatch(key, value):
     bad = copy.deepcopy(receipts[2])  # MeZO correct arm
     bad[key] = value
     with pytest.raises(BenchmarkError):
+        validate_arm_receipt(bad, plan)
+
+
+@pytest.mark.parametrize("arm_index,used_bytes", [
+    (2, 0),        # A sampled NVML observation cannot claim no physical residency.
+    (6, 700_000),  # An unavailable observation must not invent a numeric peak.
+])
+def test_arm_receipt_rejects_nvml_scope_counter_contradiction(arm_index, used_bytes):
+    plan, probes, receipts = _comparison_inputs()
+    bad = copy.deepcopy(receipts[arm_index])
+    bad["peak_nvml_used_bytes"] = used_bytes
+    with pytest.raises(BenchmarkError, match="NVML"):
         validate_arm_receipt(bad, plan)
 
 
