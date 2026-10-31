@@ -68,12 +68,23 @@ def _hex(value: object, width: int = 64) -> bool:
 
 
 def _number(value: object, *, zero: bool = True) -> bool:
-    return (type(value) in (int, float) and math.isfinite(value)
-            and (value >= 0 if zero else value > 0))
+    # An unbounded JSON integer can exceed float conversion limits:
+    # math.isfinite(10**1000) raises OverflowError instead of returning False.
+    # Bound *before* float operations. R18 values are elapsed seconds, NLL,
+    # accuracy, or loss sums; 1e18 is already far beyond an admissible run.
+    if type(value) not in (int, float):
+        return False
+    if not (0 <= value <= 1e18 if zero else 0 < value <= 1e18):
+        return False
+    return type(value) is int or math.isfinite(value)
 
 
 def _integer(value: object, *, zero: bool = True) -> bool:
-    return type(value) is int and (value >= 0 if zero else value > 0)
+    # Receipt counters and seeds need bounded machine-readable values. Python
+    # can represent far larger integers than the JSON encoder can serialize;
+    # an unbounded seed otherwise raises ValueError in canonical_sha256().
+    return (type(value) is int and value <= 2**63 - 1
+            and (value >= 0 if zero else value > 0))
 
 
 def canonical_sha256(value: object) -> str:
