@@ -1,4 +1,10 @@
 import importlib.util
+import os
+import subprocess
+import sys
+from contextlib import contextmanager
+
+import pytest
 
 from successor.experiments import qualify_v10r3r3_stage0_runtime as stage0
 
@@ -302,8 +308,8 @@ def test_stage0_kbit_preparation_passes_frozen_nonreentrant_checkpointing():
     )]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="real msvcrt lock is verified by the Windows CI job")
 def test_stage0_gpu_lock_rejects_concurrent_holder_and_releases(tmp_path):
-    import pytest
 
     lock_path = tmp_path / "stage0-gpu.lock"
     with stage0.exclusive_stage0_gpu_lock(lock_path):
@@ -313,6 +319,45 @@ def test_stage0_gpu_lock_rejects_concurrent_holder_and_releases(tmp_path):
 
     with stage0.exclusive_stage0_gpu_lock(lock_path):
         pass
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native msvcrt locking requires Windows")
+def test_stage0_gpu_lock_blocks_other_process_then_releases(tmp_path):
+    """Exercise the OS byte-range lock, not the process-local reentry guard."""
+    lock_path = tmp_path / "stage0-gpu-cross-process.lock"
+    contender = """
+import sys
+from successor.experiments import qualify_v10r3r3_stage0_runtime as stage0
+
+try:
+    with stage0.exclusive_stage0_gpu_lock(sys.argv[1]):
+        pass
+except stage0.Stage0Hold:
+    raise SystemExit(73)
+"""
+
+    def try_lock_in_separate_process():
+        return subprocess.run(
+            [sys.executable, "-c", contender, str(lock_path)],
+            cwd=os.path.dirname(os.path.dirname(__file__)),
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+
+    with stage0.exclusive_stage0_gpu_lock(lock_path):
+        blocked = try_lock_in_separate_process()
+    assert blocked.returncode == 73, (
+        f"separate process bypassed OS lock or failed unexpectedly: "
+        f"exit={blocked.returncode}, stdout={blocked.stdout!r}, stderr={blocked.stderr!r}"
+    )
+
+    released = try_lock_in_separate_process()
+    assert released.returncode == 0, (
+        f"separate process could not reacquire released OS lock: "
+        f"exit={released.returncode}, stdout={released.stdout!r}, stderr={released.stderr!r}"
+    )
 
 
 def test_stage0_runtime_entrypoints_accept_machine_global_gpu_lock_path():
@@ -336,8 +381,15 @@ def test_stage0_preload_commit_gate_rejects_below_floor():
         )
 
 
-def test_stage0_gpu_entrypoints_check_commit_before_training_stack_load(tmp_path):
-    import pytest
+def test_stage0_gpu_entrypoints_check_commit_before_training_stack_load(monkeypatch, tmp_path):
+
+    # This test owns the commit-headroom boundary, not platform lock custody.
+    # Use the real msvcrt lock only in the dedicated Windows CI lane.
+    @contextmanager
+    def source_only_lock(_lock_path=None):
+        yield {"lock_path": str(_lock_path)}
+
+    monkeypatch.setattr(stage0, "exclusive_stage0_gpu_lock", source_only_lock)
 
     calls = []
 

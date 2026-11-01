@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+import pytest
 from unittest.mock import patch
 
 from successor.experiments import build_r12_voice_corrective as subject
@@ -40,6 +41,7 @@ class SourceTransportTests(unittest.TestCase):
         self.assertEqual(binding["r12_source_voice_sha256"], FROZEN_GIT_SHA)
         self.assertEqual(subject.VOICE_SHA, FROZEN_GIT_SHA)
 
+    @pytest.mark.owner_historical
     def test_existing_r12_train_corpus_still_exact(self):
         from successor.experiments.train_v10_qwen35_authorized import sha256_file
         self.assertEqual(sha256_file(subject.OUT_DIR / "train.jsonl"),

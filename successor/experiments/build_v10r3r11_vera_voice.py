@@ -37,6 +37,28 @@ def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf8").splitlines() if line.strip()]
 
 
+def r10_spec_sha256(path: Path) -> str:
+    """Verify the Windows CRLF spec digest across Git's LF checkout transport.
+
+    The completed R10 training receipt pins the original Windows CRLF bytes,
+    while the committed source blob has LF line endings. Only those exact two
+    encodings are equivalent; mixed endings, lone CR, and content edits hold.
+    Binary parent artifacts and receipt signatures are never normalized.
+    """
+    raw = path.read_bytes()
+    if b"\r\n" in raw:
+        remainder = raw.replace(b"\r\n", b"")
+        require(b"\r" not in remainder and b"\n" not in remainder,
+                "R10 spec mixed line endings")
+        windows_bytes = raw
+    else:
+        require(b"\r" not in raw, "R10 spec unsupported carriage return")
+        windows_bytes = raw.replace(b"\n", b"\r\n")
+    digest = hashlib.sha256(windows_bytes).hexdigest()
+    require(digest == R10_SPEC_SHA, "R10 spec hash mismatch")
+    return digest
+
+
 def select_unused_voices(voice: list[dict], heldout: list[dict]) -> list[dict]:
     require(len(voice) == 68 and len(set(VOICE_INDICES)) == 32, "voice seed membership changed")
     heldout_prompts = {x["user"].strip().casefold() for x in heldout}
@@ -125,7 +147,7 @@ def transform(rows: list[dict], voice: list[dict],
 
 def build_spec(repo: Path, corpus_sha: str) -> dict:
     spec_path = repo/R10_SPEC_REL
-    require(sha256(spec_path) == R10_SPEC_SHA, "R10 spec hash mismatch")
+    r10_spec_sha256(spec_path)
     receipt = json.loads(R10_RECEIPT.read_text(encoding="utf8"))
     unsigned = dict(receipt)
     signature = unsigned.pop("receipt_sha256", None)

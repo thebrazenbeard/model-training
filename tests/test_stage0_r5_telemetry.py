@@ -1,4 +1,5 @@
 import json
+from contextlib import nullcontext
 
 from successor.experiments import qualify_v10r3r3_stage0_runtime as stage0
 
@@ -42,6 +43,12 @@ def test_stage0_optimizer_soak_forwards_telemetry_path(monkeypatch, tmp_path):
         stage0,
         "_execute_stage0_optimizer_soak_unlocked",
         fake_unlocked,
+    )
+    # Telemetry forwarding does not require a native Windows GPU file lock.
+    monkeypatch.setattr(
+        stage0,
+        "exclusive_stage0_gpu_lock",
+        lambda _lock_path=None: nullcontext({"lock_path": str(_lock_path)}),
     )
     telemetry_path = tmp_path / "trace.jsonl"
     result = stage0.execute_stage0_optimizer_soak(
