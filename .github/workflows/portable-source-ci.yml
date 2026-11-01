@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   portable-source-only:
-    name: Portable source only (11 host tests explicitly deferred)
+    name: Portable source only (12 host + 2 Windows tests explicitly deferred)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -59,6 +59,6 @@ jobs:
     steps:
       - name: Fail closed until separately authorized host evidence is reviewed
         run: |
-          echo 'Eleven real D:\VERA/Lappy tests require independent host lease, NAS route, and protected-artifact authorization.' >&2
+          echo 'Twelve real D:\VERA/Lappy tests require independent host lease, NAS route, and protected-artifact authorization.' >&2
           echo 'HOST_INTEGRATION_NOT_QUALIFIED: portable-source passing is not full CI.' >&2
           exit 1
