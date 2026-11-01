@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import pytest
 
 from successor.experiments import r12_adapter_precision as prec
 from successor.experiments import build_r12_voice_corrective as builder
@@ -68,6 +69,7 @@ class R12PrecisionTests(unittest.TestCase):
                 with self.assertRaisesRegex(DevTrainingHold, expected):
                     load_and_validate_dev_spec(path)
 
+    @pytest.mark.owner_historical
     def test_r12_source_is_new_and_no_heldout_prompt_overlap(self):
         from unittest import mock
         with tempfile.TemporaryDirectory() as td:

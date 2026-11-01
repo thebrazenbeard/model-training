@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from trainingday.admission import AdmissionError
+from trainingday import admission
 from trainingday.train_neural import _control_rows, _required_base, train, validate_run
 from test_trainingday_admission import _corpus
 from test_trainingday_labyrinth_intake import _fixture as _labyrinth_fixture
@@ -47,6 +48,36 @@ def test_only_preflight_runs_without_gpu_or_importing_torch(tmp_path):
     assert report["status"] == "SOURCE_ONLY_PREFLIGHT"
     assert report["new_optimizer_steps"] == 0
     assert len(report["training_input_sha256"]) == 64
+
+
+def test_schema_dispatch_rejects_duplicate_manifest_keys_before_admission(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    def forbidden_downstream(*_args, **_kwargs):
+        raise AssertionError("untrusted manifest reached downstream admission")
+    monkeypatch.setattr("trainingday.train_neural.admit", forbidden_downstream)
+    monkeypatch.setattr("trainingday.train_neural.admit_labyrinth", forbidden_downstream)
+    args.manifest.write_text(
+        '{"schema":"UNREVIEWED","schema":"VERA_TRAININGDAY_ADMITTED_SHARDS_V1"}',
+        encoding="utf-8",
+    )
+    with pytest.raises(AdmissionError, match="duplicate/ambiguous JSON key"):
+        validate_run(args)
+    assert not list(args.output_root.iterdir())
+
+
+def test_schema_dispatch_bounds_manifest_before_parsing(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    def forbidden_downstream(*_args, **_kwargs):
+        raise AssertionError("oversized manifest reached downstream admission")
+    monkeypatch.setattr("trainingday.train_neural.admit", forbidden_downstream)
+    monkeypatch.setattr("trainingday.train_neural.admit_labyrinth", forbidden_downstream)
+    monkeypatch.setattr(admission, "MAX_MANIFEST_BYTES", 100)
+    args.manifest.write_text(json.dumps({
+        "schema": "VERA_TRAININGDAY_ADMITTED_SHARDS_V1", "padding": "x" * 200,
+    }), encoding="utf-8")
+    with pytest.raises(AdmissionError, match="manifest size limit"):
+        validate_run(args)
+    assert not list(args.output_root.iterdir())
 
 
 def test_trained_arm_requires_control_binding(tmp_path):

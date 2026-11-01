@@ -3,7 +3,9 @@ import json
 
 import pytest
 
+import trainingday.labyrinth_intake as labyrinth_intake
 from trainingday.admission import AdmissionError
+from trainingday import labyrinth_intake
 from trainingday.labyrinth_intake import admit_labyrinth
 
 
@@ -106,6 +108,14 @@ def test_independent_answer_replay_rejects_bad_label(tmp_path):
         _admit(path, tmp_path)
 
 
+def test_unhashable_operation_name_fails_with_admission_error(tmp_path):
+    path, rows = _fixture(tmp_path)
+    rows[1]["operations"][0][0] = ["add"]
+    _rewrite_train(path, rows)
+    with pytest.raises(AdmissionError, match="instruction invalid"):
+        _admit(path, tmp_path)
+
+
 def test_hash_tamper_rejects_before_row_read(tmp_path):
     path, _ = _fixture(tmp_path)
     with (path.parent / "train/000000.jsonl").open("ab") as stream:
@@ -118,6 +128,15 @@ def test_license_notice_tamper_rejected(tmp_path):
     path, _ = _fixture(tmp_path)
     (path.parent / "licenses/TheAlgorithms__Python.txt").write_bytes(b"not MIT")
     with pytest.raises(AdmissionError, match="notice"):
+        _admit(path, tmp_path)
+
+
+def test_non_array_license_notices_fail_with_admission_error(tmp_path):
+    path, _ = _fixture(tmp_path)
+    manifest = json.loads(path.read_text())
+    manifest["licenses"] = None
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(AdmissionError, match="license notices invalid"):
         _admit(path, tmp_path)
 
 
@@ -155,3 +174,63 @@ def test_duplicate_normalized_reasoning_prompt_rejected(tmp_path):
     _rewrite_train(path, rows)
     with pytest.raises(AdmissionError, match="repeated normalized"):
         _admit(path, tmp_path)
+
+
+def test_duplicate_manifest_control_field_is_not_last_key_wins(tmp_path):
+    path, _ = _fixture(tmp_path)
+    original = '"state": "CORPUS_BUILT_NO_MODEL_TRAINING"'
+    assert original in path.read_text()
+    path.write_text(path.read_text().replace(
+        original, '"state": "UNREVIEWED", ' + original, 1))
+    with pytest.raises(AdmissionError, match="duplicate/ambiguous JSON key"):
+        _admit(path, tmp_path)
+
+
+def test_duplicate_train_rights_field_is_not_last_key_wins(tmp_path):
+    path, _ = _fixture(tmp_path)
+    train_file = path.parent / "train/000000.jsonl"
+    original = b'"license": "SYNTHETIC_ORIGINAL"'
+    raw = train_file.read_bytes()
+    assert original in raw
+    tampered = raw.replace(original,
+                           b'"license": "UNLICENSED", ' + original, 1)
+    train_file.write_bytes(tampered)
+    manifest = json.loads(path.read_text())
+    shard = next(s for s in manifest["shards"] if s["split"] == "train")
+    shard.update(bytes=len(tampered), sha256=_sha(tampered))
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(AdmissionError, match="duplicate/ambiguous JSON key"):
+        _admit(path, tmp_path)
+
+
+def test_oversized_manifest_fails_before_json_parse(tmp_path, monkeypatch):
+    path, _ = _fixture(tmp_path)
+    monkeypatch.setattr(labyrinth_intake, "MAX_MANIFEST_BYTES", 100)
+    with pytest.raises(AdmissionError, match="manifest size limit"):
+        _admit(path, tmp_path)
+
+
+def test_oversized_train_row_fails_before_json_parse(tmp_path, monkeypatch):
+    path, _ = _fixture(tmp_path)
+    monkeypatch.setattr(labyrinth_intake, "MAX_JSONL_ROW_BYTES", 100)
+    with pytest.raises(AdmissionError, match="JSONL row size limit"):
+        _admit(path, tmp_path)
+
+
+def test_manifest_receipt_hash_binds_bytes_actually_validated(tmp_path, monkeypatch):
+    path, _ = _fixture(tmp_path)
+    validated_bytes = path.read_bytes()
+    parse = labyrinth_intake._strict_json
+
+    def replace_manifest_after_parse(raw):
+        parsed = parse(raw)
+        if raw == validated_bytes:
+            changed = json.loads(path.read_text())
+            changed["state"] = "UNREVIEWED"
+            path.write_text(json.dumps(changed))
+        return parsed
+
+    monkeypatch.setattr(labyrinth_intake, "_strict_json", replace_manifest_after_parse)
+    report, _ = _admit(path, tmp_path)
+    assert _sha(path.read_bytes()) != _sha(validated_bytes)
+    assert report["manifest_sha256"] == _sha(validated_bytes)

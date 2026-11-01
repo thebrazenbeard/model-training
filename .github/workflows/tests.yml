@@ -12,6 +12,10 @@ permissions:
 
 jobs:
   pytest-source:
+    # Full source-head diagnostic stays independent from the separately named
+    # portable-source manifest. Owner-historical RED evidence is never hidden.
+    # runner-images #14748: ubuntu-latest moves from 24.04 to 26.04.
+    # Keep the existing full diagnostic on a stable image; failures remain RED.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -51,6 +55,9 @@ jobs:
         run: |
           pip install --disable-pip-version-check -r requirements.txt
           pip install --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.14.0+cpu
+          # Runtime modules used by CPU-only checkpoint and optimizer tests.
+          # Install after the CPU torch wheel; avoid resolving a second torch.
+          pip install --disable-pip-version-check --no-deps safetensors==0.8.0 torchao==0.18.0
       - name: Compile and test
         env:
           CUDA_VISIBLE_DEVICES: ""
@@ -58,8 +65,193 @@ jobs:
           python -m py_compile bootcamp.py fast_bootcamp.py quality_gate.py
           python -m pytest -q -p ci_full_suite_guard
 
+  portable-source-contracts:
+    # An independently named source-only gate. It does not replace or suppress
+    # the full pytest diagnostic above, and does not execute protected corpora,
+    # private evaluation fixtures, real Qwen training, GPU, or native Windows
+    # locking. Windows contract value objects below are portable source tests.
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify and record portable-source HEAD and tree
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD)"
+          actual_tree="$(git rev-parse HEAD^{tree})"
+          if [[ "$actual_sha" != "$EXPECTED_SOURCE_SHA" ]]; then
+            echo "Checkout mismatch: expected $EXPECTED_SOURCE_SHA; got $actual_sha" >&2
+            exit 1
+          fi
+          echo "Verified portable-source HEAD: $actual_sha"
+          echo "Verified portable-source tree: $actual_tree"
+          printf 'Portable-source HEAD: `%s`\nPortable-source tree: `%s`\n' "$actual_sha" "$actual_tree" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Run explicit offline portable-source unittest manifest
+        # Positive allowlist: synthetic/source-contract modules, not a glob or
+        # a reclassification of the complete test suite. Stdlib only.
+        run: |
+          python -m unittest -q \
+            tests.test_ci_dependency_contract \
+            tests.test_ci_portable_source_contract \
+            tests.test_ci_r16_source_contract \
+            tests.test_cognitive_sft_intake \
+            tests.test_owner_historical_marker_contract \
+            tests.test_owner_historical_evidence_preflight \
+            tests.test_trainingday_readme_contract \
+            tests.test_trainingday_host_launch_request \
+            tests.test_r140_host_custody_service \
+            tests.test_r140_linux_fd_custody \
+            tests.test_r140_monotonic_authority \
+            tests.test_r140_qwen_attestation \
+            tests.test_r140_windows_custody_contract \
+            tests.test_r141_cross_module_faults \
+            tests.test_r141_evidence_gate \
+            tests.test_r141_neural_continuation_gate \
+            tests.test_r142_benchmark_numeric \
+            tests.test_r143_wire_json_strict \
+            tests.test_r144_eval_bank_boundary \
+            tests.test_r144_launch_direct_helpers \
+            tests.test_r144_physical_launch_hard_hold \
+            tests.test_r18_checkpoint_commit \
+            tests.test_r18_eval \
+            tests.test_r18_mezo \
+            tests.test_r18_qlora \
+            tests.test_trainingday_r16_checkpoint \
+            tests.test_r152_physical_eval_guards \
+            tests.test_stage0_r5_telemetry
+
+  trainingday-r14-source:
+    # Fresh Qwen R14 source-only admission contracts named in
+    # trainingday/README.md. No manifest download, GPU, model training,
+    # checkpoint restart, or protected heldout material is used here.
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify and record TrainingDay R14 source HEAD and tree
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD)"
+          actual_tree="$(git rev-parse HEAD^{tree})"
+          if [[ "$actual_sha" != "$EXPECTED_SOURCE_SHA" ]]; then
+            echo "Checkout mismatch: expected $EXPECTED_SOURCE_SHA; got $actual_sha" >&2
+            exit 1
+          fi
+          echo "Verified TrainingDay R14 source HEAD: $actual_sha"
+          echo "Verified TrainingDay R14 source tree: $actual_tree"
+          printf 'TrainingDay R14 source HEAD: `%s`\nTrainingDay R14 source tree: `%s`\n' "$actual_sha" "$actual_tree" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install source-test runner only
+        run: python -m pip install --disable-pip-version-check pytest==8.3.5
+      - name: Run documented fresh R14 source contracts
+        run: |
+          PYTHONPATH=.:tests python -m pytest -q \
+            tests/test_trainingday_admission.py \
+            tests/test_trainingday_labyrinth_intake.py \
+            tests/test_trainingday_neural.py
+
+  trainingday-r16-source:
+    # Separate R16 checkpoint/reload/continuation and R18 checkpoint/eval
+    # source signal. Tests use synthetic files only: no physical training,
+    # actual optimizer restart, protected evaluation bank, or GPU.
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify and record TrainingDay R16 source HEAD and tree
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD)"
+          actual_tree="$(git rev-parse HEAD^{tree})"
+          if [[ "$actual_sha" != "$EXPECTED_SOURCE_SHA" ]]; then
+            echo "Checkout mismatch: expected $EXPECTED_SOURCE_SHA; got $actual_sha" >&2
+            exit 1
+          fi
+          echo "Verified TrainingDay R16 source HEAD: $actual_sha"
+          echo "Verified TrainingDay R16 source tree: $actual_tree"
+          printf 'TrainingDay R16 source HEAD: `%s`\nTrainingDay R16 source tree: `%s`\n' "$actual_sha" "$actual_tree" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install source-test runner only
+        run: python -m pip install --disable-pip-version-check pytest==8.3.5
+      - name: Run R16 reload and continuation plus R18 checkpoint/eval source contracts
+        run: |
+          PYTHONPATH=.:tests python -m pytest -q \
+            tests/test_ci_r16_source_contract.py \
+            tests/test_trainingday_reload_verify.py \
+            tests/test_trainingday_r16_checkpoint.py \
+            tests/test_r141_neural_continuation_gate.py \
+            tests/test_r18_checkpoint_commit.py \
+            tests/test_r18_eval.py \
+            tests/test_r18_mezo.py \
+            tests/test_r18_qlora.py \
+            tests/test_r18_eval_source.py \
+            tests/test_r152_physical_eval_guards.py \
+            tests/test_r18_benchmark.py
+
+  windows-stage0-source:
+    # The Stage-0 lock uses msvcrt. Its real contention/release test must run
+    # on Windows; Linux runs only the platform-independent Stage-0 seams.
+    if: ${{ github.event.repository.private == false }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact Windows source HEAD
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = (git rev-parse --verify HEAD).Trim()
+          $tree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($actual -ne $env:EXPECTED_SOURCE_SHA) {
+            throw "Source checkout mismatch: $actual"
+          }
+          Write-Output "Source HEAD: $actual"
+          Write-Output "Source tree: $tree"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Windows source HEAD: ``$actual``; tree: ``$tree``"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Test native Windows Stage-0 lock source behavior
+        run: |
+          python -m pip install --disable-pip-version-check pytest==8.3.5
+          python -m pytest -q tests/test_stage0_runtime_qualification.py tests/test_stage0_r5_telemetry.py
+
   pytest-synthetic-merge:
-    # A green source head does not establish merge compatibility.
+    # A green source head does not establish target-branch merge compatibility.
+    # The full diagnostic remains RED on missing owner-historical evidence.
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -98,6 +290,7 @@ jobs:
         run: |
           pip install --disable-pip-version-check -r requirements.txt
           pip install --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.14.0+cpu
+          pip install --disable-pip-version-check --no-deps safetensors==0.8.0 torchao==0.18.0
       - name: Compile and test
         env:
           CUDA_VISIBLE_DEVICES: ""

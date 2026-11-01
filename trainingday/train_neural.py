@@ -15,7 +15,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from trainingday.admission import AdmissionError, admit, _hash_file
+from trainingday.admission import AdmissionError, admit, _hash_file, read_manifest_schema_strict
 from trainingday.labyrinth_intake import SCHEMA as LABYRINTH_SCHEMA, admit_labyrinth
 from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
 from trainingday.checkpoint_custody import (
@@ -211,8 +211,7 @@ def validate_run(args) -> tuple[dict, list[dict], dict, Path]:
     if args.expected_initial_digest and (len(args.expected_initial_digest) != 64
                                         or any(c not in "0123456789abcdef" for c in args.expected_initial_digest)):
         raise AdmissionError("initial digest malformed")
-    manifest_head = json.loads(args.manifest.read_text(encoding="utf-8"))
-    if manifest_head.get("schema") == LABYRINTH_SCHEMA:
+    if read_manifest_schema_strict(args.manifest) == LABYRINTH_SCHEMA:
         summary, selected = admit_labyrinth(
             args.manifest, args.work_root, sample_size=args.cases,
             producer_git_head=args.producer_git_head,

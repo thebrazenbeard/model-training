@@ -10,13 +10,20 @@ from __future__ import annotations
 
 import hashlib
 import heapq
-import json
 import re
 import sqlite3
 import tempfile
 from pathlib import Path
 
-from trainingday.admission import AdmissionError, _canonical_prompt, _hash_file, _require
+from trainingday.admission import (
+    MAX_JSONL_ROW_BYTES,
+    MAX_MANIFEST_BYTES,
+    AdmissionError,
+    _canonical_prompt,
+    _hash_file,
+    _require,
+    _strict_json,
+)
 
 
 SCHEMA = "vera.trainingday.corpus.v1"
@@ -51,7 +58,8 @@ def _replay(row: dict, seed: int) -> dict:
     value = row["start"]
     for op in ops:
         _require(isinstance(op, list) and len(op) == 2
-                 and op[0] in OPS and type(op[1]) is int and -15 <= op[1] <= 15,
+                 and isinstance(op[0], str) and op[0] in OPS
+                 and type(op[1]) is int and -15 <= op[1] <= 15,
                  "operation-chain instruction invalid")
         name, operand = op
         if name == "add":
@@ -90,7 +98,14 @@ def admit_labyrinth(manifest_path: Path, work_root: Path, *, sample_size: int = 
              and re.fullmatch(r"[0-9a-f]{40}", producer_git_head) is not None,
              "producer Git head must be exact")
     root = manifest_path.parent
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # The generic TrainingDay path already rejects duplicate/ambiguous JSON
+    # controls. Labyrinth's adapter must make the same guarantee for its
+    # manifest and train rows, including license and provenance declarations.
+    with manifest_path.open("rb") as reader:
+        manifest_raw = reader.read(MAX_MANIFEST_BYTES + 1)
+    _require(len(manifest_raw) <= MAX_MANIFEST_BYTES, "Labyrinth manifest size limit")
+    manifest = _strict_json(manifest_raw)
+    _require(isinstance(manifest, dict), "Labyrinth manifest is not an object")
     _require(manifest.get("schema") == SCHEMA and manifest.get("state") == STATE,
              "Labyrinth corpus not completed")
     _require(type(manifest.get("seed")) is int and manifest["seed"] >= 0,
@@ -110,7 +125,8 @@ def admit_labyrinth(manifest_path: Path, work_root: Path, *, sample_size: int = 
         source_map[source["repo"]] = source
     _require(manifest["heldout_repo"] in source_map, "heldout source absent")
     license_map = {}
-    for notice in manifest.get("licenses", []):
+    _require(isinstance(manifest.get("licenses"), list), "license notices invalid")
+    for notice in manifest["licenses"]:
         _require(isinstance(notice, dict) and notice.get("repo") in source_map
                  and notice.get("license") == "MIT", "notice entry invalid")
         relative = notice.get("path", "")
@@ -163,13 +179,12 @@ def admit_labyrinth(manifest_path: Path, work_root: Path, *, sample_size: int = 
                 checksum = hashlib.sha256()
                 observed = 0
                 with file.open("rb") as stream:
-                    for raw in stream:
+                    while raw := stream.readline(MAX_JSONL_ROW_BYTES + 1):
+                        _require(len(raw) <= MAX_JSONL_ROW_BYTES, "Labyrinth JSONL row size limit")
                         checksum.update(raw)
                         observed += 1
-                        try:
-                            row = json.loads(raw.decode("utf-8"))
-                        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                            raise AdmissionError("invalid Labyrinth JSONL") from exc
+                        row = _strict_json(raw)
+                        _require(isinstance(row, dict), "Labyrinth JSONL row is not an object")
                         if row.get("kind") == "code":
                             repo = row.get("source_repo")
                             _require(repo != manifest["heldout_repo"] and repo in source_map,
@@ -208,7 +223,7 @@ def admit_labyrinth(manifest_path: Path, work_root: Path, *, sample_size: int = 
     selected = [case for _, _, case in sorted(picked, key=lambda e: (-e[0], e[1]))]
     summary = {"status": "ADMITTED_LABYRINTH_TRAIN_ONLY_NO_WEIGHT_UPDATE",
                "producer_git_head": producer_git_head,
-               "manifest_sha256": _hash_file(manifest_path),
+               "manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
                "source_license_count": len(license_map),
                "train_code_rows_not_used_for_sft": code_count,
                "verified_reasoning_train_rows": reasoning_count,

@@ -122,6 +122,24 @@ def _strict_json(raw: bytes) -> object:
         raise AdmissionError("invalid UTF-8 JSON") from exc
 
 
+def read_manifest_schema_strict(path: Path) -> str:
+    """Bound and strictly parse the schema used to select an intake adapter.
+
+    This is dispatch only, not corpus admission: the selected adapter still
+    reopens and validates its entire manifest and referenced data. Neither a
+    duplicate key nor a giant manifest may reach a last-key-wins pre-parser.
+    """
+    path = Path(path)
+    _require(path.is_file() and not path.is_symlink(), "manifest missing/symlinked")
+    with path.open("rb") as reader:
+        raw = reader.read(MAX_MANIFEST_BYTES + 1)
+    _require(len(raw) <= MAX_MANIFEST_BYTES, "manifest size limit")
+    manifest = _strict_json(raw)
+    _require(isinstance(manifest, dict) and isinstance(manifest.get("schema"), str),
+             "manifest schema missing or malformed")
+    return manifest["schema"]
+
+
 def _hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as reader:

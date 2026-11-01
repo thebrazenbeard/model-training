@@ -31,7 +31,9 @@ import uuid
 from collections import defaultdict
 from pathlib import Path
 
-from trainingday.admission import AdmissionError, _canonical_prompt, _hash_file, admit
+from trainingday.admission import (
+    AdmissionError, _canonical_prompt, _hash_file, admit, read_manifest_schema_strict,
+)
 from trainingday.labyrinth_intake import SCHEMA as LABYRINTH_SCHEMA, admit_labyrinth
 from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
 from trainingday.r34_r18_mezo_selection_v2 import (
@@ -172,8 +174,7 @@ def validate_source(args) -> tuple[dict, list[dict], Path]:
             raise AdmissionError("externally pinned R16 zero adapter missing or tampered")
     if args.mode != "zero" and not args.expected_initial_digest:
         raise AdmissionError("trained arm needs externally pinned zero-arm initial digest")
-    manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-    if manifest.get("schema") == LABYRINTH_SCHEMA:
+    if read_manifest_schema_strict(args.manifest) == LABYRINTH_SCHEMA:
         summary, rows = admit_labyrinth(args.manifest, args.work_root,
                                         sample_size=args.cases,
                                         producer_git_head=args.producer_git_head)

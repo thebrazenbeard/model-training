@@ -4,8 +4,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import tempfile
 from pathlib import Path
 import unittest
+import pytest
 
 from successor.experiments import build_v10r3r11_vera_voice as r11
 from successor.experiments import preflight_v10r3r11_launch as gate
@@ -42,6 +44,27 @@ def synthetic():
 
 
 class R11SourceTests(unittest.TestCase):
+    def test_r10_spec_pin_accepts_only_exact_windows_newline_equivalence(self):
+        """The R10 receipt pins Windows CRLF bytes; Git stores the LF blob."""
+        source = (ROOT/r11.R10_SPEC_REL).read_bytes()
+        lf = source.replace(b"\r\n", b"\n")
+        self.assertNotIn(b"\r", lf)
+        with tempfile.TemporaryDirectory() as dirname:
+            path = Path(dirname)/"r10-spec.json"
+            for payload in (lf, lf.replace(b"\n", b"\r\n")):
+                with self.subTest(line_ending="CRLF" if b"\r" in payload else "LF"):
+                    path.write_bytes(payload)
+                    self.assertEqual(r11.r10_spec_sha256(path), r11.R10_SPEC_SHA)
+            for payload in (
+                lf.replace(b"\n", b"\r\n", 1),
+                lf.replace(b"\n", b"\r", 1),
+                lf.replace(b'"2026-10-13"', b'"2026-10-12"', 1),
+            ):
+                with self.subTest(rejected_digest=payload[:30]):
+                    path.write_bytes(payload)
+                    with self.assertRaises(ValueError):
+                        r11.r10_spec_sha256(path)
+
     def test_new_voice_examples_are_disjoint_from_r10(self):
         _,voice,held=synthetic()
         chosen=r11.select_unused_voices(voice,held)
@@ -88,6 +111,13 @@ class R11SourceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"insufficient"):
             r11.transform(source,voice,held)
 
+    @pytest.mark.owner_historical
+    def test_generated_spec_binds_real_completed_parent(self):
+        # This is intentionally not a portable source-only test. The real R10
+        # parent receipt and adapter must be present and verified by build_spec.
+        spec=r11.build_spec(ROOT,"a"*64)
+        self.assert_spec_protections(spec)
+
     def test_source_only_spec_transform_does_not_claim_parent_verification(self):
         # This tests field construction, not the R10 receipt or adapter bytes.
         # build_spec() remains the only entrypoint that can accept those.
@@ -99,6 +129,10 @@ class R11SourceTests(unittest.TestCase):
             recorded["resume_adapter"]["source_weight_digest_after"])
         self.assertEqual(parent,untouched)
         self.assertEqual(spec,recorded)
+        self.assert_spec_protections(spec)
+
+    def assert_spec_protections(self, spec):
+        recorded=json.loads((ROOT/r11.R11_SPEC_REL).read_text(encoding="utf8"))
         self.assertEqual(spec["resume_adapter"]["source_cumulative_optimizer_steps"],36)
         self.assertEqual(spec["resume_adapter"]["next_train_row"],288)
         self.assertEqual(spec["resume_adapter"]["adapter_model_sha256"],r11.R10_ADAPTER_SHA)
@@ -112,13 +146,12 @@ class R11SourceTests(unittest.TestCase):
 
     def test_original_r10_crlf_spec_pin_remains_byte_exact(self):
         source=(ROOT/r11.R10_SPEC_REL).read_bytes()
-        # The historical Windows R10 receipt signed CRLF bytes. Git's Linux
-        # checkout supplies LF bytes, which must NOT be accepted as if signed.
+        # Historical Windows R10 signed CRLF bytes; Git may normalize only
+        # that exact newline conversion. A missing physical parent receipt
+        # must never be substituted with a synthetic or unverified adapter.
         raw_windows=source.replace(b"\r\n",b"\n").replace(b"\n",b"\r\n")
         self.assertEqual(hashlib.sha256(raw_windows).hexdigest(),r11.R10_SPEC_SHA)
-        if source != raw_windows:
-            with self.assertRaisesRegex(ValueError,"R10 spec hash mismatch"):
-                r11.build_spec(ROOT,"a"*64)
+        self.assertEqual(r11.r10_spec_sha256(ROOT/r11.R10_SPEC_REL),r11.R10_SPEC_SHA)
 
     def test_gate_rejects_wrong_target_parent_data_and_resources(self):
         good=dict(model_type="qwen3_5",adapter_sha=r11.R10_ADAPTER_SHA,
@@ -135,6 +168,7 @@ class R11SourceTests(unittest.TestCase):
         self.assertEqual(outcome["status"],"HOLD_NO_WEIGHT_CHANGE")
         self.assertEqual(len(outcome["reasons"]),9)
 
+    @pytest.mark.owner_historical
     def test_disk_spec_exactly_binds_outputs(self):
         spec=json.loads((ROOT/r11.R11_SPEC_REL).read_text("utf8"))
         corpus=r11.R11_DATA_DIR/"train.jsonl"
