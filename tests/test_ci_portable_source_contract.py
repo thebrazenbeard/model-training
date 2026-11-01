@@ -40,6 +40,7 @@ class PortableSourceCIContractTests(unittest.TestCase):
         self.assertIn("tests.test_owner_historical_marker_contract", body)
         self.assertIn("tests.test_ci_r16_source_contract", body)
         self.assertIn("tests.test_cognitive_sft_intake", body)
+        self.assertIn("tests.test_rights_pair_evidence_r155", body)
         self.assertIn("tests.test_owner_historical_evidence_preflight", body)
         self.assertIn("tests.test_trainingday_readme_contract", body)
         self.assertIn("tests.test_trainingday_host_launch_request", body)
@@ -55,6 +56,16 @@ class PortableSourceCIContractTests(unittest.TestCase):
             "tests.test_cognitive_sft_intake"
         )
         self.assertGreaterEqual(suite.countTestCases(), 15)
+
+    def test_r155_rights_evidence_has_live_portable_unittest_bridge(self):
+        body = _job("portable-source-contracts")
+        self.assertEqual(body.count("tests.test_rights_pair_evidence_r155"), 1)
+        suite = unittest.defaultTestLoader.loadTestsFromName(
+            "tests.test_rights_pair_evidence_r155"
+        )
+        # Count methods, not their outcome: if optional Ed25519 is absent,
+        # nine crypto tests SKIP. This is *not* independent admission proof.
+        self.assertGreaterEqual(suite.countTestCases(), 10)
 
     def test_full_pytest_remains_independent_red_diagnostic(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
