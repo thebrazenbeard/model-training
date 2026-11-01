@@ -116,6 +116,17 @@ class QwenTextProjectionTests(unittest.TestCase):
             text_key_mapping(self.snapshot, expected_index_sha256="0" * 64,
                              expected_shards=shards)
 
+    def test_index_binding_rejects_unhashed_or_malformed_shard_pins(self):
+        digest = hashlib.sha256(self.index.read_bytes()).hexdigest()
+        for invalid_pin in (None, "", "1" * 63, "A" * 64, 42, True):
+            with self.subTest(invalid_pin=invalid_pin):
+                with self.assertRaisesRegex(TextCheckpointProjectionError,
+                                            "shard binding"):
+                    index_binding_pin({"files": {
+                        "model.safetensors.index.json": digest,
+                        self.shard: invalid_pin,
+                    }})
+
     def test_index_shard_set_must_match_bound_inventory(self):
         with self.assertRaisesRegex(TextCheckpointProjectionError, "shard set"):
             text_key_mapping(self.snapshot,
