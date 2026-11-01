@@ -20,6 +20,14 @@ def _job(name: str) -> str:
 
 
 class PortableSourceCIContractTests(unittest.TestCase):
+    def test_stacked_r155_draft_base_is_explicitly_eligible_for_ci(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            '    branches: [main, "trainingday/**", "draft/r154-cognitive-source-intake-20261101"]',
+            workflow,
+        )
+        self.assertNotIn('"draft/**"', workflow)
+
     def test_portable_source_job_is_exact_head_and_pinned_linux(self):
         body = _job("portable-source-contracts")
         self.assertIn("runs-on: ubuntu-24.04", body)
