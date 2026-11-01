@@ -137,6 +137,36 @@ class R16CheckpointCustodyTest(unittest.TestCase):
         with self.assertRaisesRegex(AdmissionError, "step mismatch"):
             create_custody(checkpoint, contract_sha256=contract_sha)
 
+    def test_trainer_step_rejects_bool_float_and_duplicate_json_keys(self):
+        output, _, contract_sha, _ = self.prepare_resume()
+        checkpoint = self.checkpoint(output, step=1)
+        state_file = checkpoint / "trainer_state.json"
+        invalid_states = {
+            "boolean_step": '{"global_step":true}',
+            "float_step": '{"global_step":1.0}',
+            "duplicate_last_wins": '{"global_step":0,"global_step":1}',
+            "duplicate_same_value": '{"global_step":1,"global_step":1}',
+            "nested_duplicate": '{"global_step":1,"extra":{"a":0,"a":1}}',
+        }
+        for case, source in invalid_states.items():
+            with self.subTest(case=case):
+                state_file.write_text(source, encoding="utf-8")
+                with self.assertRaisesRegex(AdmissionError, "Trainer state invalid|step mismatch"):
+                    create_custody(checkpoint, contract_sha256=contract_sha)
+        state_file.write_text('{"global_step":1}', encoding="utf-8")
+        self.assertEqual(create_custody(checkpoint, contract_sha256=contract_sha)["step"], 1)
+
+    def test_custody_receipt_step_requires_exact_integer(self):
+        output, _, contract_sha, _ = self.prepare_resume()
+        checkpoint = self.checkpoint(output, step=1)
+        custody = create_custody(checkpoint, contract_sha256=contract_sha)
+        for case, value in (("bool_true", True), ("float_one", 1.0)):
+            with self.subTest(case=case):
+                malformed = dict(custody, step=value)
+                with self.assertRaisesRegex(AdmissionError, "checkpoint bytes/step mismatch"):
+                    validate_custody(checkpoint, malformed, contract_sha256=contract_sha)
+        self.assertEqual(validate_custody(checkpoint, custody, contract_sha256=contract_sha), 1)
+
     def test_checkpoint_missing_optimizer_is_not_resume(self):
         output, _, contract_sha, _ = self.prepare_resume()
         checkpoint = self.checkpoint(output, step=16)

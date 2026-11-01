@@ -25,6 +25,8 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from trainingday.admission import AdmissionError, _strict_json
+
 
 PLAN_SCHEMA = "VERA_TRAININGDAY_R18_BENCHMARK_PLAN_V1"
 PROBE_SCHEMA = "VERA_TRAININGDAY_R18_FIT_PROBE_V1"
@@ -119,7 +121,7 @@ def _training_index(rows: Sequence[Mapping], source_admission_status: str) -> li
                    for k in ("id", "prompt", "answer")), "train row incomplete")
         if source_admission_status == "ADMITTED_SOURCE_ONLY_NOT_TRAINED":
             _check(row.get("split") == "train" and row.get("training_use") == "ADMITTED"
-                   and row.get("evaluation_holdout") is not True,
+                   and row.get("evaluation_holdout") is False,
                    "train-only admitted row required")
         else:
             # The Labyrinth admission adapter independently replays procedural
@@ -538,18 +540,32 @@ def compare_arms(plan: Mapping, receipts: Sequence[Mapping],
                and controls["corrupt"]["optimizer_window_seconds"] >=
                0.85 * plan["training_budget_seconds"],
                "training ended too early for equal-time claim")
+    initial_digest = keyed[(ARMS[0], "frozen")]["trainable_digest_before"]
+    _check(all(keyed[(arm, control)]["trainable_digest_before"] == initial_digest
+               for arm in ARMS for control in CONTROLS),
+           "all controls must share the same initial adapter/trainable weights")
     correct = [keyed[(arm, "correct")] for arm in ARMS]
+    corrupt = [keyed[(arm, "corrupt")] for arm in ARMS]
     _check(correct[0]["training_input_sha256"] == correct[1]["training_input_sha256"],
            "different prepared training input across algorithms")
-    _check(abs(correct[0]["optimizer_window_seconds"] -
-               correct[1]["optimizer_window_seconds"]) <=
+    _check(corrupt[0]["training_input_sha256"] == corrupt[1]["training_input_sha256"],
+           "different corrupted training input across algorithms")
+    trained_windows = [keyed[(arm, control)]["optimizer_window_seconds"]
+                       for arm in ARMS for control in ("correct", "corrupt")]
+    _check(max(trained_windows) - min(trained_windows) <=
            0.05 * plan["training_budget_seconds"],
-           "MeZO and QLoRA did not receive equal optimizer-wall time")
+           "MeZO and QLoRA controls did not receive equal optimizer-wall time")
     # Precommitted metrics are descriptive, not a posthoc model-selection rule.
+    # Receipt consistency does not attest who held the private bank or whether
+    # it was fresh. Keep the legacy Boolean field fail-closed until an
+    # independently authenticated evaluator supplies that evidence.
     report = {"schema": "VERA_TRAININGDAY_R18_COMPARISON_V1",
               "plan_sha256": validate_plan(plan),
               "decision": "NO_MODEL_PROMOTION_INDEPENDENT_REPLICATION_REQUIRED",
-              "fresh_eval_bank": True, "control_arms_verified": 8,
+              "fresh_eval_bank": False,
+              "fresh_eval_bank_source_claim": True,
+              "independent_eval_bank_attestation": "UNAVAILABLE_SOURCE_ONLY",
+              "control_arms_verified": 8,
               "physical_vram_residency": "UNVERIFIED_BY_ALLOCATOR_OR_SAMPLED_NVML",
               "method_metrics": {}}
     for arm in ARMS:
@@ -562,8 +578,14 @@ def compare_arms(plan: Mapping, receipts: Sequence[Mapping],
             "delta_nll_vs_zero": rec["eval_nll"] - zero["eval_nll"],
             "corrupt_accuracy": corrupt["eval_accuracy"],
             "corrupt_nll": corrupt["eval_nll"],
+            "initial_trainable_digest_before": rec["trainable_digest_before"],
+            "correct_training_input_sha256": rec["training_input_sha256"],
+            "corrupt_training_input_sha256": corrupt["training_input_sha256"],
             "optimizer_window_seconds": rec["optimizer_window_seconds"],
+            "corrupt_optimizer_window_seconds": corrupt["optimizer_window_seconds"],
             "external_process_wall_seconds": rec["external_process_wall_seconds"],
+            "corrupt_external_process_wall_seconds":
+                corrupt["external_process_wall_seconds"],
             "unique_examples_seen": rec["unique_examples_seen"],
             "example_presentations": rec["example_presentations"],
             "input_tokens_presented": rec["input_tokens_presented"],
@@ -600,7 +622,10 @@ def compare_arms(plan: Mapping, receipts: Sequence[Mapping],
 def _json_file(path: Path) -> object:
     _check(path.is_file() and not path.is_symlink(),
            "JSON evidence missing or symlinked")
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return _strict_json(path.read_bytes())
+    except AdmissionError as exc:
+        raise BenchmarkError("ambiguous or malformed JSON evidence") from exc
 
 
 def _windows_owner_sid() -> str:

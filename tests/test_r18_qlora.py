@@ -91,6 +91,52 @@ class QloraContractTests(unittest.TestCase):
         self.assertEqual(report["optimizer_steps"], 0)
         self.assertEqual(report["train_content_sha256"], self.plan["train_content_sha256"])
 
+    def test_every_arm_receipt_explicitly_denies_evaluation_access(self):
+        for control in ("frozen", "zero", "correct", "corrupt"):
+            with self.subTest(control=control):
+                self.args.control = control
+                self.args.run_id = f"r18-qlora-{control}"
+                p1, p2, p3 = self.admitted()
+                with p1, p2, p3:
+                    receipt, _, _, _ = q.preflight(self.args)
+                self.assertIs(receipt["eval_access"], False)
+                encoded = json.loads(json.dumps(receipt))
+                self.assertIs(encoded["eval_access"], False)
+
+    def test_persisted_receipt_denies_eval_access_after_training_or_failure(self):
+        primary_fit = [{"status": "FIT", "max_seq_length": 256,
+                        "micro_batch_size": 1}]
+        no_fit = [{"status": "OOM", "max_seq_length": 256,
+                   "micro_batch_size": 1}]
+        scenarios = (
+            ("trained", primary_fit, "FIT", False, "TRAINED_UNSCORED"),
+            ("incomplete", no_fit, "BASE_4B_QLORA_OOM", False, "OOM_NO_TRAINING"),
+            ("error", primary_fit, "FIT", True, "TRAINING_FAILED"),
+        )
+        self.args.preflight_only = False
+        for name, probes, fit_status, fails, expected in scenarios:
+            with self.subTest(outcome=name):
+                self.args.run_id = f"r18-qlora-{name}"
+                p1, p2, p3 = self.admitted()
+
+                def fake_training(args, output, examples, chosen, receipt):
+                    if fails:
+                        raise RuntimeError("synthetic training failure")
+                    receipt["status"] = "TRAINED_UNSCORED"
+                    return receipt
+
+                with p1, p2, p3, \
+                     patch.object(q, "probe_sweep", return_value=(probes, None, fit_status)), \
+                     patch.object(q, "_training_loop", side_effect=fake_training), \
+                     patch("trainingday.physical_launch_authority.require_physical_launch_authority"):
+                    # Synthetic receipt verification does not grant host authority.
+                    result = q.run(self.args)
+                persisted = json.loads((self.args.output_root / self.args.run_id /
+                                        "r18-qlora-receipt.json").read_text(encoding="utf-8"))
+                self.assertEqual(result["status"], expected)
+                self.assertIs(result["eval_access"], False)
+                self.assertIs(persisted["eval_access"], False)
+
     def test_pin_rejects_other_revision_even_valid_binding(self):
         p1, p2, p3 = self.admitted()
         self.base["revision"] = "d" * 40
@@ -187,7 +233,8 @@ class QloraContractTests(unittest.TestCase):
                                          "status": status}))
             return SimpleNamespace(returncode=0)
 
-        with patch.object(q.subprocess, "run", side_effect=fake_process):
+        with patch.object(q.subprocess, "run", side_effect=fake_process), \
+             patch("trainingday.physical_launch_authority.require_physical_launch_authority"):
             probes, selected, status = q.probe_sweep(self.args, self.root, self.plan)
         self.assertEqual(observed, [(64, 1), (128, 1), (256, 1),
                                     (384, 1), (512, 1), (64, 2)])
@@ -206,7 +253,8 @@ class QloraContractTests(unittest.TestCase):
                                          "status": "OOM"}))
             return SimpleNamespace(returncode=0)
 
-        with patch.object(q.subprocess, "run", side_effect=fake_process):
+        with patch.object(q.subprocess, "run", side_effect=fake_process), \
+             patch("trainingday.physical_launch_authority.require_physical_launch_authority"):
             probes, choice, status = q.probe_sweep(self.args, self.root, self.plan)
         self.assertEqual(len(probes), 1)
         self.assertIsNone(choice)
@@ -243,7 +291,9 @@ class QloraContractTests(unittest.TestCase):
 
         with patch.object(q, "preflight", return_value=(summary, [], self.root, self.plan)), \
              patch.object(q, "probe_sweep", return_value=(probes, max_fit, "FIT")), \
-             patch.object(q, "_training_loop", side_effect=fake_training):
+             patch.object(q, "_training_loop", side_effect=fake_training), \
+             patch("trainingday.physical_launch_authority.require_physical_launch_authority"):
+            # Mocked GPU business-logic test only; no physical lease is issued.
             result = q.run(self.args)
         self.assertEqual(selected, [{"max_seq_length": 256, "micro_batch_size": 1,
                                      "effective_batch_size": 8, "gradient_accumulation": 8}])
@@ -261,7 +311,9 @@ class QloraContractTests(unittest.TestCase):
                    "status": "OOM", "probe_is_synthetic": True}]
         with patch.object(q, "preflight", return_value=(summary, [], self.root, self.plan)), \
              patch.object(q, "probe_sweep", return_value=(probes, None, "BASE_4B_QLORA_OOM")), \
-             patch.object(q, "_training_loop") as train:
+             patch.object(q, "_training_loop") as train, \
+             patch("trainingday.physical_launch_authority.require_physical_launch_authority"):
+            # Mocked source-unit test; production guard is always a HARD HOLD.
             result = q.run(self.args)
         train.assert_not_called()
         self.assertEqual(result["status"], "OOM_NO_TRAINING")

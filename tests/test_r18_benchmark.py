@@ -33,6 +33,7 @@ J = "b" * 64
 def _rows():
     return [
         {"id": f"train-{i}", "split": "train", "training_use": "ADMITTED",
+         "evaluation_holdout": False,
          "prompt": f"What is {i} plus one?", "answer": str(i+1)}
         for i in range(8)
     ]
@@ -235,6 +236,11 @@ def test_equal_time_comparison_never_autopromotes_small_gain():
     plan, probes, receipts = _comparison_inputs()
     result = compare_arms(plan, receipts, probes)
     assert result["decision"] == "NO_MODEL_PROMOTION_INDEPENDENT_REPLICATION_REQUIRED"
+    # Eight mutually consistent source receipts cannot independently prove an
+    # examiner's private bank identity/freshness, even when hashes are pinned.
+    assert result["fresh_eval_bank"] is False
+    assert result["fresh_eval_bank_source_claim"] is True
+    assert result["independent_eval_bank_attestation"] == "UNAVAILABLE_SOURCE_ONLY"
     assert result["control_arms_verified"] == 8
     assert result["physical_vram_residency"] == "UNVERIFIED_BY_ALLOCATOR_OR_SAMPLED_NVML"
     assert result["method_metrics"]["mezo"]["forward_sample_tokens"] == 12_800
@@ -243,7 +249,40 @@ def test_equal_time_comparison_never_autopromotes_small_gain():
     assert result["method_metrics"]["qlora"]["fit_probe_peak_cuda_reserved_bytes"] == 600_000
     assert result["method_metrics"]["qlora"]["peak_cuda_metric_scope"] == \
         "PRIMARY_TRAIN_PROCESS_AFTER_SETUP_RESET"
+    assert result["method_metrics"]["mezo"]["initial_trainable_digest_before"] == H
+    assert result["method_metrics"]["qlora"]["corrupt_training_input_sha256"] == "c" * 64
+    assert result["method_metrics"]["qlora"]["corrupt_optimizer_window_seconds"] == 96.0
     assert result["accuracy_delta_mezo_minus_qlora"] == 0
+
+
+@pytest.mark.parametrize("mutation", [
+    "correct_initial_digest", "corrupt_initial_digest", "cross_method_initial_digest",
+    "corrupt_input_cross_method", "corrupt_time_cross_method",
+    "both_corrupt_shorter_than_correct",
+])
+def test_comparison_rejects_unmatched_negative_controls(mutation):
+    plan, probes, receipts = _comparison_inputs()
+    if mutation == "correct_initial_digest":
+        receipts[2]["trainable_digest_before"] = "c" * 64
+    elif mutation == "corrupt_initial_digest":
+        receipts[3]["trainable_digest_before"] = "d" * 64
+    elif mutation == "cross_method_initial_digest":
+        for rec in receipts[4:]:
+            rec["trainable_digest_before"] = "e" * 64
+            if rec["control"] in ("frozen", "zero"):
+                rec["trainable_digest_after"] = "e" * 64
+    elif mutation == "corrupt_input_cross_method":
+        receipts[7]["training_input_sha256"] = "d" * 64
+    else:
+        targets = (7,) if mutation == "corrupt_time_cross_method" else (3, 7)
+        for index in targets:
+            rec = receipts[index]
+            rec["train_stop_monotonic_ns"] = rec["train_start_monotonic_ns"] + 85_000_000_000
+            rec["optimizer_window_seconds"] = 85.0
+            rec["stage_seconds"]["train"] = 85.0
+            rec["external_process_wall_seconds"] = 95.0
+    with pytest.raises(BenchmarkError):
+        compare_arms(plan, receipts, probes)
 
 
 @pytest.mark.parametrize("key,value", [

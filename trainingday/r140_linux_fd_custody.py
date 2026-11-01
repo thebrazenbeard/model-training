@@ -24,6 +24,8 @@ import stat
 import sys
 from pathlib import Path
 
+from .r18_checkpoint_commit import _finite_nonnegative_elapsed
+
 
 _WEIGHTS = "lora-trainables.safetensors"
 _STATE = "state.json"
@@ -162,14 +164,10 @@ def _decode_json(data: bytes) -> dict:
 def _validate_state(state_data: bytes, *, step: int, weights_sha256: str) -> None:
     state = _decode_json(state_data)
     elapsed = state.get("optimizer_window_seconds")
-    # A syntactically valid JSON integer can exceed float's range. Python's
-    # math.isfinite(10**1000) raises OverflowError rather than returning False;
-    # keep invalid source state inside the explicit fail-closed contract.
-    try:
-        valid_elapsed = (type(elapsed) in (int, float)
-                         and math.isfinite(elapsed) and elapsed >= 0)
-    except OverflowError:
-        valid_elapsed = False
+    # Use the R18 checkpoint publisher's exact numeric admission rule. In
+    # particular, a finite JSON integer above 2**53 - 1 is not an admissible
+    # elapsed duration even though math.isfinite(int) may return True.
+    valid_elapsed = _finite_nonnegative_elapsed(elapsed)
     if (state.get("schema") != "R18_MEZO_STATE_V1"
             or state.get("status") != "CHECKPOINT_BYTES_PINNED_NOT_RELOADED"
             or type(state.get("completed_steps")) is not int

@@ -567,6 +567,8 @@ def _run_contract(preflight: dict, args) -> dict:
 
 def prepare_run(args, preflight: dict) -> tuple[Path, dict, int, float, dict | None]:
     """Resume only externally pinned safetensors; no Python pickle deserialization."""
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 MeZO prepare run")
     output = args.output_root / args.run_id
     contract = _run_contract(preflight, args)
     contract_path = output / "run-contract.json"
@@ -661,6 +663,8 @@ def _oom(exc: Exception, torch=None) -> bool:
 
 def _nvml_used_bytes() -> tuple[int, bool]:
     """Best-effort physical NVIDIA allocation; distinguish unavailable from 0."""
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 MeZO NVML host probe")
     try:
         import pynvml
         pynvml.nvmlInit()
@@ -742,6 +746,8 @@ def validate_mezo_probe_prefix(probes: list[dict], plan: dict) -> None:
 
 
 def _probe_child(args) -> dict:
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 MeZO child probe")
     """One actual synthetic-input ZO step; caller MUST start a fresh process."""
     from trainingday.r18_benchmark import validate_plan
 
@@ -849,6 +855,8 @@ def run_fit_sweep(args, preflight: dict) -> dict:
     Stop B1 at OOM, then try B2 only at B1-fitting lengths, ascending until
     OOM. Each child must complete an actual symmetric ZO optimizer update.
     """
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 MeZO fit sweep")
     configs = _fit_configurations()
     plan = _read_json(args.plan)
     out = args.output_root / args.run_id
@@ -916,6 +924,8 @@ def run_fit_sweep(args, preflight: dict) -> dict:
 
 
 def _gpu_stack(args, model_path: Path):
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 MeZO GPU load")
     import psutil
     import torch
     from peft import LoraConfig, PeftModel, get_peft_model
@@ -972,6 +982,8 @@ def run(args) -> dict:
         if args.resume_checkpoint:
             preflight["resume_custody_status"] = "GPU_TOKENIZED_CONTRACT_NOT_YET_VALIDATED"
         return preflight
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 MeZO run/fit sweep")
     if args.fit_sweep_only:
         return run_fit_sweep(args, preflight)
     if not args.fit_probes_file or not args.fit_probe_sha256:

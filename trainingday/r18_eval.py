@@ -26,7 +26,7 @@ import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 
-from trainingday.admission import AdmissionError, _hash_file
+from trainingday.admission import AdmissionError, _hash_file, _strict_json
 from trainingday.eval_structural_r16 import (
     BANK_ID_SHA256, CORPUS_SHA256, R16_PRODUCER_HEAD, R16_RECIPE,
     _old_ids, _r16_adapter,
@@ -107,11 +107,11 @@ def _json(path: Path, *, private: bool = False,
     if private:
         _private_custody(path.parent, directory=True)
         _private_custody(path, directory=False)
-    with path.open("r", encoding="utf-8") as reader:
+    with path.open("rb") as reader:
         # Observe the actual file-open boundary, before private JSON parsing.
         if on_open is not None:
             on_open(time.time_ns())
-        value = json.load(reader)
+        value = _strict_json(reader.read())
     if not isinstance(value, dict):
         raise AdmissionError("custody JSON must be an object")
     return value
@@ -485,7 +485,7 @@ def _preunseal_inventory(args, plan: dict, plan_sha: str) -> tuple[str, dict, di
             raise AdmissionError("pre-unseal arm receipt failed independent contract") from exc
         if (receipt["arm"], receipt["control"]) != key or (
                 receipt["status"] != "TRAINED_UNSCORED"
-                or receipt.get("eval_access") is True
+                or receipt.get("eval_access") is not False
                 or receipt.get("eval_unsealed_at_utc_ns") is not None
                 or receipt["run_id"] in run_ids):
             raise AdmissionError("pre-unseal arm already scored or identity collision")
@@ -519,11 +519,14 @@ def _preunseal_inventory(args, plan: dict, plan_sha: str) -> tuple[str, dict, di
                 or controls["corrupt"]["optimizer_window_seconds"] <
                 .85 * plan["training_budget_seconds"]):
             raise AdmissionError("pre-unseal incomplete controls or run budget")
-    left = keyed[("mezo", "correct")]
-    right = keyed[("qlora", "correct")]
-    if (left["training_input_sha256"] != right["training_input_sha256"]
-            or abs(left["optimizer_window_seconds"] -
-                   right["optimizer_window_seconds"]) >
+    if any(keyed[("mezo", control)]["training_input_sha256"] !=
+           keyed[("qlora", control)]["training_input_sha256"]
+           for control in ("correct", "corrupt")):
+        raise AdmissionError("pre-unseal unpaired correct/corrupt training data")
+    trained_windows = [keyed[(arm, control)]["optimizer_window_seconds"]
+                       for arm in ("mezo", "qlora")
+                       for control in ("correct", "corrupt")]
+    if max(trained_windows) - min(trained_windows) > (
             .05 * plan["training_budget_seconds"]):
         raise AdmissionError("pre-unseal unpaired training data or elapsed budget")
     if args.source in ("r18-mezo", "r18-qlora"):

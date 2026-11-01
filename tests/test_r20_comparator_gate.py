@@ -16,6 +16,7 @@ from trainingday.r20_comparator_gate import assess_precomparison, main
 
 def _fixture():
     rows = [{"id": f"train-{i}", "split": "train", "training_use": "ADMITTED",
+             "evaluation_holdout": False,
              "prompt": f"Compute {i}+2", "answer": str(i + 2)} for i in range(4)]
     eval_index = [{"id": f"external-{i}", "prompt_sha256": hashlib.sha256(
         f"external-{i}-new".encode()).hexdigest()} for i in range(64)]

@@ -14,6 +14,7 @@ from trainingday.r18_benchmark import (
 def valid_plan() -> dict:
     rows = [
         {"id": f"train-{i}", "split": "train", "training_use": "ADMITTED",
+         "evaluation_holdout": False,
          "prompt": f"What is {i} plus one?", "answer": str(i + 1)}
         for i in range(8)
     ]

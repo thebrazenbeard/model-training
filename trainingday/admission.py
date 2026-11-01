@@ -33,6 +33,15 @@ MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 MAX_JSONL_ROW_BYTES = 1024 * 1024
 MAX_JSON_DEPTH = 64
 SELECTED_ID_V2_SCHEMA = "VERA_TRAININGDAY_SELECTED_ID_DIGEST_V2"
+# Non-format characters from Unicode's default-ignorable repertoire.  Format
+# controls (Cf) are rejected separately below, including bidi overrides and
+# invisible joiners.  The listed ranges cover the non-Cf fillers, grapheme
+# joiner, variation selectors, and reserved default-ignorable codepoints.
+DEFAULT_IGNORABLE_KEY_RANGES = (
+    (0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5),
+    (0x180B, 0x180F), (0x3164, 0x3164), (0xFE00, 0xFE0F),
+    (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0xE0100, 0xE01EF),
+)
 
 
 class AdmissionError(ValueError):
@@ -49,11 +58,29 @@ def _strict_object(pairs: list[tuple[str, object]]) -> dict:
 
     This applies at every object depth, including provenance rights fields.
     Untrusted duplicate declarations must never be resolved by last-key-wins.
+    Mixed-script member names are also ambiguous as control/evidence fields;
+    this restriction is on keys only, not multilingual user-provided values.
     """
     result: dict = {}
     normalized: set[str] = set()
     for key, value in pairs:
+        _require(not any(unicodedata.category(char) == "Cc" for char in key),
+                 "nonprintable/ambiguous JSON key")
+        _require(not any(
+            unicodedata.category(char) == "Cf"
+            or any(start <= ord(char) <= end
+                   for start, end in DEFAULT_IGNORABLE_KEY_RANGES)
+            for char in key
+        ), "default-ignorable/ambiguous JSON key")
         alias = unicodedata.normalize("NFKC", key).casefold()
+        ascii_latin = any("a" <= char <= "z" for char in alias)
+        other_script_letter = any(
+            unicodedata.category(char).startswith("L")
+            and not unicodedata.name(char, "").startswith("LATIN ")
+            for char in alias
+        )
+        _require(not (ascii_latin and other_script_letter),
+                 "mixed-script/ambiguous JSON key")
         _require(alias not in normalized, "duplicate/ambiguous JSON key")
         normalized.add(alias)
         result[key] = value

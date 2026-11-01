@@ -200,6 +200,7 @@ class R18EvaluatorTests(unittest.TestCase):
     def make_freeze_inventory(self):
         from trainingday.r18_benchmark import make_plan, selected_id_digest, validate_plan
         rows = [{"id": f"train-{i}", "split": "train", "training_use": "ADMITTED",
+                 "evaluation_holdout": False,
                  "prompt": f"What is {i} plus one?", "answer": str(i+1)}
                 for i in range(8)]
         plan = make_plan(
@@ -260,7 +261,8 @@ class R18EvaluatorTests(unittest.TestCase):
                     "stage_seconds": {"load": 2.0, "setup": 3.0, "train": seconds,
                                       "save": 1.0, "eval": 2.0},
                     "external_process_wall_seconds": 10.0 + seconds,
-                    "status": "TRAINED_UNSCORED", "eval_examples": 0,
+                    "status": "TRAINED_UNSCORED", "eval_access": False,
+                    "eval_examples": 0,
                     "eval_correct": None, "eval_accuracy": None,
                     "eval_nll": None, "eval_nll_sum": None,
                     "eval_target_tokens": 0, "eval_case_receipt_sha256": None,
@@ -328,6 +330,148 @@ class R18EvaluatorTests(unittest.TestCase):
         saved.write_bytes(b"fake updated adapter")
         with self.assertRaisesRegex(AdmissionError, "adapter bytes"):
             _preunseal_inventory(args, plan, inventory["plan_sha256"])
+
+    def test_preunseal_rejects_nonboolean_eval_access_even_when_hash_pinned(self):
+        plan, inventory, path = self.make_freeze_inventory()
+        receipt_path = Path(inventory["arms"][0]["receipt_path"])
+        original = json.loads(receipt_path.read_text(encoding="utf-8"))
+        missing = object()
+
+        def preflight(value):
+            receipt = dict(original)
+            if value is missing:
+                receipt.pop("eval_access", None)
+            else:
+                receipt["eval_access"] = value
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            updated_inventory = json.loads(json.dumps(inventory))
+            updated_inventory["arms"][0]["receipt_sha256"] = _hash_file(receipt_path)
+            path.write_text(json.dumps(updated_inventory), encoding="utf-8")
+            return _preunseal_inventory(self.change(
+                freeze_inventory=path,
+                expected_freeze_inventory_sha256=_hash_file(path)),
+                plan, inventory["plan_sha256"])
+
+        preflight(False)
+        for invalid in (True, 1, 0, "true", "false", [], {}, None, missing):
+            with self.subTest(eval_access="<missing>" if invalid is missing else invalid), self.assertRaisesRegex(
+                    AdmissionError, "pre-unseal"):
+                preflight(invalid)
+
+    def test_preunseal_rejects_duplicate_json_keys_even_when_hash_pinned(self):
+        plan, inventory, inventory_path = self.make_freeze_inventory()
+        arm = inventory["arms"][0]
+        receipt_path = Path(arm["receipt_path"])
+        original = receipt_path.read_text(encoding="utf-8")
+
+        # The final duplicate value is valid, so ordinary json.load's
+        # last-value-wins behavior would incorrectly admit every receipt.
+        for original_field, duplicated_field in (
+            ('"eval_access": false', '"eval_access": true, "eval_access": false'),
+            ('"eval_access": false', '"eval_access": false, "eval_access": false'),
+            ('"eval_access": false', '"eval_access": false, "\\u0065val_access": false'),
+            ('"eval_access": false', '"eval_access": false, "EVAL_ACCESS": false'),
+            ('"eval_access": false', '"eval_access": false, "\\uFF45val_access": false'),
+            ('"status": "TRAINED_UNSCORED"',
+             '"status": "SCORED", "status": "TRAINED_UNSCORED"'),
+            ('"load": 2.0', '"load": 999.0, "load": 2.0'),
+        ):
+            self.assertIn(original_field, original)
+            receipt_path.write_text(
+                original.replace(original_field, duplicated_field, 1),
+                encoding="utf-8")
+            pinned_inventory = json.loads(json.dumps(inventory))
+            pinned_inventory["arms"][0]["receipt_sha256"] = _hash_file(receipt_path)
+            inventory_path.write_text(json.dumps(pinned_inventory), encoding="utf-8")
+            args = self.change(
+                freeze_inventory=inventory_path,
+                expected_freeze_inventory_sha256=_hash_file(inventory_path))
+            with self.subTest(field=duplicated_field), self.assertRaisesRegex(
+                    AdmissionError, "duplicate/ambiguous JSON key"):
+                _preunseal_inventory(args, plan, inventory["plan_sha256"])
+
+        # The freeze-inventory itself is also a custody record and must reject
+        # contradictory keys before looking at any arm receipt.
+        receipt_path.write_text(original, encoding="utf-8")
+        raw_inventory = json.dumps(inventory)
+        self.assertIn('"plan_sha256":', raw_inventory)
+        inventory_path.write_text(raw_inventory.replace(
+            '"plan_sha256":', '"plan_sha256": "' + '0' * 64 + '", "plan_sha256":',
+            1), encoding="utf-8")
+        args = self.change(
+            freeze_inventory=inventory_path,
+            expected_freeze_inventory_sha256=_hash_file(inventory_path))
+        with self.assertRaisesRegex(AdmissionError, "duplicate/ambiguous JSON key"):
+            _preunseal_inventory(args, plan, inventory["plan_sha256"])
+
+    def test_preunseal_rejects_control_alias_even_with_repinned_eight_arms(self):
+        plan, inventory, inventory_path = self.make_freeze_inventory()
+        arm = inventory["arms"][0]
+        receipt_path = Path(arm["receipt_path"])
+        original = receipt_path.read_text(encoding="utf-8")
+        field = '"eval_access": false'
+        self.assertIn(field, original)
+        receipt_path.write_text(original.replace(
+            field, '"eval_access": false, "ev\\u0000al_access": true', 1),
+            encoding="utf-8")
+        arm["receipt_sha256"] = _hash_file(receipt_path)
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        args = self.change(
+            freeze_inventory=inventory_path,
+            expected_freeze_inventory_sha256=_hash_file(inventory_path))
+        with self.assertRaisesRegex(AdmissionError,
+                                    "nonprintable/ambiguous JSON key"):
+            _preunseal_inventory(args, plan, inventory["plan_sha256"])
+
+    def test_preunseal_rejects_unpaired_corrupt_controls_before_bank_open(self):
+        plan, inventory, inventory_path = self.make_freeze_inventory()
+        receipts = {(item["arm"], item["control"]): Path(item["receipt_path"])
+                    for item in inventory["arms"]}
+        original = {key: json.loads(path.read_text(encoding="utf-8"))
+                    for key, path in receipts.items()}
+
+        for scenario in ("corrupt_training_bytes", "one_corrupt_shorter",
+                         "both_corrupt_shorter"):
+            with self.subTest(scenario=scenario):
+                changed = {key: dict(value) for key, value in original.items()}
+                if scenario == "corrupt_training_bytes":
+                    changed[("qlora", "corrupt")]["training_input_sha256"] = "d" * 64
+                else:
+                    arms = ("qlora",) if scenario == "one_corrupt_shorter" else (
+                        "mezo", "qlora")
+                    for arm in arms:
+                        rec = changed[(arm, "corrupt")]
+                        rec["train_stop_monotonic_ns"] = (
+                            rec["train_start_monotonic_ns"] + 85_000_000_000)
+                        rec["optimizer_window_seconds"] = 85.0
+                        rec["stage_seconds"] = {**rec["stage_seconds"], "train": 85.0}
+                        rec["external_process_wall_seconds"] = 95.0
+                pinned = json.loads(json.dumps(inventory))
+                for item in pinned["arms"]:
+                    key = (item["arm"], item["control"])
+                    path = receipts[key]
+                    path.write_text(json.dumps(changed[key]), encoding="utf-8")
+                    item["receipt_sha256"] = _hash_file(path)
+                inventory_path.write_text(json.dumps(pinned), encoding="utf-8")
+                args = self.change(
+                    preflight_only=False, freeze_inventory=inventory_path,
+                    expected_freeze_inventory_sha256=_hash_file(inventory_path))
+                with patch("trainingday.r18_eval._required_base",
+                           return_value=(self.base, self.root)), \
+                     patch("trainingday.r18_eval._hash_file", side_effect=lambda p:
+                           CORPUS_SHA256 if p == self.manifest else _hash_file(p)), \
+                     patch("trainingday.r18_eval._source_manifest",
+                           return_value=(self.source_manifest, self.source_sha)), \
+                     patch("trainingday.r18_eval._plan",
+                           return_value=(plan, inventory["plan_sha256"])), \
+                     patch("trainingday.r18_eval._adapter",
+                           return_value=(None, None, None)), \
+                     patch("trainingday.r18_eval._require_independent_preunseal_attestation",
+                           side_effect=AssertionError("attestation reached before freeze gate")), \
+                     patch("trainingday.r18_eval._bank") as bank:
+                    with self.assertRaisesRegex(AdmissionError, "pre-unseal"):
+                        evaluate(args)
+                    bank.assert_not_called()
 
     def test_r19_memory_scopes_required_even_with_repinned_freeze(self):
         """An independently repinned R20 inventory still obeys R19 receipt scope rules."""
