@@ -15,13 +15,15 @@ import re
 
 SCHEMA = "VERA_TRAININGDAY_R25_SERVING_CANDIDATE_V1"
 MODEL_ID = "Qwen/Qwen3.5-4B"
+# Serving candidates must retain the exact official training-base revision;
+# a caller-selected 40-character commit is not an approved base binding.
+MODEL_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 # The pinned Qwen3.5-4B config declares this architecture. The training
 # runners' distinct Qwen3_5ForCausalLM loader request is NOT runtime verified.
 MODEL_ARCH = "Qwen3_5ForConditionalGeneration"
 SOURCE_FORMAT = "NF4_DOUBLE_BF16"
 TARGET_FORMAT = "GGUF_Q5_K_S"
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
-_REV = re.compile(r"[0-9a-f]{40}\Z")
 _TENSOR_NAME = re.compile(r"[A-Za-z0-9_.]{1,160}\Z")
 _LORA_TENSOR = re.compile(
     r"(?P<module>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)"
@@ -137,7 +139,7 @@ def assess_serving_candidate(pinned: object, candidate: object) -> dict:
             or type(pinned.get("base_architecture")) is not str
             or pinned.get("base_architecture") != MODEL_ARCH
             or type(pinned.get("base_revision")) is not str
-            or _REV.fullmatch(pinned["base_revision"]) is None
+            or pinned["base_revision"] != MODEL_REVISION
             or any(not _sha(pinned.get(k)) for k in _HASH_FIELDS)):
         result["reason"] = "UNQUALIFIED_BASE_OR_PIN"
         return result

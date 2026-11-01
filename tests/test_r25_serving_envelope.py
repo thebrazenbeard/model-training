@@ -25,7 +25,8 @@ def fixtures():
     ]
     pinned = {
         "base_model_id": MODEL_ID, "base_architecture": MODEL_ARCH,
-        "base_revision": "a" * 40, "base_binding_sha256": h("base-bytes"),
+        "base_revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+        "base_binding_sha256": h("base-bytes"),
         "tokenizer_binding_sha256": h("tokenizer"),
         "corpus_manifest_sha256": h("public-corpus"),
         "adapter_bytes_sha256": h("adapter-bytes"),
@@ -261,12 +262,22 @@ class R25ServingCustodyTests(unittest.TestCase):
         pinned, candidate = fixtures()
         for field, bad in (("base_model_id", "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive"),
                            ("base_architecture", "GptOssForCausalLM"),
-                           ("base_revision", "not-pinned")):
+                           ("base_revision", "not-pinned"),
+                           ("base_revision", "a" * 40)):
             with self.subTest(field=field):
                 changed = copy.deepcopy(pinned)
                 changed[field] = bad
                 report = assess_serving_candidate(changed, candidate)
                 self.assertEqual(report["reason"], "UNQUALIFIED_BASE_OR_PIN")
+
+    def test_well_formed_unapproved_revision_cannot_self_pin_a_derivative(self):
+        pinned, candidate = fixtures()
+        pinned["base_revision"] = "f" * 40
+        candidate["base_revision"] = "f" * 40
+        report = assess_serving_candidate(pinned, candidate)
+        self.assertEqual(report["reason"], "UNQUALIFIED_BASE_OR_PIN")
+        self.assertFalse(report["source_bindings_match"])
+        self.assertFalse(report["authorizes_deployment"])
 
     def test_candidate_substitution_refused_even_if_self_rehashed(self):
         pinned, candidate = fixtures()
@@ -336,7 +347,18 @@ class R25ServingCustodyTests(unittest.TestCase):
         result = assess_serving_candidate(pinned, candidate)
         self.assertTrue(result["claimed_reload_fields_match"])
         self.assertFalse(result["fresh_process_reference_parity_verified"])
+        self.assertFalse(result["runtime_loader_verified"])
+        self.assertFalse(result["quantizer_transform_physically_verified"])
         self.assertFalse(result["authorizes_deployment"])
+
+    def test_forged_koboldcpp_compatibility_flag_cannot_grant_deployment(self):
+        pinned, candidate = fixtures()
+        candidate["koboldcpp_runtime_verified"] = True
+        result = assess_serving_candidate(pinned, candidate)
+        self.assertEqual(result["reason"], "INVALID_ENVELOPE")
+        self.assertFalse(result["runtime_loader_verified"])
+        self.assertFalse(result["authorizes_deployment"])
+        self.assertFalse(result["authorizes_model_promotion"])
 
     def test_forged_or_malformed_reload_claim_refused(self):
         pinned, candidate = fixtures()
