@@ -17,7 +17,11 @@ class CIDependencyContractTests(unittest.TestCase):
             for line in requirements.splitlines()
             if "==" in line and not line.lstrip().startswith("#")
         }
-        for dependency in ("fastapi", "httpx"):
+        # These are executable test dependencies, not merely optional model
+        # runtime extras: R13's real FP32 restore test imports safetensors,
+        # and the Lane B state-tree test uses torchao. A CI green result must
+        # not substitute mocks or silently deselect either test.
+        for dependency in ("fastapi", "httpx", "safetensors", "torchao"):
             with self.subTest(dependency=dependency):
                 self.assertIn(dependency, pins)
                 self.assertTrue(pins[dependency])

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -19,6 +20,7 @@ from pathlib import Path
 from trainingday.admission import AdmissionError, _hash_file
 
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
+_MAX_RECEIPT_BYTES = 1024 * 1024
 _CHECKPOINT = re.compile(r"checkpoint-([1-9][0-9]*)\Z")
 _REQUIRED = {
     "trainer_state.json",
@@ -41,6 +43,109 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
 
 def canonical_sha(data: dict) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _open_receipt_without_ancestor_links(path: Path) -> int:
+    """On POSIX, walk directory descriptors instead of following ancestor links.
+
+    Windows lacks portable openat/O_NOFOLLOW; its pathname prechecks reduce
+    obvious aliases, but only host-owned custody can establish a race-free
+    authorization boundary on that platform.
+    """
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
+        return os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    components = path.parts
+    directory_fd = os.open(path.anchor, directory_flags)
+    try:
+        for component in components[1:-1]:
+            if component in ("", ".", ".."):
+                raise AdmissionError("checkpoint receipt path component invalid")
+            next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return os.open(components[-1], os.O_RDONLY | os.O_NOFOLLOW,
+                       dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def read_strict_json_once(path: Path, *, expected_sha256: str | None = None,
+                          forbidden_under: Path | None = None) -> dict:
+    """Parse exactly the bytes observed through one no-follow file descriptor.
+
+    Hashing a receipt and then reopening it as text admits a replacement race:
+    the pinned SHA may describe A while the resume gate consumes B. This
+    helper binds its digest, strict JSON decode and file identity to one read.
+    Source inspection is not host-owned immutable custody or physical resume.
+    """
+    if (type(path) is not type(Path())
+            or not path.is_absolute()
+            or (expected_sha256 is not None
+                and (type(expected_sha256) is not str
+                     or not _SHA.fullmatch(expected_sha256)))):
+        raise AdmissionError("checkpoint strict JSON path/digest invalid")
+    try:
+        if any(part in (".", "..") for part in path.parts[1:]):
+            raise AdmissionError("checkpoint receipt path component invalid")
+        # The resolved comparison prevents an apparently external alias from
+        # pointing back into the live training output. Reject all symlinked
+        # ancestor components even when they point somewhere else.
+        if any(ancestor.is_symlink() for ancestor in (path, *path.parents)):
+            raise AdmissionError("R16 externally pinned checkpoint receipt absent or changed")
+        resolved = path.resolve(strict=True)
+        if forbidden_under is not None:
+            if type(forbidden_under) is not type(Path()):
+                raise AdmissionError("checkpoint forbidden root invalid")
+            if resolved.is_relative_to(forbidden_under.resolve(strict=True)):
+                raise AdmissionError("R16 externally pinned checkpoint receipt absent or changed")
+        before = path.lstat()
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or not 1 <= before.st_size <= _MAX_RECEIPT_BYTES):
+            raise AdmissionError("checkpoint receipt type or size invalid")
+        descriptor = _open_receipt_without_ancestor_links(path)
+        try:
+            observed = os.fstat(descriptor)
+            if (not stat.S_ISREG(observed.st_mode)
+                    or (observed.st_dev, observed.st_ino, observed.st_size)
+                    != (before.st_dev, before.st_ino, before.st_size)):
+                raise AdmissionError("checkpoint receipt identity changed")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                raw = stream.read(_MAX_RECEIPT_BYTES + 1)
+            after = os.fstat(descriptor)
+            if (len(raw) != before.st_size
+                    or (after.st_dev, after.st_ino, after.st_size)
+                    != (before.st_dev, before.st_ino, before.st_size)):
+                raise AdmissionError("checkpoint receipt changed during read")
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise AdmissionError("checkpoint strict JSON read failed") from exc
+    if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise AdmissionError("R16 externally pinned checkpoint receipt absent or changed")
+
+    def finite_float(text: str) -> float:
+        value = float(text)
+        if not math.isfinite(value):
+            raise ValueError("nonfinite JSON number")
+        return value
+
+    def bounded_int(text: str) -> int:
+        if len(text) > 64:
+            raise ValueError("unbounded JSON integer")
+        return int(text)
+
+    try:
+        value = json.loads(raw.decode("utf-8"),
+                           object_pairs_hook=_reject_duplicate_json_keys,
+                           parse_constant=lambda _: (_ for _ in ()).throw(
+                               ValueError("nonfinite JSON constant")),
+                           parse_float=finite_float, parse_int=bounded_int)
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise AdmissionError("checkpoint strict JSON invalid") from exc
+    if type(value) is not dict:
+        raise AdmissionError("checkpoint strict JSON object required")
+    return value
 
 
 def checkpoint_inventory(directory: Path) -> tuple[int, dict[str, str]]:
@@ -86,6 +191,8 @@ def create_custody(directory: Path, *, contract_sha256: str) -> dict:
 
 def validate_custody(directory: Path, custody: dict, *, contract_sha256: str) -> int:
     if (not isinstance(custody, dict)
+            or set(custody) != {"schema", "run_contract_sha256", "checkpoint_name",
+                                    "step", "files", "state"}
             or custody.get("schema") != "VERA_TRAINER_STEP_CUSTODY_R16_V1"
             or custody.get("state") != "CHECKPOINT_BYTES_PINNED_NOT_RESUME_ATTESTED"
             or custody.get("run_contract_sha256") != contract_sha256):

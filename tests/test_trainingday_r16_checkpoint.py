@@ -109,12 +109,64 @@ class R16CheckpointCustodyTest(unittest.TestCase):
         with self.assertRaisesRegex(AdmissionError, "externally pinned"):
             _r16_prepare_output(self.args, self.preflight)
 
+    def test_duplicate_contract_key_rejected_even_if_last_value_matches(self):
+        output, _, _, _ = self.prepare_resume()
+        contract = output / "r16-run-contract.json"
+        raw = contract.read_text(encoding="utf-8")
+        self.assertIn('"mode": "correct"', raw)
+        contract.write_text(raw.replace('"mode": "correct"',
+                                        '"mode": "correct", "mode": "correct"'),
+                            encoding="utf-8")
+        with self.assertRaisesRegex(AdmissionError, "strict JSON"):
+            _r16_prepare_output(self.args, self.preflight)
+
+    def test_duplicate_externally_pinned_custody_key_rejected(self):
+        self.prepare_resume()
+        external = Path(self.args.resume_custody)
+        raw = external.read_text(encoding="utf-8")
+        self.assertIn('"step": 8', raw)
+        external.write_text(raw.replace('"step": 8', '"step": 8, "step": 8'),
+                            encoding="utf-8")
+        # Even a newly pinned digest cannot legitimize ambiguous JSON.
+        self.args.resume_custody_sha256 = _hash(external)
+        with self.assertRaisesRegex(AdmissionError, "strict JSON"):
+            _r16_prepare_output(self.args, self.preflight)
+
+    def test_nonfinite_receipt_field_rejected_before_custody(self):
+        self.prepare_resume()
+        external = Path(self.args.resume_custody)
+        receipt = json.loads(external.read_text(encoding="utf-8"))
+        receipt["nonfinite_probe"] = float("nan")
+        external.write_text(json.dumps(receipt), encoding="utf-8")
+        self.args.resume_custody_sha256 = _hash(external)
+        with self.assertRaisesRegex(AdmissionError, "strict JSON"):
+            _r16_prepare_output(self.args, self.preflight)
+
+    def test_unrecognized_custody_fields_do_not_authorize_resume(self):
+        _, checkpoint, contract_sha, custody = self.prepare_resume()
+        forged = dict(custody, authorizes_resume=True)
+        with self.assertRaisesRegex(AdmissionError, "contract/state mismatch"):
+            validate_custody(checkpoint, forged, contract_sha256=contract_sha)
+
     def test_custody_cannot_live_inside_output(self):
         output, _, _, _ = self.prepare_resume()
         duplicate = output / "bad-custody.json"
         duplicate.write_bytes(Path(self.args.resume_custody).read_bytes())
         self.args.resume_custody = duplicate
         self.args.resume_custody_sha256 = _hash(duplicate)
+        with self.assertRaisesRegex(AdmissionError, "externally pinned"):
+            _r16_prepare_output(self.args, self.preflight)
+
+    def test_symlinked_parent_cannot_alias_internal_custody_as_external(self):
+        output, _, _, _ = self.prepare_resume()
+        internal = output / "hidden-custody"
+        internal.mkdir()
+        internal_receipt = internal / "receipt.json"
+        internal_receipt.write_bytes(Path(self.args.resume_custody).read_bytes())
+        alias = self.root / "apparently-external"
+        alias.symlink_to(internal, target_is_directory=True)
+        self.args.resume_custody = alias / "receipt.json"
+        self.args.resume_custody_sha256 = _hash(internal_receipt)
         with self.assertRaisesRegex(AdmissionError, "externally pinned"):
             _r16_prepare_output(self.args, self.preflight)
 

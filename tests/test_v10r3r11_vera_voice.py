@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import unittest
@@ -87,16 +88,37 @@ class R11SourceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"insufficient"):
             r11.transform(source,voice,held)
 
-    def test_generated_spec_binds_real_completed_parent(self):
-        spec=r11.build_spec(ROOT,"a"*64)
+    def test_source_only_spec_transform_does_not_claim_parent_verification(self):
+        # This tests field construction, not the R10 receipt or adapter bytes.
+        # build_spec() remains the only entrypoint that can accept those.
+        parent=json.loads((ROOT/r11.R10_SPEC_REL).read_text(encoding="utf8"))
+        recorded=json.loads((ROOT/r11.R11_SPEC_REL).read_text(encoding="utf8"))
+        untouched=copy.deepcopy(parent)
+        spec=r11._compose_spec_source_only(
+            parent,recorded["source_subject"]["train_sha256"],
+            recorded["resume_adapter"]["source_weight_digest_after"])
+        self.assertEqual(parent,untouched)
+        self.assertEqual(spec,recorded)
         self.assertEqual(spec["resume_adapter"]["source_cumulative_optimizer_steps"],36)
         self.assertEqual(spec["resume_adapter"]["next_train_row"],288)
         self.assertEqual(spec["resume_adapter"]["adapter_model_sha256"],r11.R10_ADAPTER_SHA)
+        self.assertEqual(spec["resume_adapter"]["source_weight_digest_after"],
+                         recorded["resume_adapter"]["source_weight_digest_after"])
         self.assertEqual(spec["development_window"]["row_count"],64)
         self.assertEqual(spec["trainer"]["max_optimizer_steps"],8)
         self.assertEqual(spec["output"]["namespace"],str(r11.R11_OUTPUT))
         self.assertFalse(spec["authority"]["deploy_activate_authorized"])
         self.assertFalse(spec["authority"]["merge_authorized"])
+
+    def test_original_r10_crlf_spec_pin_remains_byte_exact(self):
+        source=(ROOT/r11.R10_SPEC_REL).read_bytes()
+        # The historical Windows R10 receipt signed CRLF bytes. Git's Linux
+        # checkout supplies LF bytes, which must NOT be accepted as if signed.
+        raw_windows=source.replace(b"\r\n",b"\n").replace(b"\n",b"\r\n")
+        self.assertEqual(hashlib.sha256(raw_windows).hexdigest(),r11.R10_SPEC_SHA)
+        if source != raw_windows:
+            with self.assertRaisesRegex(ValueError,"R10 spec hash mismatch"):
+                r11.build_spec(ROOT,"a"*64)
 
     def test_gate_rejects_wrong_target_parent_data_and_resources(self):
         good=dict(model_type="qwen3_5",adapter_sha=r11.R10_ADAPTER_SHA,

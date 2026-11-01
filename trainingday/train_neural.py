@@ -18,7 +18,9 @@ from pathlib import Path
 from trainingday.admission import AdmissionError, admit, _hash_file
 from trainingday.labyrinth_intake import SCHEMA as LABYRINTH_SCHEMA, admit_labyrinth
 from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
-from trainingday.checkpoint_custody import canonical_sha, create_custody, validate_custody
+from trainingday.checkpoint_custody import (
+    canonical_sha, create_custody, read_strict_json_once, validate_custody,
+)
 
 
 BASE_ID = "Qwen/Qwen3.5-4B"
@@ -81,14 +83,15 @@ def _r16_prepare_output(args, preflight: dict) -> tuple[Path, Path | None, int, 
             or not custody_file or not expected_custody_sha
             or any(path.is_symlink() for path in output.parents)):
         raise AdmissionError("R16 resume output/checkpoint/custody missing or unconfined")
-    if json.loads(contract_file.read_text(encoding="utf-8")) != contract:
+    if read_strict_json_once(contract_file) != contract:
         raise AdmissionError("R16 run contract mismatch")
     custody_path = Path(custody_file)
     if (not custody_path.is_file() or custody_path.is_symlink()
-            or custody_path.is_relative_to(output)
-            or _hash_file(custody_path) != expected_custody_sha):
+            or custody_path.is_relative_to(output)):
         raise AdmissionError("R16 externally pinned checkpoint receipt absent or changed")
-    custody = json.loads(custody_path.read_text(encoding="utf-8"))
+    custody = read_strict_json_once(custody_path,
+                                    expected_sha256=expected_custody_sha,
+                                    forbidden_under=output)
     step = validate_custody(checkpoint, custody, contract_sha256=contract_hash)
     if step % 8 or step >= args.steps:
         raise AdmissionError("R16 resume step outside bounded schedule")
@@ -96,9 +99,18 @@ def _r16_prepare_output(args, preflight: dict) -> tuple[Path, Path | None, int, 
 
 
 def _required_base(binding: Path) -> tuple[dict, Path]:
+    # Preserve safe relative CLI bindings without resolving away aliases.
+    if not binding.is_absolute():
+        binding = Path.cwd() / binding
     if not binding.is_file() or binding.is_symlink():
         raise AdmissionError("base binding missing or symlinked")
-    data = json.loads(binding.read_text(encoding="utf-8"))
+    # Last-key-wins JSON can replace identity or tensor hashes silently.
+    # Bind the parse to one bounded, no-follow read; host immutability is a
+    # separate physical authorization requirement.
+    try:
+        data = read_strict_json_once(binding)
+    except AdmissionError as exc:
+        raise AdmissionError("base binding strict JSON/custody invalid") from exc
     if (data.get("schema") != "TRAININGDAY_PINNED_BASE_V1" or data.get("model_id") != BASE_ID
             or not isinstance(data.get("revision"), str) or len(data["revision"]) != 40
             or any(c not in "0123456789abcdef" for c in data["revision"])
@@ -106,8 +118,9 @@ def _required_base(binding: Path) -> tuple[dict, Path]:
             or data.get("quantization") != "NF4_DOUBLE_BF16"):
         raise AdmissionError("official base binding incomplete or unpinned")
     directory = Path(data.get("snapshot_path", ""))
-    if not directory.is_absolute() or not directory.is_dir() or directory.is_symlink():
-        raise AdmissionError("pinned local base snapshot absent")
+    if (not directory.is_absolute() or not directory.is_dir()
+            or any(path.is_symlink() for path in (directory, *directory.parents))):
+        raise AdmissionError("pinned local base snapshot absent/symlinked")
     files = data.get("files")
     if not isinstance(files, dict) or not files:
         raise AdmissionError("base snapshot custody file hashes missing")

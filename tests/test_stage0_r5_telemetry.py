@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 
 from successor.experiments import qualify_v10r3r3_stage0_runtime as stage0
 
@@ -33,6 +34,14 @@ def test_stage0_step_telemetry_appends_durable_jsonl(tmp_path):
 def test_stage0_optimizer_soak_forwards_telemetry_path(monkeypatch, tmp_path):
     observed = {}
 
+    @contextmanager
+    def fake_lock(path):
+        # This proves wrapper argument forwarding, not Windows lock custody.
+        observed["requested_lock_path"] = path
+        yield {"synthetic_lock_for_source_test_only": True}
+
+    monkeypatch.setattr(stage0, "exclusive_stage0_gpu_lock", fake_lock)
+
     def fake_unlocked(repo_root, **kwargs):
         observed["repo_root"] = repo_root
         observed.update(kwargs)
@@ -53,4 +62,5 @@ def test_stage0_optimizer_soak_forwards_telemetry_path(monkeypatch, tmp_path):
     )
 
     assert result == {"status": "SENTINEL"}
+    assert observed["requested_lock_path"] == tmp_path / "gpu.lock"
     assert observed["telemetry_path"] == telemetry_path
