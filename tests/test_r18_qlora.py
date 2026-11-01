@@ -27,6 +27,17 @@ class QloraContractTests(unittest.TestCase):
         ]
         self.base = {"model_id": q.BASE_ID, "revision": q.BASE_REVISION,
                      "files": {"tokenizer_config.json": "a" * 64}}
+        index_name = "model.safetensors.index.json"
+        shard_name = "model.safetensors-00001-of-00001.safetensors"
+        index = self.root / index_name
+        index.write_text(json.dumps({
+            "metadata": {"total_size": 512},
+            "weight_map": {"model.language_model.embed_tokens.weight": shard_name},
+        }), encoding="utf-8")
+        self.base["files"].update({
+            index_name: hashlib.sha256(index.read_bytes()).hexdigest(),
+            shard_name: "e" * 64,
+        })
         self.plan = {
             "schema": q.PLAN_SCHEMA, "base_model": q.BASE_ID,
             "base_revision": q.BASE_REVISION, "base_binding_sha256": "b" * 64,
