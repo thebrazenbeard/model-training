@@ -25,11 +25,15 @@ class LoaderPreflightTests(unittest.TestCase):
         self.snapshot.mkdir()
         self.sources = self.root / "source"
         (self.sources / "trainingday").mkdir(parents=True)
+        (self.sources / "trainingday" / "qwen_text_checkpoint.py").write_text(
+            "def prepare_text_loader(path): pass\n", encoding="utf-8")
         for module in ("r18_mezo", "r18_qlora"):
             (self.sources / "trainingday" / f"{module}.py").write_text(
                 "from transformers import Qwen3_5ForCausalLM\n"
                 "def load(path):\n"
-                "    return Qwen3_5ForCausalLM.from_pretrained(path, local_files_only=True)\n",
+                "    return Qwen3_5ForCausalLM.from_pretrained(\n"
+                "        path, local_files_only=True, config=text_config,\n"
+                "        key_mapping=key_mapping, output_loading_info=True)\n",
                 encoding="utf-8",
             )
 
@@ -65,7 +69,8 @@ class LoaderPreflightTests(unittest.TestCase):
             "r18_qlora": "Qwen3_5ForCausalLM",
         })
         self.assertEqual(result["operator_config_sha256"], digest)
-        self.assertEqual(len(result["source_sha256"]), 2)
+        self.assertEqual(len(result["source_sha256"]), 3)
+        self.assertIn("qwen_text_checkpoint", result["source_sha256"])
         self.assertIs(result["runtime_loader_verified"], False)
         self.assertIs(result["weights_loaded"], False)
         self.assertIs(result["training_authorized"], False)
@@ -79,6 +84,26 @@ class LoaderPreflightTests(unittest.TestCase):
         self.assertEqual(set(result["runner_loader_classes"].values()),
                          {"Qwen3_5ForCausalLM"})
         self.assertTrue(all(len(value) == 64 for value in result["source_sha256"].values()))
+
+    def test_helper_source_mutation_changes_audited_source_digest(self) -> None:
+        path, digest = self._valid()
+        before = audit(path, expected_config_sha256=digest, source_root=self.sources)
+        helper = self.sources / "trainingday" / "qwen_text_checkpoint.py"
+        helper.write_text("def prepare_text_loader(path): raise ValueError()\n")
+        after = audit(path, expected_config_sha256=digest, source_root=self.sources)
+        self.assertNotEqual(before["source_sha256"]["qwen_text_checkpoint"],
+                            after["source_sha256"]["qwen_text_checkpoint"])
+
+    def test_real_r18_sources_cannot_omit_projection_or_load_report(self) -> None:
+        path, digest = self._valid()
+        source = self.sources / "trainingday" / "r18_mezo.py"
+        original = source.read_text()
+        for missing in ("config=text_config,", "key_mapping=key_mapping,",
+                        "output_loading_info=True"):
+            with self.subTest(missing=missing):
+                source.write_text(original.replace(missing, ""), encoding="utf-8")
+                with self.assertRaises(LoaderPreflightError):
+                    audit(path, expected_config_sha256=digest, source_root=self.sources)
 
     def test_wrong_external_digest_is_rejected_even_if_self_binding_matches(self) -> None:
         path, _ = self._valid()
