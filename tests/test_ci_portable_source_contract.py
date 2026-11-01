@@ -20,6 +20,17 @@ def _job(name: str) -> str:
 
 
 class PortableSourceCIContractTests(unittest.TestCase):
+    def test_r155_draft_base_has_exact_pull_request_trigger(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        match = re.search(
+            r'(?m)^  pull_request:\n    branches: \[(?P<branches>[^\]]+)\]$',
+            workflow,
+        )
+        self.assertIsNotNone(match)
+        self.assertIn('"draft/r154-cognitive-source-intake-20261101"',
+                      match.group("branches"))
+        self.assertNotIn('"draft/**"', match.group("branches"))
+
     def test_portable_source_job_is_exact_head_and_pinned_linux(self):
         body = _job("portable-source-contracts")
         self.assertIn("runs-on: ubuntu-24.04", body)
