@@ -24,3 +24,9 @@ Compile with local x64 csc.exe using target:exe, references System.ServiceProces
 An independent steward-issued admissible TRAIN dataset decision, an actual R19-01 exclusive GPU and process lease, NAS route owner grant and durable external witness, approved immutable run plan, broker-owned Windows Job process, and hostile end-to-end tests. This prototype is not a positive-grant broker. No Qwen optimizer step or checkpoint has been produced from it.
 
 Service status and source/CI checks cannot be substituted for authenticated physical launch authority.
+
+## R162 source-only bounded request hardening
+
+The successor source adds `BoundedPipeRequest.Read`: a total 1,500 ms input deadline, maximum 128 printable ASCII bytes, CRLF/LF framing validation, and cooperative service-stop cancellation. On timeout it disposes the active pipe, waits for native overlapped I/O completion before closing its event handle, and never interprets the request as authorization. Windows native tests exercise normal requests, 128/129-byte boundaries, malformed controls, idle and slow-drip clients, stop cancellation, and a healthy request after a timeout.
+
+**Deployment status: NOT INSTALLED.** The current Lappy service and its recorded binary SHA remain those of R161. This separate source candidate must not be deployed or treated as a positive-grant broker without exact-head hosted Windows CI, an independently reviewed host identity/peer binding design, and an owner-controlled maintenance window. The Labyrinth training lane's work remains undisturbed.

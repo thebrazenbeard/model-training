@@ -12,15 +12,18 @@ namespace Vera.TrainingDay.HostBroker {
     const string PipeName="VERA-TrainingDay-HostBroker-V1";
     volatile bool stopping;
     Thread worker;
+    readonly ManualResetEvent stopSignal = new ManualResetEvent(false);
     readonly string bootId=Guid.NewGuid().ToString("N");
     public BrokerService() { ServiceName="VeraTrainingDayHostBroker"; CanStop=true; AutoLog=false; }
     protected override void OnStart(string[] args) {
       stopping=false;
+      stopSignal.Reset();
       worker=new Thread(Loop) { IsBackground=true, Name="DenyUntilIndependentAttestation" };
       worker.Start();
     }
     protected override void OnStop() {
       stopping=true;
+      stopSignal.Set();
       try { using(var c=new NamedPipeClientStream(".", PipeName, PipeDirection.Out)) c.Connect(300); }
       catch { }
       if(worker!=null) worker.Join(1200);
@@ -50,14 +53,14 @@ namespace Vera.TrainingDay.HostBroker {
       while(!stopping) {
         try {
           using(var pipe=new NamedPipeServerStream(PipeName,PipeDirection.InOut,1,
-            PipeTransmissionMode.Byte,PipeOptions.None,4096,4096,StrictPipeAcl())) {
+            PipeTransmissionMode.Byte,PipeOptions.Asynchronous,4096,4096,StrictPipeAcl())) {
             pipe.WaitForConnection();
             if(stopping) return;
             using(var reader=new StreamReader(pipe,System.Text.Encoding.ASCII,false,1024,true))
             using(var writer=new StreamWriter(pipe,System.Text.Encoding.ASCII,1024,true) { AutoFlush=true }) {
               // Windows caches the client's impersonation identity upon a
               // completed pipe read, not merely upon WaitForConnection.
-              string request=reader.ReadLine();
+              string request=BoundedPipeRequest.Read(pipe,stopSignal);
               bool authenticated=false;
               try { authenticated=VerifiedAdminClient(pipe); } catch { }
               string reason=!authenticated ? "CLIENT_TOKEN_NOT_ADMIN" :
