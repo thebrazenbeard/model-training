@@ -6,16 +6,15 @@ content-addressed custody manifest for the neural runner, not model training.
 
 import argparse
 import json
-import re
 from pathlib import Path
 
 from trainingday.admission import AdmissionError, _hash_file, _require
-from trainingday.train_neural import BASE_ID
+from trainingday.train_neural import BASE_ID, BASE_REVISION
 
 
 def freeze(snapshot: Path, revision: str, destination: Path, *, api) -> dict:
     snapshot, destination = Path(snapshot), Path(destination)
-    _require(re.fullmatch(r"[0-9a-f]{40}", revision) is not None, "base revision unpinned")
+    _require(revision == BASE_REVISION, "official base revision mismatch")
     _require(snapshot.is_absolute() and snapshot.is_dir() and not snapshot.is_symlink(),
              "snapshot must be an existing isolated directory")
     _require(not destination.exists(), "base binding output already exists")

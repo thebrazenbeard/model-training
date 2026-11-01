@@ -24,6 +24,7 @@ from trainingday.checkpoint_custody import (
 
 
 BASE_ID = "Qwen/Qwen3.5-4B"
+BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 RECIPE = "TRAININGDAY_QWEN35_FRESH_QLORA_R15_NUMERIC_MATCHED"
 R16_RECIPE = "TRAININGDAY_QWEN35_QLORA_R16_CHECKPOINTABLE_MATCHED"
 R16_V2_MANIFEST_SHA256 = "90b55cf8742f9222c91f88e5727dcd0113322e4721e4fd3d1bdcdf65f40d0836"
@@ -112,8 +113,7 @@ def _required_base(binding: Path) -> tuple[dict, Path]:
     except AdmissionError as exc:
         raise AdmissionError("base binding strict JSON/custody invalid") from exc
     if (data.get("schema") != "TRAININGDAY_PINNED_BASE_V1" or data.get("model_id") != BASE_ID
-            or not isinstance(data.get("revision"), str) or len(data["revision"]) != 40
-            or any(c not in "0123456789abcdef" for c in data["revision"])
+            or data.get("revision") != BASE_REVISION
             or data.get("loader_class") != "Qwen3_5ForCausalLM"
             or data.get("quantization") != "NF4_DOUBLE_BF16"):
         raise AdmissionError("official base binding incomplete or unpinned")

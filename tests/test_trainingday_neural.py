@@ -7,7 +7,7 @@ import pytest
 
 from trainingday.admission import AdmissionError
 from trainingday import admission
-from trainingday.train_neural import _control_rows, _required_base, train, validate_run
+from trainingday.train_neural import BASE_REVISION, _control_rows, _required_base, train, validate_run
 from test_trainingday_admission import _corpus
 from test_trainingday_labyrinth_intake import _fixture as _labyrinth_fixture
 
@@ -22,7 +22,7 @@ def _base(tmp_path):
         files[name] = hashlib.sha256(content).hexdigest()
     binding = tmp_path / "base-binding.json"
     binding.write_text(json.dumps({"schema": "TRAININGDAY_PINNED_BASE_V1",
-                                   "model_id": "Qwen/Qwen3.5-4B", "revision": "c" * 40,
+                                   "model_id": "Qwen/Qwen3.5-4B", "revision": BASE_REVISION,
                                    "loader_class": "Qwen3_5ForCausalLM",
                                    "quantization": "NF4_DOUBLE_BF16",
                                    "snapshot_path": str(root), "files": files}))
@@ -127,6 +127,15 @@ def test_sourceless_model_id_rejected(tmp_path):
     binding, _ = _base(tmp_path)
     data = json.loads(binding.read_text())
     data["model_id"] = "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive"
+    binding.write_text(json.dumps(data))
+    with pytest.raises(AdmissionError, match="official base"):
+        _required_base(binding)
+
+
+def test_other_valid_official_repo_revision_rejected(tmp_path):
+    binding, _ = _base(tmp_path)
+    data = json.loads(binding.read_text())
+    data["revision"] = "d" * 40
     binding.write_text(json.dumps(data))
     with pytest.raises(AdmissionError, match="official base"):
         _required_base(binding)
