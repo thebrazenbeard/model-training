@@ -102,6 +102,7 @@ jobs:
             tests.test_r140_linux_fd_custody \
             tests.test_r140_monotonic_authority \
             tests.test_r140_qwen_attestation \
+            tests.test_r155_qwen_official_anchor \
             tests.test_r140_windows_custody_contract \
             tests.test_r141_cross_module_faults \
             tests.test_r141_evidence_gate \
