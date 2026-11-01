@@ -189,6 +189,25 @@ class R16CheckpointCustodyTest(unittest.TestCase):
         with self.assertRaisesRegex(AdmissionError, "step mismatch"):
             create_custody(checkpoint, contract_sha256=contract_sha)
 
+    def test_trainer_step_read_must_match_hashed_inventory_bytes(self):
+        """A changed step after hashing must not yield a signed inventory."""
+        _, checkpoint, contract_sha, _ = self.prepare_resume()
+        state_file = checkpoint / "trainer_state.json"
+        # At hash time this is incompatible with checkpoint-8; the subsequent
+        # pathname reopen used to accept a substituted step-8 JSON document.
+        state_file.write_text(json.dumps({"global_step": 9}), encoding="utf-8")
+        original_hash = custody_module._hash_file
+
+        def swap_after_hash(path):
+            digest = original_hash(path)
+            if Path(path) == state_file:
+                state_file.write_text(json.dumps({"global_step": 8}), encoding="utf-8")
+            return digest
+
+        with patch("trainingday.checkpoint_custody._hash_file", side_effect=swap_after_hash):
+            with self.assertRaisesRegex(AdmissionError, "Trainer state invalid|changed"):
+                create_custody(checkpoint, contract_sha256=contract_sha)
+
     def test_trainer_step_rejects_bool_float_and_duplicate_json_keys(self):
         output, _, contract_sha, _ = self.prepare_resume()
         checkpoint = self.checkpoint(output, step=1)
