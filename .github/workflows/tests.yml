@@ -253,6 +253,19 @@ jobs:
           # disappear from its positive native execution lane.
           python -m pytest -q tests/test_stage0_runtime_qualification.py::test_stage0_gpu_lock_rejects_concurrent_holder_and_releases tests/test_stage0_runtime_qualification.py::test_stage0_gpu_lock_blocks_other_process_then_releases
 
+      - name: Compile native TrainingDay broker (source only, no install)
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { throw 'Native .NET Framework C# compiler missing' }
+          $source = Join-Path $PWD 'trainingday\windows_host_broker\TrainingDayHostBroker.cs'
+          $output = Join-Path $env:RUNNER_TEMP 'VeraTrainingDayHostBroker.exe'
+          & $csc /nologo /target:exe /optimize+ ('/out:'+$output) /r:System.ServiceProcess.dll /r:System.Core.dll /r:System.Security.dll $source
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
+            throw 'Windows host broker compile failed'
+          }
+          Write-Output 'Broker source compiled; no service installed and no launch authority granted'
+
   pytest-synthetic-merge:
     # A green source head does not establish target-branch merge compatibility.
     # The full diagnostic remains RED on missing owner-historical evidence.
