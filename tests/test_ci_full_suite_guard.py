@@ -98,7 +98,13 @@ class CIWorkflowIdentityTests(unittest.TestCase):
             "pytest-source", "pytest-synthetic-merge",
             "portable-source-contracts", "trainingday-r14-source",
             "trainingday-r16-source", "windows-stage0-source",
+            "rights-crypto-source",
         })
+        crypto_job = jobs["rights-crypto-source"]
+        self.assertEqual(crypto_job["runs-on"], "ubuntu-24.04")
+        crypto_commands = "\n".join(str(step.get("run", "")) for step in crypto_job["steps"])
+        self.assertIn("cryptography==46.0.3", crypto_commands)
+        self.assertIn("result.skipped", crypto_commands)
         for name, expected in (("pytest-source", "EXPECTED_SOURCE_SHA"),
                                ("pytest-synthetic-merge", "EXPECTED_MERGE_SHA")):
             with self.subTest(job=name):
