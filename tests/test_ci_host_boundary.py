@@ -15,8 +15,31 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HostBoundaryTests(unittest.TestCase):
-    def test_manifest_contains_exactly_eleven_real_host_tests(self):
-        self.assertEqual(len(boundary.HOST_TESTS), 11)
+    def test_manifest_contains_exactly_twelve_real_host_tests(self):
+        self.assertEqual(len(boundary.HOST_TESTS), 12)
+        self.assertIn("tests/test_v10r3r11_vera_voice.py::R11SourceTests::test_generated_spec_binds_real_completed_parent", boundary.HOST_TESTS)
+
+    def test_only_native_windows_lock_tests_may_skip_on_portable_linux(self):
+        self.assertEqual(boundary.ALLOWED_PORTABLE_SKIPS, {
+            "tests/test_stage0_runtime_qualification.py::test_stage0_gpu_lock_rejects_concurrent_holder_and_releases",
+            "tests/test_stage0_runtime_qualification.py::test_stage0_gpu_lock_blocks_other_process_then_releases",
+        })
+        deferred = tuple(sorted(boundary.HOST_TESTS))
+        skipped = [SimpleNamespace(nodeid=s) for s in sorted(boundary.ALLOWED_PORTABLE_SKIPS)]
+        allowed = {
+            "passed": [object()] * 3,
+            "skipped": skipped,
+            "deselected": [SimpleNamespace(nodeid=n) for n in deferred],
+        }
+        self.assertTrue(boundary.portable_accounting(
+            5, allowed, deferred, minimum_collected=boundary.MIN_PORTABLE_COLLECTED)[0] is False)
+        # With a full-size collection, only the two declared platform skips qualify.
+        allowed["passed"] = [object()] * (boundary.MIN_PORTABLE_COLLECTED - 2)
+        self.assertTrue(boundary.portable_accounting(
+            boundary.MIN_PORTABLE_COLLECTED, allowed, deferred)[0])
+        with_extra = dict(allowed, skipped=skipped + [SimpleNamespace(nodeid="tests/unknown.py::test_skip")])
+        self.assertFalse(boundary.portable_accounting(
+            boundary.MIN_PORTABLE_COLLECTED + 1, with_extra, deferred)[0])
 
     def test_all_manifest_methods_remain_in_existing_source(self):
         for nodeid in boundary.HOST_TESTS:

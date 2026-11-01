@@ -18,8 +18,8 @@ import subprocess
 
 
 # PR #179 hosted source run: 1454 passed + 18 failed + 2 skipped = 1474
-# collected. Subtracting exactly 11 host-bound tests gives a conservative
-# observed portable baseline of 1463. New tests can increase this count, but
+# collected. Subtracting at least 12 host-bound tests gives a conservative
+# observed portable baseline of 1462. New tests can increase this count, but
 # no static count proves complete inventory across later source revisions.
 MIN_PORTABLE_COLLECTED = 1463
 
@@ -27,6 +27,7 @@ MIN_PORTABLE_COLLECTED = 1463
 # Historical D:\\VERA and private Lappy artifacts are intentionally NOT
 # manufactured in Linux CI. Every named assertion remains in its test file.
 HOST_TESTS = frozenset({
+    "tests/test_v10r3r11_vera_voice.py::R11SourceTests::test_generated_spec_binds_real_completed_parent",
     "tests/test_r12_fp32_precision.py::R12PrecisionTests::test_r12_source_is_new_and_no_heldout_prompt_overlap",
     "tests/test_r12_source_portability.py::SourceTransportTests::test_existing_r12_train_corpus_still_exact",
     "tests/test_r13_corpus_contract.py::R13CorpusContractTests::test_new_128_targeted_rows_balance_identity_and_judgment",
@@ -38,6 +39,13 @@ HOST_TESTS = frozenset({
     "tests/test_v10r3r11_pagefile_retry1.py::RetrySpecTests::test_old_attempt_and_r10_parent_not_retired",
     "tests/test_v10r3r10_launch_gate.py::QwenOnlyLaunchTests::test_real_source_and_parent_spec_bound",
     "tests/test_r11_voice_heldout_probe_contract.py::R11HeldoutProbeContractTests::test_heldout_prompt_count_and_prohibition",
+})
+
+# Native msvcrt lock tests execute in the required Windows Stage-0 job.
+# On the pinned Ubuntu portable job, exactly these two platform skips are expected.
+ALLOWED_PORTABLE_SKIPS = frozenset({
+    "tests/test_stage0_runtime_qualification.py::test_stage0_gpu_lock_rejects_concurrent_holder_and_releases",
+    "tests/test_stage0_runtime_qualification.py::test_stage0_gpu_lock_blocks_other_process_then_releases",
 })
 
 
@@ -64,20 +72,28 @@ def split_host_tests(items: list) -> tuple[list, tuple[str, ...]]:
 
 def portable_accounting(collected: int, stats: dict, deferred: tuple[str, ...] | None,
                         *, minimum_collected: int = MIN_PORTABLE_COLLECTED) -> tuple[bool, dict]:
-    """Only the declared 11 host deselections may appear in a portable result."""
+    """Only the declared 12 host deselections may appear in a portable result."""
     counts = {
         category: len(stats.get(category, ()))
         for category in ("passed", "failed", "error", "skipped", "xfailed", "xpassed", "deselected")
     }
     bad = {key: value for key, value in counts.items()
-           if key not in ("passed", "deselected") and value}
+           if key not in ("passed", "deselected", "skipped") and value}
     excluded = {getattr(item, "nodeid", None) for item in stats.get("deselected", ())}
-    clean = (collected >= minimum_collected and counts["passed"] == collected and not bad
+    skipped = {getattr(item, "nodeid", None) for item in stats.get("skipped", ())}
+    # Real pinned-Linux CI must report the two exact Windows-only lock skips;
+    # small synthetic accounting unit tests use zero expected skips.
+    expected_skips = (ALLOWED_PORTABLE_SKIPS if
+                      minimum_collected >= MIN_PORTABLE_COLLECTED else frozenset())
+    clean = (collected >= minimum_collected
+             and counts["passed"] + counts["skipped"] == collected
+             and skipped == expected_skips and not bad
              and deferred is not None and set(deferred) == HOST_TESTS
              and counts["deselected"] == len(HOST_TESTS)
              and excluded == HOST_TESTS)
     return clean, {"collected": collected, "minimum_collected": minimum_collected,
-                   "counts": counts,
+                   "counts": counts, "platform_skipped": sorted(skipped),
+                   "expected_platform_skips": sorted(expected_skips),
                    "host_deferred": len(deferred or ()), "prohibited": bad}
 
 
@@ -117,7 +133,7 @@ def pytest_collection_modifyitems(session, config, items):
     except ValueError as exc:
         raise pytest.UsageError(str(exc)) from exc
     removed = [item for item in items if item.nodeid.replace("\\", "/") in HOST_TESTS]
-    # Deliberately tell pytest these 11 were deselected. The portable guard
+    # Deliberately tell pytest these 12 were deselected. The portable guard
     # checks their exact IDs; an unrecognized selection is a failed run.
     config.hook.pytest_deselected(items=removed)
     items[:] = retained
