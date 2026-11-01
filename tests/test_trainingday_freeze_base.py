@@ -5,7 +5,7 @@ import pytest
 
 from trainingday.admission import AdmissionError, _hash_file
 from trainingday.freeze_base import freeze
-from trainingday.train_neural import _required_base
+from trainingday.train_neural import BASE_REVISION, _required_base
 
 
 class FakeHub:
@@ -28,7 +28,7 @@ def _state(tmp_path):
     (root / "tokenizer_config.json").write_text("{}")
     weights = root / "model.safetensors"
     weights.write_bytes(b"fixture bytes only, not a real model")
-    return root, weights, tmp_path / "binding.json", "c" * 40
+    return root, weights, tmp_path / "binding.json", BASE_REVISION
 
 
 def test_freeze_exact_lfs_and_reload_custody(tmp_path):
@@ -50,6 +50,14 @@ def test_wrong_hub_revision_refused(tmp_path):
     root, weights, binding, sha = _state(tmp_path)
     with pytest.raises(AdmissionError, match="unexpected"):
         freeze(root, sha, binding, api=FakeHub("d" * 40, weights))
+
+
+def test_other_valid_hub_revision_cannot_replace_trainingday_official_base(tmp_path):
+    root, weights, binding, _ = _state(tmp_path)
+    other_revision = "d" * 40
+    with pytest.raises(AdmissionError, match="official|revision"):
+        freeze(root, other_revision, binding, api=FakeHub(other_revision, weights))
+    assert not binding.exists()
 
 
 def test_extra_unbound_tensor_rejected(tmp_path):

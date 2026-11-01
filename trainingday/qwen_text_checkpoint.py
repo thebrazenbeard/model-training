@@ -59,7 +59,12 @@ def index_binding_pin(base: dict) -> tuple[str, set[str]]:
             re.fullmatch(r"[0-9a-f]{64}", index_pin) is None):
         raise TextCheckpointProjectionError("checkpoint index is not SHA-pinned")
     shards = {name for name in files if name.endswith(".safetensors")}
-    if not shards or any(not SHARD_RE.fullmatch(name) for name in shards):
+    if not shards or any(
+        not SHARD_RE.fullmatch(name)
+        or type(files[name]) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", files[name]) is None
+        for name in shards
+    ):
         raise TextCheckpointProjectionError("checkpoint shard binding invalid")
     return index_pin, shards
 

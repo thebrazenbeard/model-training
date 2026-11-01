@@ -170,10 +170,15 @@ def checkpoint_inventory(directory: Path) -> tuple[int, dict[str, str]]:
     if not ("rng_state.pth" in files or any(re.fullmatch(r"rng_state_\d+\.pth", f) for f in files)):
         raise AdmissionError("checkpoint missing RNG state")
     try:
-        state = json.loads((directory / "trainer_state.json").read_text(encoding="utf-8"),
-                           object_pairs_hook=_reject_duplicate_json_keys)
-    except (OSError, ValueError) as exc:
-        raise AdmissionError("checkpoint Trainer state invalid") from exc
+        # The inventory hash and the step must describe the same bytes.  A
+        # separate read_text() could parse a substituted Trainer state after
+        # its earlier file digest was recorded.
+        state = read_strict_json_once(
+            (directory / "trainer_state.json").absolute(),
+            expected_sha256=files["trainer_state.json"],
+        )
+    except (OSError, ValueError, AdmissionError) as exc:
+        raise AdmissionError("checkpoint Trainer state invalid or changed") from exc
     if (not isinstance(state, dict) or type(state.get("global_step")) is not int
             or state["global_step"] != step):
         raise AdmissionError("checkpoint directory/step mismatch")
