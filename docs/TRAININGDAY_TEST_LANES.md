@@ -9,10 +9,14 @@ Those inputs must never be copied into public CI as convenient fixtures.
 
 `python -m pytest -q -p ci_host_boundary --portable-source-only`
 
-This command collects the test suite, validates that **all 11 named host-bound
-tests are present**, records exactly 11 pytest `deselected` outcomes (with
-individual test names), and executes the remaining portable tests. Missing,
-extra, or duplicated exclusions fail accounting. Its output is explicitly labeled
+This command collects the test suite, validates that **all 12 named owner-host
+tests and both native Windows Stage-0 tests are present**, records exactly
+14 pytest `deselected` outcomes (with individual names and separate host vs.
+Windows categories), and executes the remaining portable tests. No pytest
+`skipped` outcomes are allowed. Missing, extra, or duplicated exclusions fail
+accounting. The two Windows-only tests are positively exercised in the
+separate `Tests/windows-stage0-source` job on a native Windows runner; they
+are not classified as missing private owner artifacts. Its output is explicitly labeled
 `PORTABLE_SOURCE_ONLY — HOST_INTEGRATION_UNQUALIFIED` and lists each deferred
 node ID. It emits machine-readable `CI_HOST_BOUNDARY_RECEIPT_JSON` in the log;
 the receipt explicitly disclaims training and qualification. This is never
@@ -25,13 +29,14 @@ do not mark it `continue-on-error` or exempt the status from review.
 
 The ordinary `python -m pytest -q` is unchanged and still attempts all tests,
 including host-dependent tests. The portable command is not the full suite.
-Other CI failures (Windows-only `msvcrt`, optional dependencies, source mismatch)
-remain independent defects until owner-reviewed fixes are published.
+Other CI failures (optional dependencies, source mismatch) remain independent
+defects until owner-reviewed fixes are published. A green Windows source job
+does not qualify a GPU lease or real host integration.
 
 ## Restricted host lane
 
 After independent host/GPU lease release, authenticated NAS/Executor routing,
-data rights, and the appropriate test-run authorization, run all 11 manifest
+data rights, and the appropriate test-run authorization, run all 12 host manifest
 entries against the actual historical artifacts on the authorized host.
 Capture their exact source SHA, environment identity, exit code, artifact
 digests, and test results in a signed restricted receipt. Do not publish

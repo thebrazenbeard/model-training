@@ -5,11 +5,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+import pytest
 
 from successor.experiments import build_r13_behavior_corrective as build
 
 
 class R13CorpusContractTests(unittest.TestCase):
+    @pytest.mark.owner_historical
     def test_new_128_targeted_rows_balance_identity_and_judgment(self):
         rows, sources, donors, indices = build.prepare()
         self.assertEqual(len(rows), 50000)
@@ -21,6 +23,7 @@ class R13CorpusContractTests(unittest.TestCase):
         self.assertEqual(collections.Counter(x["training_use"] for x in rows[416:672]),
                          {"targeted_behavioral_sft":128,"general_rehearsal":128})
 
+    @pytest.mark.owner_historical
     def test_training_window_alternates_and_never_changes_outer_rows(self):
         rows,sources,donors,indices = build.prepare()
         self.assertTrue(all(rows[416+4*i]["record_id"]==sources[i]["id"] for i in range(64)))
@@ -30,12 +33,14 @@ class R13CorpusContractTests(unittest.TestCase):
         self.assertTrue(all(i>=672 for i in indices))
         self.assertEqual(len(set(x["prompt"].casefold().strip() for x in rows[416:672])),256)
 
+    @pytest.mark.owner_historical
     def test_exact_heldout_prompt_excluded(self):
         rows,_,_,_=build.prepare()
         frozen={x["user"].casefold().strip() for x in build.jsonl(build.HOLDOUT)}
         self.assertFalse(frozen & {x["prompt"].casefold().strip() for x in rows[416:672]})
         self.assertEqual(build.sha(build.R12_CORPUS), build.R12_CORPUS_SHA)
 
+    @pytest.mark.owner_historical
     def test_frozen_source_rebuilds_bit_identical_spec_and_corpus(self):
         with TemporaryDirectory() as td:
             root=Path(td)

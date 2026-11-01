@@ -1,9 +1,11 @@
 # VERA::TRAININGDAY — neural training lane (source candidate)
 
-**Scope:** `thebrazenbeard/model-training`, branch
-`trainingday/neural-runner-r14-20261029`. Independent corpus-builder lane:
-`thebrazenbeard/labyrinth` Draft PR #59 at exact inspected head
-`188d3340e4498e69d8c54d66ebee9dabd6582d31`.
+**Scope:** Source candidate in `thebrazenbeard/model-training`.
+The original R14 reader came from branch `trainingday/neural-runner-r14-20261029`.
+Its Labyrinth producer reference is historical; the later R16 checkpointable
+contract uses a different, explicitly pinned corpus. Neither version is an
+installed release. These source candidates are **not runtime-qualified**
+models; source and runtime qualification are separate gates.
 Coordination: https://github.com/thebrazenbeard/chat-communication-bus/issues/404 .
 
 This code **does not train by being imported**. Its tests are CPU-only and
@@ -11,7 +13,22 @@ do not qualify a GPU, model, adapter, protected evaluation, or local release.
 
 ## Boundary with the producer
 
-The actual Labyrinth v1 manifest uses `vera.trainingday.corpus.v1`,
+The version distinction matters before any owner-host preflight:
+
+| Source contract | Labyrinth producer/source reference | Manifest SHA-256 | Qualification ceiling |
+| --- | --- | --- | --- |
+| **Legacy R14/v1** | Original reader reference `188d3340e4498e69d8c54d66ebee9dabd6582d31`; the completed v1 data was generated later at `55e2639a1d3e01c71bf1555160eee89a132a2772` | `c722cd38b3cb42905079696691279c950de6b2d740287acc235a12d764f6106d` | Historical in-distribution development corpus; not the current R16 checkpointable selection |
+| **Current R16/v2** | Labyrinth Draft [#59](https://github.com/thebrazenbeard/labyrinth/pull/59) head `1d38e4f25b5663bf8a84ff5e139875d4152e3680`; v2 corpus generated at `d0f2d63863873cf60747383740cc87d8f4e075a4` | `90b55cf8742f9222c91f88e5727dcd0113322e4721e4fd3d1bdcdf65f40d0836` | Structure-disjoint **development** evaluation only, not a sealed final bank or training result |
+
+The current R16 pair is enforced in `trainingday/train_neural.py` by
+`R16_PRODUCER_HEAD` and `R16_V2_MANIFEST_SHA256` when
+`--r16-checkpointable` is selected. These are source pins, not a fresh readback
+of the owner-controlled on-host manifest, its shard bytes, notices, source
+rights or evaluation permissions. The documented historical owner-host audit does
+not establish present route availability or authority to train.
+
+The Labyrinth corpus schema used by both v1 and structural-v2 manifests is
+`vera.trainingday.corpus.v1`, with
 `train/*.jsonl`, `eval/*.jsonl`, `licenses/*.txt` and shard keys
 `split/path/count/bytes/sha256`. This differs from the initial proposed
 `VERA_TRAININGDAY_ADMITTED_SHARDS_V1` interface. Both are recognized, with
@@ -67,32 +84,28 @@ enabled by a source flag or self-declared token.
 Match controls on source manifest, selected IDs, base revision and seed:
 
 - `zero`, 0 optimizer steps: save initialized LoRA and record FP32 digest.
-- `correct`, 1–8 steps: require the **exact zero-arm initial digest** and
+- `correct`, matched bounded steps: require the **exact zero-arm initial digest** and
   nonzero before/after tensor delta.
 - `corrupt`, matched steps: per-family deterministically wrong labels, require
   the same initial digest and a separate saved adapter. An improvement also
   found in this arm does not prove reasoning learning.
 
-Example *source preflight* (replace with **existing**, verified paths; it
-loads no GPU and does not train):
+The original R14/v1 machine-specific command is historical and intentionally
+not a current executable example. An R16 *source-only* preflight requires
+owner-verified existing values for `--manifest`, `--base-binding`,
+`--producer-git-head`, `--work-root` and `--output-root`, plus an unused run ID,
+`--r16-checkpointable` and `--preflight-only`. R16 trained arms require 8–32
+optimizer steps on multiples of eight; a zero arm requires zero steps. Any
+checkpoint restart also requires a separately pinned custody receipt.
 
-```powershell
-& 'C:\ProgramData\ProRun\model-env\Scripts\python.exe' -m trainingday.train_neural `
-  --manifest D:\VERA\scratch\trainingday-corpus-20261029\corpus-v1-100k\manifest.json `
-  --producer-git-head 188d3340e4498e69d8c54d66ebee9dabd6582d31 `
-  --base-binding D:\VERA\.scratch\trainingday-neural-r14-20261029\base-binding.json `
-  --work-root D:\VERA\.scratch\trainingday-neural-r14-20261029 `
-  --output-root D:\VERA\.scratch\trainingday-neural-r14-20261029 `
-  --run-id zero-r14a --mode zero --steps 0 --cases 64 --preflight-only
-```
-
-Remove `--preflight-only` only after every source and host gate passes. The
-Lappy GPU has 4 GiB VRAM; source enforces >=3900 MiB capacity, >=3500 MiB
-runtime-free VRAM, and >=9 GiB free system RAM. Pausing Ollama/PreActive is
-authorized by Patrick for this training work, provided process identity and
-restart state are read back, service restoration is verified, and unrelated
-jobs remain untouched. Do not disable protections, delete model caches, or
-reuse an output run ID. A failed run's files remain for forensics.
+**Physical launch: HARD HOLD.** `trainingday/physical_launch_authority.py`
+currently raises `PhysicalLaunchAuthorityUnavailable` before GPU or checkpoint
+effects because no independently authenticated host-owned lease, route,
+process identity, data-rights grant and immutable run plan are installed.
+Removing `--preflight-only` does **not** confer authority or make training
+runnable. Verify resources and service ownership live; do not disable
+protections, delete caches, take over unrelated processes or reuse an output
+run ID. Failed-run files remain for forensics.
 
 ## Evidence ceiling
 
@@ -104,6 +117,13 @@ loader confirms recovery. A saved adapter alone does not demonstrate semantic
 transfer or a good Q4_K_M local GGUF. Run frozen/zero/corrupt comparisons on
 newly reserved operation chains and unseen program structures before claim
 promotion. The final V10 bank remains outside this source lane.
+
+The intended *future serving destination* is a separately converted,
+quantized **GGUF** for **KoboldCPP** through the **v-e-r-a** interface and
+eventually VeraOS. An official BF16/safetensors base plus a saved LoRA does
+not by itself produce a correct GGUF, an incorporated adapter, a tested
+KoboldCPP deployment or a runtime-qualified model. Conversion, quantization,
+adapter application and fresh-process serving tests remain separate gates.
 
 ## Tests
 

@@ -121,6 +121,24 @@ class R18SourceTests(unittest.TestCase):
         self.args.fit_probe_sha256 = canonical_hash(rows)
         return preflight, rows
 
+    def test_schema_dispatch_rejects_duplicate_manifest_keys_before_admission(self):
+        self.manifest.write_text(
+            '{"schema":"UNREVIEWED","schema":"VERA_TRAININGDAY_ADMITTED_SHARDS_V1"}',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(AdmissionError, "duplicate/ambiguous JSON key"):
+            validate_source(self.args)
+        self.admit.assert_not_called()
+
+    def test_schema_dispatch_bounds_manifest_before_parsing(self):
+        self.manifest.write_text(json.dumps({
+            "schema": "VERA_TRAININGDAY_ADMITTED_SHARDS_V1", "padding": "x" * 200,
+        }), encoding="utf-8")
+        with patch("trainingday.admission.MAX_MANIFEST_BYTES", 100):
+            with self.assertRaisesRegex(AdmissionError, "manifest size limit"):
+                validate_source(self.args)
+        self.admit.assert_not_called()
+
     def test_first_step_over_budget_rejected_without_model_loader(self):
         preflight, rows = self._fit_receipt(100.0)
         with patch("trainingday.r18_mezo.validate_source",

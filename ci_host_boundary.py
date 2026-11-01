@@ -18,8 +18,8 @@ import subprocess
 
 
 # PR #179 hosted source run: 1454 passed + 18 failed + 2 skipped = 1474
-# collected. Subtracting exactly 11 host-bound tests gives a conservative
-# observed portable baseline of 1463. New tests can increase this count, but
+# collected. The original 11-host-test baseline was 1463. Retain this
+# conservative floor even after adding one host and two Windows-only entries;
 # no static count proves complete inventory across later source revisions.
 MIN_PORTABLE_COLLECTED = 1463
 
@@ -34,11 +34,22 @@ HOST_TESTS = frozenset({
     "tests/test_r13_corpus_contract.py::R13CorpusContractTests::test_exact_heldout_prompt_excluded",
     "tests/test_r13_corpus_contract.py::R13CorpusContractTests::test_frozen_source_rebuilds_bit_identical_spec_and_corpus",
     "tests/test_v10r3r11_vera_voice.py::R11SourceTests::test_disk_spec_exactly_binds_outputs",
+    "tests/test_v10r3r11_vera_voice.py::R11SourceTests::test_generated_spec_binds_real_completed_parent",
     "tests/test_v10r3r10_vera_voice.py::R10VoiceCurriculumTests::test_generated_spec_targets_qwen_successor_no_external_spend",
     "tests/test_v10r3r11_pagefile_retry1.py::RetrySpecTests::test_old_attempt_and_r10_parent_not_retired",
     "tests/test_v10r3r10_launch_gate.py::QwenOnlyLaunchTests::test_real_source_and_parent_spec_bound",
     "tests/test_r11_voice_heldout_probe_contract.py::R11HeldoutProbeContractTests::test_heldout_prompt_count_and_prohibition",
 })
+
+# These are not private owner-evidence tests. The genuine msvcrt process-lock
+# behavior is exercised by Tests/windows-stage0-source on Windows; Linux cannot
+# execute it, so the portable lane must report these exact platform deferrals
+# separately, rather than accepting two silently skipped test outcomes.
+WINDOWS_PLATFORM_TESTS = frozenset({
+    "tests/test_stage0_runtime_qualification.py::test_stage0_gpu_lock_rejects_concurrent_holder_and_releases",
+    "tests/test_stage0_runtime_qualification.py::test_stage0_gpu_lock_blocks_other_process_then_releases",
+})
+DECLARED_DEFERRED_TESTS = HOST_TESTS | WINDOWS_PLATFORM_TESTS
 
 
 def valid_portable_invocation(argv: tuple[str, ...]) -> bool:
@@ -55,16 +66,26 @@ def split_host_tests(items: list) -> tuple[list, tuple[str, ...]]:
     identifiers = [item.nodeid.replace("\\", "/") for item in items]
     if len(set(identifiers)) != len(identifiers):
         raise ValueError("duplicate test IDs in collected suite")
-    missing = HOST_TESTS.difference(identifiers)
+    missing = DECLARED_DEFERRED_TESTS.difference(identifiers)
     if missing:
-        raise ValueError("host-bound tests missing from collection: " + ", ".join(sorted(missing)))
-    deferred = tuple(sorted(identifier for identifier in identifiers if identifier in HOST_TESTS))
-    return [item for item in items if item.nodeid.replace("\\", "/") not in HOST_TESTS], deferred
+        raise ValueError("declared deferred tests missing from collection: " + ", ".join(sorted(missing)))
+    # A newly marked owner-historical test must not silently execute in the
+    # portable lane, nor be hidden by blanket -m/--deselect logic. An owner
+    # must explicitly add its exact node ID to the audited host inventory.
+    unlisted = []
+    for item, identifier in zip(items, identifiers):
+        marker = getattr(item, "get_closest_marker", None)
+        if callable(marker) and marker("owner_historical") is not None and identifier not in HOST_TESTS:
+            unlisted.append(identifier)
+    if unlisted:
+        raise ValueError("unlisted owner_historical tests: " + ", ".join(sorted(unlisted)))
+    deferred = tuple(sorted(identifier for identifier in identifiers if identifier in DECLARED_DEFERRED_TESTS))
+    return [item for item in items if item.nodeid.replace("\\", "/") not in DECLARED_DEFERRED_TESTS], deferred
 
 
 def portable_accounting(collected: int, stats: dict, deferred: tuple[str, ...] | None,
                         *, minimum_collected: int = MIN_PORTABLE_COLLECTED) -> tuple[bool, dict]:
-    """Only the declared 11 host deselections may appear in a portable result."""
+    """Only the exact 12 host and 2 Windows deferrals may be deselected."""
     counts = {
         category: len(stats.get(category, ()))
         for category in ("passed", "failed", "error", "skipped", "xfailed", "xpassed", "deselected")
@@ -73,12 +94,14 @@ def portable_accounting(collected: int, stats: dict, deferred: tuple[str, ...] |
            if key not in ("passed", "deselected") and value}
     excluded = {getattr(item, "nodeid", None) for item in stats.get("deselected", ())}
     clean = (collected >= minimum_collected and counts["passed"] == collected and not bad
-             and deferred is not None and set(deferred) == HOST_TESTS
-             and counts["deselected"] == len(HOST_TESTS)
-             and excluded == HOST_TESTS)
+             and deferred is not None and set(deferred) == DECLARED_DEFERRED_TESTS
+             and counts["deselected"] == len(DECLARED_DEFERRED_TESTS)
+             and excluded == DECLARED_DEFERRED_TESTS)
     return clean, {"collected": collected, "minimum_collected": minimum_collected,
                    "counts": counts,
-                   "host_deferred": len(deferred or ()), "prohibited": bad}
+                   "host_deferred": len(set(deferred or ()) & HOST_TESTS),
+                   "windows_platform_deferred": len(set(deferred or ()) & WINDOWS_PLATFORM_TESTS),
+                   "prohibited": bad}
 
 
 def observed_local_source() -> dict[str, str]:
@@ -116,9 +139,10 @@ def pytest_collection_modifyitems(session, config, items):
         retained, deferred = split_host_tests(items)
     except ValueError as exc:
         raise pytest.UsageError(str(exc)) from exc
-    removed = [item for item in items if item.nodeid.replace("\\", "/") in HOST_TESTS]
-    # Deliberately tell pytest these 11 were deselected. The portable guard
-    # checks their exact IDs; an unrecognized selection is a failed run.
+    removed = [item for item in items if item.nodeid.replace("\\", "/") in DECLARED_DEFERRED_TESTS]
+    # Deliberately tell pytest which 12 host and 2 Windows cases are deferred.
+    # The portable guard checks exact IDs and still forbids *all* test skips;
+    # an unrecognized selection is a failed run.
     config.hook.pytest_deselected(items=removed)
     items[:] = retained
     config._vera_portable_deferred = deferred
@@ -131,12 +155,15 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     if deferred is None:
         return
     terminalreporter.write_sep("=", "PORTABLE_SOURCE_ONLY — HOST_INTEGRATION_UNQUALIFIED")
+    host_deferred = tuple(identifier for identifier in deferred if identifier in HOST_TESTS)
+    windows_deferred = tuple(identifier for identifier in deferred if identifier in WINDOWS_PLATFORM_TESTS)
     terminalreporter.write_line(
-        f"Exactly {len(deferred)} real-host tests deferred by explicit manifest. "
-        "No GPU/NAS/restart/evaluation qualification implied."
+        f"Exactly {len(host_deferred)} owner-host and {len(windows_deferred)} native Windows "
+        "tests explicitly deferred. No GPU/NAS/restart/evaluation qualification implied."
     )
     for nodeid in deferred:
-        terminalreporter.write_line("HOST_DEFERRED: " + nodeid)
+        category = "HOST_DEFERRED" if nodeid in HOST_TESTS else "WINDOWS_PLATFORM_DEFERRED"
+        terminalreporter.write_line(category + ": " + nodeid)
     try:
         source = observed_local_source()
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -147,8 +174,10 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             "status": "PORTABLE_SOURCE_ONLY_HOST_INTEGRATION_NOT_QUALIFIED",
             "evidence_class": "SOURCE_ONLY_NOT_AUTHENTICATED_HOST_EVIDENCE",
             "source_observation": source,
-            "host_tests_deferred": list(deferred),
+            "host_tests_deferred": list(host_deferred),
             "host_tests_executed": 0,
+            "windows_platform_tests_deferred": list(windows_deferred),
+            "windows_platform_tests_executed": 0,
             "authorizes_training": False,
             "authorizes_model_qualification": False,
         }, sort_keys=True, separators=(",", ":"))

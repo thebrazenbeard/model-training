@@ -52,6 +52,7 @@ def test_stage0_optimizer_soak_forwards_telemetry_path(monkeypatch, tmp_path):
         "_execute_stage0_optimizer_soak_unlocked",
         fake_unlocked,
     )
+    # Fake lock isolates source forwarding from native Windows lock custody.
     telemetry_path = tmp_path / "trace.jsonl"
     result = stage0.execute_stage0_optimizer_soak(
         tmp_path,

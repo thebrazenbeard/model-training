@@ -1,10 +1,10 @@
 """R12 rejects contested GPU and protected output rather than evicting services."""
-import unittest
-import tempfile
 from pathlib import Path
-from unittest import mock
+from tempfile import TemporaryDirectory
+import unittest
+from unittest.mock import patch
 
-from successor.experiments import preflight_r12_launch as gate
+from successor.experiments import preflight_r12_launch
 from successor.experiments.preflight_r12_launch import classify, validated_receipt, RECEIPT
 
 
@@ -23,24 +23,25 @@ class R12LaunchGateTests(unittest.TestCase):
         self.assertIn("OUTPUT_EXISTS_PRESERVE_ADAPTER", result["reasons"])
 
     def test_retry_receipt_is_distinct_and_scoped(self):
-        # The production path belongs to Windows D:\\VERA. On POSIX it is a
-        # literal filename, not an existing drive receipt. Exercise the actual
-        # no-overwrite and scoped-name contract against a real temporary root.
+        # Windows D:\\ is a literal filename on POSIX. The real default must
+        # remain pinned, but exercise scope/no-overwrite with a local receipt.
         self.assertTrue(str(RECEIPT).startswith(r"D:\VERA\portal-task-state"))
-        with tempfile.TemporaryDirectory() as temp:
-            parent = Path(temp) / "portal-task-state"
-            parent.mkdir()
-            original = parent / "VERA_R12_FP32_LAUNCH_GATE_20261015_V1.json"
-            later = original.with_name("VERA_R12_FP32_LAUNCH_GATE_20261015_V999999.json")
-            with mock.patch.object(gate, "RECEIPT", original):
+        with TemporaryDirectory() as temp_dir:
+            scope = Path(temp_dir) / "portal-task-state"
+            scope.mkdir()
+            receipt = scope / "VERA_R12_FP32_LAUNCH_GATE_20261015_V1.json"
+            later = scope / "VERA_R12_FP32_LAUNCH_GATE_20261015_V999999.json"
+            with patch.object(preflight_r12_launch, "RECEIPT", receipt):
                 self.assertEqual(validated_receipt(later), later.resolve())
-                self.assertEqual(validated_receipt(original), original.resolve())
-                original.write_text("preserve", encoding="utf8")
+                self.assertEqual(validated_receipt(receipt), receipt.resolve())
+                receipt.write_text("preserve", encoding="utf-8")
                 with self.assertRaisesRegex(RuntimeError, "exists"):
-                    validated_receipt(original)
-                self.assertEqual(original.read_text(encoding="utf8"), "preserve")
+                    validated_receipt(receipt)
+                self.assertEqual(receipt.read_text(encoding="utf-8"), "preserve")
                 with self.assertRaisesRegex(RuntimeError, "Unsafe"):
-                    validated_receipt(Path(temp) / "other" / later.name)
+                    validated_receipt(scope / ".." / later.name)
+                with self.assertRaisesRegex(RuntimeError, "Unsafe"):
+                    validated_receipt(scope / "VERA_R12_FP32_LAUNCH_GATE_20261015_V0.json")
 
     def test_resource_thresholds_and_ready_path(self):
         held = classify(ram=8.99, virtual=11.99, gpu=3899, active=0, output_exists=False)

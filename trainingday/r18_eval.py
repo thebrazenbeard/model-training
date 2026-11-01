@@ -101,6 +101,9 @@ def _private_custody(path: Path, *, directory: bool) -> None:
 
 def _json(path: Path, *, private: bool = False,
           on_open: Callable[[int], None] | None = None) -> dict:
+    if private:
+        from trainingday.physical_launch_authority import require_physical_launch_authority
+        require_physical_launch_authority(operation="R18 private JSON read")
     if (not path.is_file() or path.is_symlink() or
             any(parent.is_symlink() for parent in path.parents)):
         raise AdmissionError("missing/symlinked custody file")
@@ -560,6 +563,8 @@ def _require_independent_preunseal_attestation() -> None:
 
 def _cuda_preflight() -> None:
     """Reject an ineligible CUDA host before private answers are opened."""
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 CUDA preflight")
     try:
         import torch
         if (not torch.cuda.is_available() or not torch.cuda.is_bf16_supported()
@@ -573,6 +578,8 @@ def _bank(manifest: Path, old_base_eval: Path, exclusions_path: Path,
           private_bank_path: Path, plan: dict, source_manifest: dict, *,
           on_unseal: Callable[[int], None] | None = None) -> list[dict]:
     """Verify 80 historic scores and rederive 64 new 6-op OOD structures."""
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 private bank read")
     if _hash_file(manifest) != CORPUS_SHA256 or manifest.is_symlink():
         raise AdmissionError("R18 pinned v2 manifest changed")
     old_ids = _old_ids(old_base_eval)  # pinned scored R15 16-row evaluation receipt
@@ -662,6 +669,8 @@ class _InferenceSession:
 def _load_model(model_path: Path, adapter: Path | None,
                 receipt: dict | None) -> _InferenceSession:
     """Load the full pinned NF4 base and adapter BEFORE any private bank access."""
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 model/adapter reload")
     import torch
     from transformers import AutoTokenizer, BitsAndBytesConfig, Qwen3_5ForCausalLM
 
@@ -758,6 +767,8 @@ def _run_model(cases: list[dict], session: _InferenceSession,
 
 
 def _paired(rows: list[dict], peer_path: Path, plan_sha: str) -> dict:
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 private peer receipt read")
     peer = _json(peer_path, private=True)
     if (peer.get("schema") != "VERA_R18_PRIVATE_CASE_OUTCOMES_V1"
             or peer.get("plan_sha256") != plan_sha
@@ -800,6 +811,8 @@ def evaluate(args) -> dict:
         return {"status": "R18_ARM_PREFLIGHT_NO_BANK_OPENED_NO_MODEL_EXECUTION",
                 "plan_sha256": plan_sha, "source": args.source, "control": args.control,
                 "adapter_receipt_sha256": receipt_sha}
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 private evaluation")
     if args.peer_private is not None and args.peer_private == args.private_output:
         raise AdmissionError("peer must be a previously frozen private score")
     freeze_sha, pinned_receipts, pinned_adapters = _preunseal_inventory(

@@ -265,7 +265,9 @@ def evaluate(args) -> dict:
         args.output.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         return summary
 
-    # Heavy CUDA work happens only after every provenance/selection gate.
+    # Heavy CUDA work requires host authority in addition to source provenance.
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R16 structural evaluation")
     import torch
     from transformers import AutoTokenizer, BitsAndBytesConfig, Qwen3_5ForCausalLM
 
