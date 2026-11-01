@@ -333,6 +333,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Broker transport regressions failed' }
           Write-Output 'Broker compiled; bounded requests and local transport regressions passed; no service installed or authority granted'
 
+      - name: Exercise suspended-child Windows JobObject custody
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { throw 'Native C# compiler missing' }
+          $custody = Join-Path $PWD 'trainingday/windows_host_broker/JobObjectChildCustody.cs'
+          $test = Join-Path $PWD 'tests/native_jobobject_child_custody.cs'
+          $exe = Join-Path $env:RUNNER_TEMP 'NativeCustodyTest.exe'
+          & $csc /nologo /target:exe ('/out:'+$exe) $custody $test
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) {
+            throw 'Native JobObject test compilation failed'
+          }
+          $output = & $exe
+          if ($LASTEXITCODE -ne 0 -or $output -notmatch 'NATIVE_JOB_CUSTODY_PASS') {
+            throw 'Real Windows suspended-child JobObject custody test failed'
+          }
+          Write-Output $output
+
   pytest-synthetic-merge:
     # A green source head does not establish target-branch merge compatibility.
     # The full diagnostic remains RED on missing owner-historical evidence.
