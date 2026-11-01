@@ -105,6 +105,9 @@ class CIWorkflowIdentityTests(unittest.TestCase):
         crypto_commands = "\n".join(str(step.get("run", "")) for step in crypto_job["steps"])
         self.assertIn("cryptography==46.0.3", crypto_commands)
         self.assertIn("result.skipped", crypto_commands)
+        # Every rights evidence profile must execute in the pinned crypto job.
+        self.assertIn("tests.test_owner_controlled_rights_v1", crypto_commands)
+        self.assertIn("result.testsRun < 25", crypto_commands)
         for name, expected in (("pytest-source", "EXPECTED_SOURCE_SHA"),
                                ("pytest-synthetic-merge", "EXPECTED_MERGE_SHA")):
             with self.subTest(job=name):
