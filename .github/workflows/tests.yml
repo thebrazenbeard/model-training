@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, "fix/**", "feature/**", "work/bv-successor-v3-task9-readiness-20260919"]
   pull_request:
-    branches: [main, "trainingday/**"]
+    branches: [main, "trainingday/**", "draft/r154-cognitive-source-intake-20261101"]
   workflow_dispatch:
 
 permissions:
@@ -102,6 +102,7 @@ jobs:
             tests.test_r140_linux_fd_custody \
             tests.test_r140_monotonic_authority \
             tests.test_r140_qwen_attestation \
+            tests.test_r155_qwen_official_anchor \
             tests.test_r140_windows_custody_contract \
             tests.test_r141_cross_module_faults \
             tests.test_r141_evidence_gate \

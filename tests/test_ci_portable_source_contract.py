@@ -20,6 +20,14 @@ def _job(name: str) -> str:
 
 
 class PortableSourceCIContractTests(unittest.TestCase):
+    def test_stacked_r155_draft_base_is_explicitly_eligible_for_ci(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            '    branches: [main, "trainingday/**", "draft/r154-cognitive-source-intake-20261101"]',
+            workflow,
+        )
+        self.assertNotIn('"draft/**"', workflow)
+
     def test_portable_source_job_is_exact_head_and_pinned_linux(self):
         body = _job("portable-source-contracts")
         self.assertIn("runs-on: ubuntu-24.04", body)
@@ -40,6 +48,7 @@ class PortableSourceCIContractTests(unittest.TestCase):
         self.assertIn("tests.test_owner_historical_marker_contract", body)
         self.assertIn("tests.test_ci_r16_source_contract", body)
         self.assertIn("tests.test_cognitive_sft_intake", body)
+        self.assertIn("tests.test_r155_qwen_official_anchor", body)
         self.assertIn("tests.test_owner_historical_evidence_preflight", body)
         self.assertIn("tests.test_trainingday_readme_contract", body)
         self.assertIn("tests.test_trainingday_host_launch_request", body)
@@ -55,6 +64,14 @@ class PortableSourceCIContractTests(unittest.TestCase):
             "tests.test_cognitive_sft_intake"
         )
         self.assertGreaterEqual(suite.countTestCases(), 15)
+
+    def test_qwen_public_upstream_anchor_has_positive_portable_unittest_bridge(self):
+        body = _job("portable-source-contracts")
+        self.assertEqual(body.count("tests.test_r155_qwen_official_anchor"), 1)
+        suite = unittest.defaultTestLoader.loadTestsFromName(
+            "tests.test_r155_qwen_official_anchor"
+        )
+        self.assertGreaterEqual(suite.countTestCases(), 7)
 
     def test_full_pytest_remains_independent_red_diagnostic(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
