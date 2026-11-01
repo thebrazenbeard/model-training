@@ -29,6 +29,16 @@ _REQUIRED = {
 }
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject ambiguous Trainer state instead of trusting last-key-wins JSON."""
+    state: dict[str, object] = {}
+    for key, value in pairs:
+        if key in state:
+            raise ValueError(f"duplicate Trainer state key: {key}")
+        state[key] = value
+    return state
+
+
 def canonical_sha(data: dict) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -55,10 +65,12 @@ def checkpoint_inventory(directory: Path) -> tuple[int, dict[str, str]]:
     if not ("rng_state.pth" in files or any(re.fullmatch(r"rng_state_\d+\.pth", f) for f in files)):
         raise AdmissionError("checkpoint missing RNG state")
     try:
-        state = json.loads((directory / "trainer_state.json").read_text(encoding="utf-8"))
+        state = json.loads((directory / "trainer_state.json").read_text(encoding="utf-8"),
+                           object_pairs_hook=_reject_duplicate_json_keys)
     except (OSError, ValueError) as exc:
         raise AdmissionError("checkpoint Trainer state invalid") from exc
-    if not isinstance(state, dict) or state.get("global_step") != step:
+    if (not isinstance(state, dict) or type(state.get("global_step")) is not int
+            or state["global_step"] != step):
         raise AdmissionError("checkpoint directory/step mismatch")
     return step, dict(sorted(files.items()))
 
@@ -79,7 +91,8 @@ def validate_custody(directory: Path, custody: dict, *, contract_sha256: str) ->
             or custody.get("run_contract_sha256") != contract_sha256):
         raise AdmissionError("checkpoint custody contract/state mismatch")
     step, files = checkpoint_inventory(directory)
-    if (step != custody.get("step") or directory.name != custody.get("checkpoint_name")
+    if (type(custody.get("step")) is not int or step != custody["step"]
+            or directory.name != custody.get("checkpoint_name")
             or files != custody.get("files")):
         raise AdmissionError("checkpoint bytes/step mismatch")
     return step

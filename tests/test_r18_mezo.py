@@ -114,7 +114,8 @@ class R18SourceTests(unittest.TestCase):
         preflight, rows = self._fit_receipt(100.0)
         with patch("trainingday.r18_mezo.validate_source",
                    return_value=(preflight, [], self.root)), \
-             patch("trainingday.r18_mezo._gpu_stack") as gpu_loader:
+             patch("trainingday.r18_mezo._gpu_stack") as gpu_loader, \
+             patch("trainingday.physical_launch_authority.require_physical_launch_authority"):
             with self.assertRaisesRegex(AdmissionError, "first.*budget"):
                 run(self.args)
             gpu_loader.assert_not_called()
@@ -125,7 +126,8 @@ class R18SourceTests(unittest.TestCase):
         with patch("trainingday.r18_mezo.validate_source",
                    return_value=(preflight, [], self.root)), \
              patch("trainingday.r18_mezo._gpu_stack",
-                   side_effect=RuntimeError("MOCK_GPU_SEAM")) as gpu_loader:
+                   side_effect=RuntimeError("MOCK_GPU_SEAM")) as gpu_loader, \
+             patch("trainingday.physical_launch_authority.require_physical_launch_authority"):
             with self.assertRaisesRegex(RuntimeError, "MOCK_GPU_SEAM"):
                 run(self.args)
             gpu_loader.assert_called_once()
@@ -147,7 +149,8 @@ class R18SourceTests(unittest.TestCase):
             cases.append((json.dumps(rows), canonical_hash(rows)))
         with patch("trainingday.r18_mezo.validate_source",
                    return_value=(preflight, [], self.root)), \
-             patch("trainingday.r18_mezo._gpu_stack") as gpu_loader:
+             patch("trainingday.r18_mezo._gpu_stack") as gpu_loader, \
+             patch("trainingday.physical_launch_authority.require_physical_launch_authority"):
             for raw_case, digest in cases:
                 with self.subTest(raw=raw_case[:80]):
                     self.args.fit_probes_file.write_text(raw_case, encoding="utf-8")
@@ -405,7 +408,8 @@ class R18MathTests(unittest.TestCase):
                 return argparse.Namespace(returncode=0)
 
             with patch("trainingday.r18_mezo._fit_configurations", return_value=configs), \
-                 patch("trainingday.r18_mezo.subprocess.run", side_effect=fake_subprocess):
+                 patch("trainingday.r18_mezo.subprocess.run", side_effect=fake_subprocess), \
+                 patch("trainingday.physical_launch_authority.require_physical_launch_authority"):
                 result = run_fit_sweep(args, {"plan_sha256": plan_sha})
             self.assertEqual([x[0] for x in called], [0, 1, 2, 7, 8])
             self.assertTrue(all(child == 1 for _, child in called))
@@ -524,6 +528,10 @@ class R18MathTests(unittest.TestCase):
 
 class R18ResumeTests(unittest.TestCase):
     def setUp(self):
+        synthetic_authority = patch(
+            "trainingday.physical_launch_authority.require_physical_launch_authority")
+        synthetic_authority.start()
+        self.addCleanup(synthetic_authority.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)

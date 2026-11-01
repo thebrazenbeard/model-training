@@ -23,6 +23,10 @@ from trainingday.r18_mezo import canonical_hash, prepare_run, restore_checkpoint
 
 class CrashCustodyTests(unittest.TestCase):
     def setUp(self):
+        synthetic_authority = patch(
+            "trainingday.physical_launch_authority.require_physical_launch_authority")
+        synthetic_authority.start()
+        self.addCleanup(synthetic_authority.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)

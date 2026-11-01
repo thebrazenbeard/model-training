@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from trainingday import r140_linux_fd_custody as custody
+from trainingday import r18_checkpoint_commit as r18_commit
 
 
 def _stage(output: Path, *, step: int = 3, suffix: str = "abc", state_override=None) -> str:
@@ -116,6 +117,26 @@ class LinuxFdSourceOnlyTests(unittest.TestCase):
         })
         with self.assertRaisesRegex(custody.LinuxCustodyError, "STATE_CONTRACT_MISMATCH"):
             _publish(self.path, stage)
+
+    def test_exact_json_elapsed_integer_boundary_matches_r18_commit(self):
+        # The descriptor-pinned publisher must not accept state bytes that
+        # the existing R18 checkpoint publisher rejects on the same field.
+        maximum = r18_commit.MAX_EXACT_ELAPSED_INTEGER
+        self.assertTrue(r18_commit._finite_nonnegative_elapsed(maximum))
+        accepted = self.path / "accepted"
+        accepted.mkdir()
+        stage = _stage(accepted, state_override={"optimizer_window_seconds": maximum})
+        self.assertEqual(_publish(accepted, stage)["status"],
+                         "SOURCE_ONLY_FD_PINNED_NOT_RELOADED")
+        for suffix, elapsed in (("boundary", maximum + 1), ("wide", 1 << 60)):
+            with self.subTest(elapsed=elapsed):
+                self.assertFalse(r18_commit._finite_nonnegative_elapsed(elapsed))
+                output = self.path / suffix
+                output.mkdir()
+                stage = _stage(output, state_override={"optimizer_window_seconds": elapsed})
+                with self.assertRaisesRegex(custody.LinuxCustodyError, "STATE_CONTRACT_MISMATCH"):
+                    _publish(output, stage)
+                self.assertFalse((output / "checkpoint-3").exists())
 
     def test_rejects_duplicate_json_key(self):
         stage = _stage(self.path)

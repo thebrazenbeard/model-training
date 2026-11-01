@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, "fix/**", "feature/**", "work/bv-successor-v3-task9-readiness-20260919"]
   pull_request:
-    branches: [main]
+    branches: [main, "trainingday/**"]
   workflow_dispatch:
 
 permissions:
@@ -16,8 +16,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # A pull_request defaults to the synthetic merge ref. Test the immutable
+      # submitted source HEAD instead, and record the checked-out Git tree.
+      - name: Checkout exact source HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify and record exact source HEAD
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD)"
+          actual_tree="$(git rev-parse HEAD^{tree})"
+          if [[ "$actual_sha" != "$EXPECTED_SOURCE_SHA" ]]; then
+            echo "Checkout mismatch: expected $EXPECTED_SOURCE_SHA; got $actual_sha" >&2
+            exit 1
+          fi
+          echo "Verified source HEAD: $actual_sha"
+          echo "Verified source tree: $actual_tree"
+          printf 'Source HEAD: `%s`\nSource tree: `%s`\n' "$actual_sha" "$actual_tree" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install dependencies

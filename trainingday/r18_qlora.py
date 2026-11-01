@@ -24,7 +24,7 @@ import traceback
 import unicodedata
 from pathlib import Path
 
-from trainingday.admission import AdmissionError, _hash_file
+from trainingday.admission import AdmissionError, _hash_file, _strict_json
 from trainingday.labyrinth_intake import admit_labyrinth
 from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT
 from trainingday.train_neural import (
@@ -201,7 +201,7 @@ def preflight(args) -> tuple[dict, list[dict], Path, dict]:
     base, base_path = _required_base(args.base_binding)
     if base["model_id"] != BASE_ID or base["revision"] != BASE_REVISION:
         raise AdmissionError("R18 requires official exact Qwen3.5-4B revision")
-    plan = json.loads(args.plan.read_text(encoding="utf-8"))
+    plan = _strict_json(args.plan.read_bytes())
     if not isinstance(plan, dict) or plan.get("schema") != PLAN_SCHEMA:
         raise AdmissionError("R18 frozen benchmark plan absent/invalid")
     _validate_fit_plan(plan)
@@ -247,6 +247,7 @@ def preflight(args) -> tuple[dict, list[dict], Path, dict]:
         "selected_count": args.cases,
         "train_content_sha256": plan["train_content_sha256"],
         "source_admission_status": plan["source_admission_status"],
+        "eval_access": False,
         "eval_set_sha256": plan["eval_custody_sha256"],
         "eval_custody_sha256": plan["eval_custody_sha256"],
         "eval_index_sha256": plan["eval_index_sha256"],
@@ -320,6 +321,8 @@ def _pad_batch(examples: list[dict], seq: int, pad_id: int, torch):
 
 
 def _load_model(base_path: Path, seed: int, lr: float, *, initial_adapter=None):
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 QLoRA model load")
     import torch
     import transformers
     import psutil
@@ -397,6 +400,8 @@ def _is_oom(exc: BaseException) -> bool:
 
 def probe_worker(args) -> dict:
     """A single synthetic, full-tensor-length optimizer step in a child process."""
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 QLoRA child probe")
     result = {"max_seq_length": args.probe_seq, "micro_batch_size": args.probe_batch,
               "actual_tensor_shape": [args.probe_batch, args.probe_seq],
               "probe_is_synthetic": True, "status": "ERROR"}
@@ -456,6 +461,8 @@ def probe_worker(args) -> dict:
 
 def probe_sweep(args, output: Path, plan: dict) -> tuple[list[dict], dict | None, str]:
     """Two ascending B1/B2 phases, fresh worker for every hardware attempt."""
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 QLoRA probe sweep")
     probes = []
     best = None
     b1_highest = None
@@ -486,7 +493,7 @@ def probe_sweep(args, output: Path, plan: dict) -> tuple[list[dict], dict | None
                                "candidate_index": candidate_index,
                                "status": "PROCESS_FAILED", "exit_code": completed.returncode})
                 return probes, best, "PROBE_PROCESS_FAILED"
-            probe = json.loads(artifact.read_text(encoding="utf-8"))
+            probe = _strict_json(artifact.read_bytes())
             probe.update(schema=PROBE_SCHEMA, plan_sha256=canonical_sha(plan), arm="qlora",
                          config=candidate_schedule()[candidate_index],
                          candidate_index=candidate_index,
@@ -517,6 +524,8 @@ def probe_sweep(args, output: Path, plan: dict) -> tuple[list[dict], dict | None
 
 def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
                    receipt: dict) -> dict:
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 QLoRA training loop")
     import torch
     from successor.experiments.r12_adapter_precision import verify_trainable
 
@@ -688,6 +697,8 @@ def run(args) -> dict:
     receipt, examples, _, plan = preflight(args)
     if args.preflight_only:
         return receipt
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R18 QLoRA run/probe sweep")
     wall_started = time.perf_counter()
     output = args.output_root / args.run_id
     output.mkdir(exist_ok=False)

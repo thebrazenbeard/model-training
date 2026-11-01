@@ -228,6 +228,12 @@ def train(args) -> dict:
             _r16_prepare_output(args, preflight)
         return preflight
 
+    # Source admission and a self-pinned checkpoint are not a live host lease.
+    # This deliberately holds until an authenticated host-owned launch broker
+    # is implemented; it precedes output creation, heavy imports and CUDA.
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R15/R16 neural training")
+
     r16_output = None
     resume_checkpoint = None
     resumed_from_step = 0
