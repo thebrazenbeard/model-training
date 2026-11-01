@@ -259,12 +259,19 @@ jobs:
           $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
           if (-not (Test-Path -LiteralPath $csc)) { throw 'Native .NET Framework C# compiler missing' }
           $source = Join-Path $PWD 'trainingday\windows_host_broker\TrainingDayHostBroker.cs'
+          $reader = Join-Path $PWD 'trainingday\windows_host_broker\BoundedPipeRequest.cs'
           $output = Join-Path $env:RUNNER_TEMP 'VeraTrainingDayHostBroker.exe'
-          & $csc /nologo /target:exe /optimize+ ('/out:'+$output) /r:System.ServiceProcess.dll /r:System.Core.dll /r:System.Security.dll $source
+          & $csc /nologo /target:exe /optimize+ ('/out:'+$output) /r:System.ServiceProcess.dll /r:System.Core.dll /r:System.Security.dll $source $reader
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
             throw 'Windows host broker compile failed'
           }
-          Write-Output 'Broker source compiled; no service installed and no launch authority granted'
+          $contract = Join-Path $PWD 'tests\native_broker_request_contract.cs'
+          $contractOutput = Join-Path $env:RUNNER_TEMP 'VeraTrainingDayBrokerReaderTests.exe'
+          & $csc /nologo /target:exe /optimize+ ('/out:'+$contractOutput) $reader $contract
+          if ($LASTEXITCODE -ne 0) { throw 'Broker reader regression compile failed' }
+          & $contractOutput
+          if ($LASTEXITCODE -ne 0) { throw 'Broker reader regressions failed' }
+          Write-Output 'Broker compiled and bounded request regression passed; no service installed or authority granted'
 
   pytest-synthetic-merge:
     # A green source head does not establish target-branch merge compatibility.
