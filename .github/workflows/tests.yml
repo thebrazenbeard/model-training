@@ -98,13 +98,17 @@ jobs:
           python-version: "3.12"
       - name: Run explicit offline portable-source unittest manifest
         # Positive allowlist: synthetic/source-contract modules, not a glob or
-        # a reclassification of the complete test suite. Stdlib only.
+        # a reclassification of the complete test suite. The R155 optional
+        # crypto checks visibly skip if cryptography is unavailable; the
+        # fail-closed missing-dependency test always runs. Do not count skips
+        # as independently verified rights or actual Ed25519 qualification.
         run: |
           python -m unittest -q \
             tests.test_ci_dependency_contract \
             tests.test_ci_portable_source_contract \
             tests.test_ci_r16_source_contract \
             tests.test_cognitive_sft_intake \
+            tests.test_rights_pair_evidence_r155 \
             tests.test_owner_historical_marker_contract \
             tests.test_owner_historical_evidence_preflight \
             tests.test_trainingday_readme_contract \
