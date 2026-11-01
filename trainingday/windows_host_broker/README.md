@@ -8,7 +8,7 @@ The C# service in this directory is the exact source of the host-installed boots
 
 ## Local build (Windows .NET Framework 4.8)
 
-Compile with local x64 csc.exe using target:exe, references System.ServiceProcess.dll, System.Core.dll and System.Security.dll, and `TrainingDayHostBroker.cs`. The repository contains no executable. Install only after admin review and verified binary hash, with restrictive installation ACL. Hosted source compilation is not a runtime security audit.
+Compile with local x64 csc.exe using target:exe, references System.ServiceProcess.dll, System.Core.dll and System.Security.dll, and `TrainingDayHostBroker.cs`, `BoundedPipeRequest.cs`, and `BrokerPipeTransport.cs`. The repository contains no executable. Install only after admin review and verified binary hash, with restrictive installation ACL. Hosted source compilation is not a runtime security audit.
 
 ## Actual Lappy installation observation (2026-11-01)
 
@@ -30,3 +30,9 @@ Service status and source/CI checks cannot be substituted for authenticated phys
 The successor source adds `BoundedPipeRequest.Read`: a total 1,500 ms input deadline, maximum 128 printable ASCII bytes, CRLF/LF framing validation, and cooperative service-stop cancellation. On timeout it disposes the active pipe, waits for native overlapped I/O completion before closing its event handle, and never interprets the request as authorization. Windows native tests exercise normal requests, 128/129-byte boundaries, malformed controls, idle and slow-drip clients, stop cancellation, and a healthy request after a timeout.
 
 **Deployment status: NOT INSTALLED.** The current Lappy service and its recorded binary SHA remain those of R161. This separate source candidate must not be deployed or treated as a positive-grant broker without exact-head hosted Windows CI, an independently reviewed host identity/peer binding design, and an owner-controlled maintenance window. The Labyrinth training lane's work remains undisturbed.
+
+## R163 source-only pipe transport boundary
+
+The successor candidate creates the named pipe through Windows `CreateNamedPipeW`, using `PIPE_REJECT_REMOTE_CLIENTS` and `FILE_FLAG_FIRST_PIPE_INSTANCE` plus the inherited protected SYSTEM/Administrators DACL, a non-inheritable overlapped handle, and a single active server instance. It keeps the R162 bounded reader and unconditional `HOLD` responses. Native Windows transport regression checks cover single-instance creation and a local administrative client; an actual remote-SMB negative probe and restart/stop regression remain required on the owner host before deployment. If any pipe or ACL creation fails, the service issues no grant.
+
+**Deployment status: NOT INSTALLED.** These source changes do not alter the running R161 service, issue rights, sign a NAS witness, reserve a GPU, or authorize model training.
