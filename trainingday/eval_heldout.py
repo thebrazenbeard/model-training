@@ -116,6 +116,8 @@ def select_heldout(manifest_path: Path, count: int,
 
 
 def evaluate(args) -> dict:
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R15 heldout diagnostic")
     if args.output.exists() or not args.output.parent.is_dir():
         raise AdmissionError("output must be a new file under an existing directory")
     manifest_sha256 = _require_r15_v2_manifest(args.manifest)

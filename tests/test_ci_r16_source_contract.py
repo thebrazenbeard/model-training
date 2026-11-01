@@ -16,6 +16,7 @@ SOURCE_TESTS = (
     "tests/test_r18_mezo.py",
     "tests/test_r18_qlora.py",
     "tests/test_r18_eval_source.py",
+    "tests/test_r152_physical_eval_guards.py",
     "tests/test_r18_benchmark.py",
 )
 

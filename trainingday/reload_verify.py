@@ -115,6 +115,8 @@ def verify(receipt_path: Path, binding_path: Path, output_path: Path) -> dict:
     if binding["revision"] != receipt.get("base_revision"):
         raise AdmissionError("pinned model revision differs from training")
 
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R15/R16 independent adapter reload")
     import torch
     from peft import PeftModel
     from transformers import BitsAndBytesConfig, Qwen3_5ForCausalLM
