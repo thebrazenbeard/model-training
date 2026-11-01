@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -93,7 +94,16 @@ class EvidenceWireJsonTests(unittest.TestCase):
                                    producer_git_head=q.R16_PRODUCER_HEAD,
                                    cases=8, seed=41, learning_rate=0.00002,
                                    base_binding=root / "base.json", plan=plan)
-            fake_base = {"model_id": q.BASE_ID, "revision": q.BASE_REVISION}
+            index_name = "model.safetensors.index.json"
+            shard_name = "model.safetensors-00001-of-00001.safetensors"
+            index = root / index_name
+            index.write_text(json.dumps({
+                "metadata": {"total_size": 512},
+                "weight_map": {"model.language_model.embed_tokens.weight": shard_name},
+            }), encoding="utf-8")
+            fake_base = {"model_id": q.BASE_ID, "revision": q.BASE_REVISION,
+                         "files": {index_name: hashlib.sha256(index.read_bytes()).hexdigest(),
+                                   shard_name: "e" * 64}}
             with patch.object(q, "_hash_file", return_value=q.R16_V2_MANIFEST_SHA256), \
                  patch.object(q, "_initial_adapter_custody", return_value={}), \
                  patch.object(q, "_required_base", return_value=(fake_base, root)), \

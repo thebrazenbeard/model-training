@@ -192,6 +192,10 @@ def validate_source(args) -> tuple[dict, list[dict], Path]:
     base, model_path = _required_base(args.base_binding)
     if base["revision"] != BASE_REVISION:
         raise AdmissionError("R18 base must match the official R16 pinned revision")
+    from trainingday.qwen_text_checkpoint import index_binding_pin, text_key_mapping
+    index_sha, index_shards = index_binding_pin(base)
+    text_key_mapping(model_path, expected_index_sha256=index_sha,
+                     expected_shards=index_shards)
     if (_hash_file(args.manifest) != R16_V2_MANIFEST_SHA256
             or args.producer_git_head != R16_PRODUCER_HEAD):
         raise AdmissionError("R18 requires exact PR140 R16 v2 corpus and producer")
@@ -766,6 +770,10 @@ def _probe_child(args) -> dict:
     if (base["model_id"] != BASE_ID or base["revision"] != BASE_REVISION
             or _hash_file(args.base_binding) != plan["base_binding_sha256"]):
         raise AdmissionError("probe official base differs from frozen plan")
+    from trainingday.qwen_text_checkpoint import index_binding_pin, text_key_mapping
+    index_sha, index_shards = index_binding_pin(base)
+    text_key_mapping(model_path, expected_index_sha256=index_sha,
+                     expected_shards=index_shards)
     if args.initial_adapter is not None:
         weights = args.initial_adapter / "adapter_model.safetensors"
         config_file = args.initial_adapter / "adapter_config.json"
@@ -930,6 +938,9 @@ def _gpu_stack(args, model_path: Path):
     import torch
     from peft import LoraConfig, PeftModel, get_peft_model
     from transformers import AutoTokenizer, BitsAndBytesConfig, Qwen3_5ForCausalLM, set_seed
+    from trainingday.qwen_text_checkpoint import (
+        index_binding_pin, prepare_text_loader, verify_text_load,
+    )
 
     if psutil.virtual_memory().available < 9 * 2**30:
         raise RuntimeError("under 9 GiB available RAM")
@@ -949,10 +960,19 @@ def _gpu_stack(args, model_path: Path):
     config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                                bnb_4bit_use_double_quant=True,
                                bnb_4bit_compute_dtype=torch.bfloat16)
-    model = Qwen3_5ForCausalLM.from_pretrained(
+    base, verified_path = _required_base(args.base_binding)
+    if verified_path != model_path or base["revision"] != BASE_REVISION:
+        raise RuntimeError("R18 model path or official revision changed before load")
+    index_sha, index_shards = index_binding_pin(base)
+    text_config, key_mapping = prepare_text_loader(
+        model_path, expected_index_sha256=index_sha,
+        expected_shards=index_shards)
+    model, loading_info = Qwen3_5ForCausalLM.from_pretrained(
         model_path, quantization_config=config, device_map=0,
         dtype=torch.bfloat16, local_files_only=True,
+        config=text_config, key_mapping=key_mapping, output_loading_info=True,
     )
+    verify_text_load(model, loading_info)
     model.config.use_cache = False
     for p in model.parameters():
         p.requires_grad_(False)

@@ -186,6 +186,16 @@ def _source_loader(path: Path) -> tuple[str, str]:
         local_flags = [kw.value for kw in node.keywords if kw.arg == "local_files_only"]
         if len(local_flags) != 1 or not isinstance(local_flags[0], ast.Constant) or local_flags[0].value is not True:
             raise LoaderPreflightError("model loader does not statically require local_files_only=True")
+        projected = {kw.arg: kw.value for kw in node.keywords
+                     if kw.arg in {"config", "key_mapping", "output_loading_info"}}
+        if (set(projected) != {"config", "key_mapping", "output_loading_info"}
+                or not isinstance(projected["config"], ast.Name)
+                or projected["config"].id != "text_config"
+                or not isinstance(projected["key_mapping"], ast.Name)
+                or projected["key_mapping"].id != "key_mapping"
+                or not isinstance(projected["output_loading_info"], ast.Constant)
+                or projected["output_loading_info"].value is not True):
+            raise LoaderPreflightError("text model load lacks pinned config/mapping/load evidence")
         model_loads.append(name)
 
     if model_loads != [RUNNER_LOADER]:
@@ -250,6 +260,10 @@ def audit(base_binding: Path, *, expected_config_sha256: str, source_root: Path)
     sources: dict[str, str] = {}
     for name in RUNNERS:
         loaders[name], sources[name] = _source_loader(root / "trainingday" / f"{name}.py")
+    # The new helper decides which indexed tensors become training weights;
+    # any edit to it invalidates the previously audited source identity.
+    sources["qwen_text_checkpoint"] = _sha256(_regular_bytes(
+        root / "trainingday" / "qwen_text_checkpoint.py", MAX_SOURCE_BYTES))
 
     try:
         installed_version = metadata.version("transformers")

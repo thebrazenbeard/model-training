@@ -67,8 +67,19 @@ class R18SourceTests(unittest.TestCase):
             encoding="utf-8")
         self.admit = patch("trainingday.r18_mezo.admit",
                            return_value=(self.summary, ROWS)).start()
+        index_name = "model.safetensors.index.json"
+        shard_name = "model.safetensors-00001-of-00001.safetensors"
+        index_file = self.root / index_name
+        index_file.write_text(json.dumps({
+            "metadata": {"total_size": 512},
+            "weight_map": {"model.language_model.embed_tokens.weight": shard_name},
+        }), encoding="utf-8")
+        base = {"revision": BASE_REVISION, "files": {
+            index_name: hashlib.sha256(index_file.read_bytes()).hexdigest(),
+            shard_name: "f" * 64,
+        }}
         self.base = patch("trainingday.r18_mezo._required_base",
-                          return_value=({"revision": BASE_REVISION}, self.root)).start()
+                          return_value=(base, self.root)).start()
         patch("trainingday.r18_mezo.R16_V2_MANIFEST_SHA256",
               hashlib.sha256(self.manifest.read_bytes()).hexdigest()).start()
         self.args.producer_git_head = "1" * 40

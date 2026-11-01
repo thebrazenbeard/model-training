@@ -53,6 +53,17 @@ shard, `config.json`, and `tokenizer_config.json`). The binding is a custody
 claim: independently verify the Hugging Face download revision and local
 file hashes before approval. Do not fabricate this binding for an absent base.
 
+R18's official Qwen3.5-4B snapshot is **multimodal**. Its indexed language
+weights are named `model.language_model.*`, whereas the R18 text-only class
+requires `model.*` and the nested `Qwen3_5TextConfig`. Both R18 arms now require
+the exact SHA-bound `model.safetensors.index.json` and shard inventory, build a
+complete meta-device text parameter projection, and reject missing/mismatched
+physical loader keys or an untied output head. Vision/MTP keys are not training
+weights. This addresses the prior source loader shape mismatch; a synthetic
+CPU load is **not** a real official-weight reload. The physical host-owned
+lease/rights/route launcher remains a mandatory HARD HOLD and cannot be
+enabled by a source flag or self-declared token.
+
 Match controls on source manifest, selected IDs, base revision and seed:
 
 - `zero`, 0 optimizer steps: save initialized LoRA and record FP32 digest.

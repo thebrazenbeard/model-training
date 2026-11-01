@@ -109,7 +109,8 @@ class QwenSnapshotAttestationTests(unittest.TestCase):
         self.assertEqual(result["safetensors_shard_count"], 2)
         self.assertEqual(result["safetensors_tensor_count"], 2)
         self.assertEqual(result["safetensors_indexed_tensor_bytes"], 8)
-        self.assertEqual(set(result["source_sha256"]), {"r18_mezo", "r18_qlora"})
+        self.assertEqual(set(result["source_sha256"]),
+                         {"r18_mezo", "r18_qlora", "qwen_text_checkpoint"})
         for name in ("physical_tokenizer_verified", "runtime_loader_verified",
                      "actual_model_tensors_materialized", "finite_forward_loss_verified",
                      "external_pin_provenance_verified", "host_immutable_custody_verified",

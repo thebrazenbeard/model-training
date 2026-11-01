@@ -201,6 +201,10 @@ def preflight(args) -> tuple[dict, list[dict], Path, dict]:
     base, base_path = _required_base(args.base_binding)
     if base["model_id"] != BASE_ID or base["revision"] != BASE_REVISION:
         raise AdmissionError("R18 requires official exact Qwen3.5-4B revision")
+    from trainingday.qwen_text_checkpoint import index_binding_pin, text_key_mapping
+    index_sha, index_shards = index_binding_pin(base)
+    text_key_mapping(base_path, expected_index_sha256=index_sha,
+                     expected_shards=index_shards)
     plan = _strict_json(args.plan.read_bytes())
     if not isinstance(plan, dict) or plan.get("schema") != PLAN_SCHEMA:
         raise AdmissionError("R18 frozen benchmark plan absent/invalid")
@@ -320,7 +324,8 @@ def _pad_batch(examples: list[dict], seq: int, pad_id: int, torch):
             "attention_mask": torch.tensor(masks, dtype=torch.long, device="cuda")}
 
 
-def _load_model(base_path: Path, seed: int, lr: float, *, initial_adapter=None):
+def _load_model(base_path: Path, seed: int, lr: float, *, initial_adapter=None,
+                expected_index_sha256=None, expected_shards=None):
     from trainingday.physical_launch_authority import require_physical_launch_authority
     require_physical_launch_authority(operation="R18 QLoRA model load")
     import torch
@@ -329,6 +334,7 @@ def _load_model(base_path: Path, seed: int, lr: float, *, initial_adapter=None):
     from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
     from transformers import AutoTokenizer, BitsAndBytesConfig, Qwen3_5ForCausalLM
     from bitsandbytes.optim import AdamW8bit
+    from trainingday.qwen_text_checkpoint import prepare_text_loader, verify_text_load
     from successor.experiments.r12_adapter_precision import verify_trainable
     from successor.experiments.train_v10_qwen35_authorized import validate_lora_target_coverage
 
@@ -349,9 +355,14 @@ def _load_model(base_path: Path, seed: int, lr: float, *, initial_adapter=None):
     quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                               bnb_4bit_use_double_quant=True,
                               bnb_4bit_compute_dtype=torch.bfloat16)
-    model = Qwen3_5ForCausalLM.from_pretrained(
+    text_config, key_mapping = prepare_text_loader(
+        base_path, expected_index_sha256=expected_index_sha256,
+        expected_shards=expected_shards)
+    model, loading_info = Qwen3_5ForCausalLM.from_pretrained(
         base_path, quantization_config=quant, device_map=0,
-        dtype=torch.bfloat16, local_files_only=True)
+        dtype=torch.bfloat16, local_files_only=True,
+        config=text_config, key_mapping=key_mapping, output_loading_info=True)
+    verify_text_load(model, loading_info)
     model.config.use_cache = False
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     adapter = LoraConfig(r=4, lora_alpha=16, lora_dropout=0, bias="none",
@@ -411,11 +422,14 @@ def probe_worker(args) -> dict:
         base, path = _required_base(args.base_binding)
         if base["model_id"] != BASE_ID or base["revision"] != BASE_REVISION:
             raise AdmissionError("R18 exact official base pin invalid")
+        from trainingday.qwen_text_checkpoint import index_binding_pin
+        index_sha, index_shards = index_binding_pin(base)
         if args.initial_adapter is not None:
             args.control = "zero"  # synthetic probe has no train control arm
             _initial_adapter_custody(args)
         torch, tokenizer, model, optimizer, _, _ = _load_model(
-            path, args.seed, args.learning_rate, initial_adapter=args.initial_adapter)
+            path, args.seed, args.learning_rate, initial_adapter=args.initial_adapter,
+            expected_index_sha256=index_sha, expected_shards=index_shards)
         torch.cuda.reset_peak_memory_stats()
         pad = tokenizer.eos_token_id
         if pad is None:
@@ -530,9 +544,13 @@ def _training_loop(args, output: Path, examples: list[dict], chosen: dict,
     from successor.experiments.r12_adapter_precision import verify_trainable
 
     load_started = time.perf_counter()
+    base, base_path = _required_base(args.base_binding)
+    from trainingday.qwen_text_checkpoint import index_binding_pin
+    index_sha, index_shards = index_binding_pin(base)
     torch, tokenizer, model, optimizer, precision, coverage = _load_model(
-        _required_base(args.base_binding)[1], args.seed, args.learning_rate,
-        initial_adapter=getattr(args, "initial_adapter", None))
+        base_path, args.seed, args.learning_rate,
+        initial_adapter=getattr(args, "initial_adapter", None),
+        expected_index_sha256=index_sha, expected_shards=index_shards)
     receipt["cold_model_and_optimizer_load_seconds"] = round(
         time.perf_counter() - load_started, 3)
     setup_started = time.perf_counter()
