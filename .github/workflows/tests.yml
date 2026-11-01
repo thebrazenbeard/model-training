@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main, "fix/**", "feature/**", "work/bv-successor-v3-task9-readiness-20260919"]
+    branches: [main, "fix/**", "feature/**", "trainingday/**", "work/bv-successor-v3-task9-readiness-20260919"]
   pull_request:
     branches: [main, "trainingday/**"]
   workflow_dispatch:
@@ -11,11 +11,18 @@ permissions:
   contents: read
 
 jobs:
-  pytest:
-    if: ${{ github.event.repository.private == false }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  pytest-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
+      - name: Refuse silently skipped CI in private or unknown contexts
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if [ "$REPOSITORY_PRIVATE" != "false" ]; then
+            echo 'CI requires an explicitly qualified runner context.' >&2
+            exit 1
+          fi
       # A pull_request defaults to the synthetic merge ref. Test the immutable
       # submitted source HEAD instead, and record the checked-out Git tree.
       - name: Checkout exact source HEAD
@@ -45,6 +52,55 @@ jobs:
           pip install --disable-pip-version-check -r requirements.txt
           pip install --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.14.0+cpu
       - name: Compile and test
+        env:
+          CUDA_VISIBLE_DEVICES: ""
         run: |
           python -m py_compile bootcamp.py fast_bootcamp.py quality_gate.py
-          python -m pytest -q
+          python -m pytest -q -p ci_full_suite_guard
+
+  pytest-synthetic-merge:
+    # A green source head does not establish merge compatibility.
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Refuse silently skipped CI in private or unknown contexts
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if [ "$REPOSITORY_PRIVATE" != "false" ]; then
+            echo 'CI requires an explicitly qualified runner context.' >&2
+            exit 1
+          fi
+      - name: Checkout exact GitHub synthetic-merge revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify and record synthetic-merge identity
+        env:
+          EXPECTED_MERGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse --verify HEAD)"
+          actual_tree="$(git rev-parse HEAD^{tree})"
+          if [[ "$actual_sha" != "$EXPECTED_MERGE_SHA" ]]; then
+            echo "Merge checkout mismatch: expected $EXPECTED_MERGE_SHA; got $actual_sha" >&2
+            exit 1
+          fi
+          echo "Verified synthetic merge HEAD: $actual_sha"
+          echo "Verified synthetic merge tree: $actual_tree"
+          printf 'Merge HEAD: `%s`\nMerge tree: `%s`\n' "$actual_sha" "$actual_tree" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install --disable-pip-version-check -r requirements.txt
+          pip install --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.14.0+cpu
+      - name: Compile and test
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+        run: |
+          python -m py_compile bootcamp.py fast_bootcamp.py quality_gate.py
+          python -m pytest -q -p ci_full_suite_guard

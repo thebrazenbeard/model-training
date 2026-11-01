@@ -1,4 +1,6 @@
 import importlib.util
+import os
+from contextlib import contextmanager
 
 from successor.experiments import qualify_v10r3r3_stage0_runtime as stage0
 
@@ -306,6 +308,13 @@ def test_stage0_gpu_lock_rejects_concurrent_holder_and_releases(tmp_path):
     import pytest
 
     lock_path = tmp_path / "stage0-gpu.lock"
+    if os.name != "nt":
+        with pytest.raises(stage0.Stage0Hold, match="requires Windows host"):
+            with stage0.exclusive_stage0_gpu_lock(lock_path):
+                raise AssertionError("unsupported host unexpectedly acquired GPU lock")
+        assert not lock_path.exists()
+        return
+
     with stage0.exclusive_stage0_gpu_lock(lock_path):
         with pytest.raises(stage0.Stage0Hold, match="exclusive Stage-0 GPU lock"):
             with stage0.exclusive_stage0_gpu_lock(lock_path):
@@ -336,10 +345,18 @@ def test_stage0_preload_commit_gate_rejects_below_floor():
         )
 
 
-def test_stage0_gpu_entrypoints_check_commit_before_training_stack_load(tmp_path):
+def test_stage0_gpu_entrypoints_check_commit_before_training_stack_load(monkeypatch, tmp_path):
     import pytest
 
     calls = []
+
+    @contextmanager
+    def fake_lock(path):
+        # Isolate commit-preflight ordering from the real Windows lock.
+        calls.append(("source_only_lock_seam", path.name))
+        yield {"synthetic_lock_for_source_test_only": True}
+
+    monkeypatch.setattr(stage0, "exclusive_stage0_gpu_lock", fake_lock)
 
     def forbidden_loader():
         calls.append("loader")
@@ -373,4 +390,8 @@ def test_stage0_gpu_entrypoints_check_commit_before_training_stack_load(tmp_path
         with pytest.raises(stage0.Stage0Hold, match="commit headroom"):
             invoke()
 
-    assert calls == []
+    assert calls == [
+        ("source_only_lock_seam", "probe.lock"),
+        ("source_only_lock_seam", "smoke.lock"),
+        ("source_only_lock_seam", "soak.lock"),
+    ]

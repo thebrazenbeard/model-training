@@ -1052,11 +1052,19 @@ def _default_stage0_gpu_lock_path():
 
 def exclusive_stage0_gpu_lock(lock_path=None):
     from contextlib import contextmanager
+    import os
     from pathlib import Path
-    import msvcrt
 
     @contextmanager
     def _scope():
+        # Stage-0 qualification is a Windows-host contract.  Do not silently
+        # substitute a POSIX process lock or claim a cross-host GPU lease.
+        if os.name != "nt":
+            raise Stage0Hold("exclusive Stage-0 GPU lock requires Windows host")
+        try:
+            import msvcrt
+        except ImportError as exc:
+            raise Stage0Hold("Windows Stage-0 GPU lock backend unavailable") from exc
         path = Path(lock_path) if lock_path is not None else _default_stage0_gpu_lock_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         key = str(path.resolve()).casefold()

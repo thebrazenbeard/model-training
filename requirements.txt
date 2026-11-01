@@ -5,3 +5,5 @@ pytest==8.3.5
 numpy==2.5.1
 fastapi==0.162.0
 httpx==0.28.1
+safetensors==0.8.0
+torchao==0.18.0

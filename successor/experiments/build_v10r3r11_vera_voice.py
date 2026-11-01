@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from successor.experiments.build_v10r3r10_vera_voice import (
     VOICE_INDICES, VOICE_SEED_SHA256, VOICE_HELDOUT_SHA256,
@@ -25,7 +25,9 @@ R11_COUNT = 64
 R11_STEPS = 8
 R10_CORPUS = Path(r"D:\VERA\.scratch\vera-v10r3r10-qwen35-identity-20261013-v1\train.jsonl")
 R10_ADAPTER = Path(r"D:\VERA\models\adapters\v10r3r10-vera-voice-qwen35-r9-resume-20261013\adapter")
-R10_RECEIPT = R10_ADAPTER.parent / "DEV_TRAINING_COMPLETE.json"
+# Path.parent on POSIX treats a Windows drive path as one filename. Preserve the
+# frozen Windows lineage even in portable source-only checks.
+R10_RECEIPT = Path(str(PureWindowsPath(R10_ADAPTER).parent / "DEV_TRAINING_COMPLETE.json"))
 R10_SPEC_REL = "successor/experiments/V10R3R10_VERA_VOICE_EXECUTION_SPEC_20261013_V1.json"
 R11_SPEC_REL = "successor/experiments/V10R3R11_VERA_VOICE_EXECUTION_SPEC_20261014_V1.json"
 R11_BINDING_REL = "successor/experiments/V10R3R11_VERA_VOICE_CORPUS_BINDING_20261014_V1.json"
@@ -123,6 +125,44 @@ def transform(rows: list[dict], voice: list[dict],
     }
 
 
+def _compose_spec_source_only(spec: dict, corpus_sha: str,
+                              parent_weight_digest: str) -> dict:
+    """Transform the R10 schema; NEVER authenticate a physical R10 parent.
+
+    The only production entrypoint is ``build_spec``, which performs the
+    original byte-exact spec, signed receipt, and adapter checks first.  This
+    pure helper allows portable tests to inspect the transformation without
+    inventing a Windows checkpoint or weakening that physical admission gate.
+    """
+    spec = json.loads(json.dumps(spec))  # Do not mutate the caller's source.
+    spec["date"]="2026-10-14"
+    spec["comparison"]["role"]="R11_QWEN35_VERA_UNUSED_VOICE_AND_GENERAL_REHEARSAL"
+    spec["source_subject"]["train_sha256"]=corpus_sha
+    spec["source_subject"]["training_corpus_id"]="VERA_SUCCESSOR_V10R3R11_QWEN35_VERA_VOICE_50K_V1"
+    spec["development_window"]={"start_row":R11_START,"row_count":R11_COUNT}
+    spec["trainer"]["seed"]=20261014
+    spec["trainer"]["max_optimizer_steps"]=R11_STEPS
+    spec["trainer"]["learning_rate"]=2e-6
+    spec["resume_adapter"]={
+        "path":str(R10_ADAPTER),
+        "adapter_model_sha256":R10_ADAPTER_SHA,
+        "source_receipt_path":str(R10_RECEIPT),
+        "source_receipt_sha256":R10_RECEIPT_SELF_SHA,
+        "source_spec_path":R10_SPEC_REL,
+        "source_spec_sha256":R10_SPEC_SHA,
+        "source_weight_digest_after":parent_weight_digest,
+        "previous_optimizer_steps":8,
+        "source_cumulative_optimizer_steps":36,
+        "next_train_row":R11_START,
+    }
+    spec["output"]["namespace"]=str(R11_OUTPUT)
+    require(spec["authority"]["paid_compute_authorized"] is False
+            and spec["authority"]["merge_authorized"] is False
+            and spec["authority"]["deploy_activate_authorized"] is False,
+            "Training builder attempting protected effects")
+    return spec
+
+
 def build_spec(repo: Path, corpus_sha: str) -> dict:
     spec_path = repo/R10_SPEC_REL
     require(sha256(spec_path) == R10_SPEC_SHA, "R10 spec hash mismatch")
@@ -139,33 +179,10 @@ def build_spec(repo: Path, corpus_sha: str) -> dict:
             "R10 parent not exact completed training")
     require(sha256(R10_ADAPTER/"adapter_model.safetensors") == R10_ADAPTER_SHA,
             "R10 parent adapter hash mismatch")
-    spec = json.loads(spec_path.read_text(encoding="utf8"))
-    spec["date"]="2026-10-14"
-    spec["comparison"]["role"]="R11_QWEN35_VERA_UNUSED_VOICE_AND_GENERAL_REHEARSAL"
-    spec["source_subject"]["train_sha256"]=corpus_sha
-    spec["source_subject"]["training_corpus_id"]="VERA_SUCCESSOR_V10R3R11_QWEN35_VERA_VOICE_50K_V1"
-    spec["development_window"]={"start_row":R11_START,"row_count":R11_COUNT}
-    spec["trainer"]["seed"]=20261014
-    spec["trainer"]["max_optimizer_steps"]=R11_STEPS
-    spec["trainer"]["learning_rate"]=2e-6
-    spec["resume_adapter"]={
-        "path":str(R10_ADAPTER),
-        "adapter_model_sha256":R10_ADAPTER_SHA,
-        "source_receipt_path":str(R10_RECEIPT),
-        "source_receipt_sha256":R10_RECEIPT_SELF_SHA,
-        "source_spec_path":R10_SPEC_REL,
-        "source_spec_sha256":R10_SPEC_SHA,
-        "source_weight_digest_after":receipt["weight_digest_after"],
-        "previous_optimizer_steps":8,
-        "source_cumulative_optimizer_steps":36,
-        "next_train_row":R11_START,
-    }
-    spec["output"]["namespace"]=str(R11_OUTPUT)
-    require(spec["authority"]["paid_compute_authorized"] is False
-            and spec["authority"]["merge_authorized"] is False
-            and spec["authority"]["deploy_activate_authorized"] is False,
-            "Training builder attempting protected effects")
-    return spec
+    return _compose_spec_source_only(
+        json.loads(spec_path.read_text(encoding="utf8")), corpus_sha,
+        receipt["weight_digest_after"],
+    )
 
 
 def main():

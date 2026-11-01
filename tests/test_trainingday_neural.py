@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -97,6 +98,73 @@ def test_sourceless_model_id_rejected(tmp_path):
     data["model_id"] = "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive"
     binding.write_text(json.dumps(data))
     with pytest.raises(AdmissionError, match="official base"):
+        _required_base(binding)
+
+
+def test_duplicate_base_binding_fields_cannot_select_last_wins_custody(tmp_path):
+    binding, _ = _base(tmp_path)
+    payload = binding.read_text(encoding="utf-8")
+    binding.write_text(payload[:-1] + ',"model_id":"Qwen/Qwen3.5-4B"}',
+                       encoding="utf-8")
+    with pytest.raises(AdmissionError, match="strict JSON|duplicate"):
+        _required_base(binding)
+
+
+def test_duplicate_nested_file_digest_cannot_hide_binding_ambiguity(tmp_path):
+    binding, _ = _base(tmp_path)
+    payload = binding.read_text(encoding="utf-8")
+    needle = '"config.json": '
+    assert needle in payload
+    binding.write_text(payload.replace(needle, '"config.json": "0", ' + needle, 1),
+                       encoding="utf-8")
+    with pytest.raises(AdmissionError, match="strict JSON|duplicate"):
+        _required_base(binding)
+
+
+def test_base_binding_through_symlinked_ancestor_not_admitted(tmp_path):
+    private = tmp_path / "real"
+    private.mkdir()
+    binding, _ = _base(private)
+    alias = tmp_path / "symlinked-dir"
+    alias.symlink_to(private, target_is_directory=True)
+    with pytest.raises(AdmissionError, match="strict JSON|symlink"):
+        _required_base(alias / binding.name)
+
+
+def test_snapshot_through_symlinked_ancestor_not_admitted(tmp_path):
+    private = tmp_path / "private-parent"
+    private.mkdir()
+    binding, base = _base(private)
+    alias = tmp_path / "snapshot-alias"
+    alias.symlink_to(private, target_is_directory=True)
+    data = json.loads(binding.read_text(encoding="utf-8"))
+    data["snapshot_path"] = str(alias / base.name)
+    binding.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(AdmissionError, match="snapshot|symlink"):
+        _required_base(binding)
+
+
+def test_base_binding_rejects_nonfinite_unrelated_metadata(tmp_path):
+    binding, _ = _base(tmp_path)
+    payload = binding.read_text(encoding="utf-8")
+    binding.write_text(payload[:-1] + ',"unrelated":NaN}', encoding="utf-8")
+    with pytest.raises(AdmissionError, match="strict JSON"):
+        _required_base(binding)
+
+
+def test_relative_clean_binding_keeps_existing_cli_compatibility(tmp_path, monkeypatch):
+    binding, root = _base(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    data, path = _required_base(Path(binding.name))
+    assert data["model_id"] == "Qwen/Qwen3.5-4B"
+    assert path == root
+
+
+def test_oversized_base_binding_is_rejected_before_json_parsing(tmp_path):
+    binding, _ = _base(tmp_path)
+    payload = binding.read_text(encoding="utf-8")
+    binding.write_text(payload + " " * (1024 * 1024), encoding="utf-8")
+    with pytest.raises(AdmissionError, match="strict JSON"):
         _required_base(binding)
 
 
