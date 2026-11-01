@@ -1,0 +1,82 @@
+name: TRAININGDAY R185 PREPARE_V2 source-only Windows smoke
+
+# SOURCE_ONLY_NOT_HOST_QUALIFIED. This does not connect to Lappy, install a
+# broker, attest a real named-pipe client, approve rights, or operate a GPU.
+# Native Windows compilation and a null-handle denial smoke are the only
+# claims: no service installation, credential grants, GPU use or training.
+on:
+  push:
+    branches: ["trainingday/**", "trainingday-*"]
+  pull_request: {}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  r185-prepare-source-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact source HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact Windows source HEAD
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = (git rev-parse --verify HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SOURCE_SHA) {
+            throw "Source checkout mismatch: $actual"
+          }
+
+      - name: Compile PREPARE_V2 with native .NET Framework broker sources (no install)
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { throw 'Native .NET Framework C# compiler missing' }
+          $prepare = Join-Path $PWD 'trainingday\windows_host_broker\PrepareV2PeerIdentity.cs'
+          $broker = Join-Path $PWD 'trainingday\windows_host_broker\TrainingDayHostBroker.cs'
+          $reader = Join-Path $PWD 'trainingday\windows_host_broker\BoundedPipeRequest.cs'
+          $transport = Join-Path $PWD 'trainingday\windows_host_broker\BrokerPipeTransport.cs'
+          $output = Join-Path $env:RUNNER_TEMP 'VeraR185PrepareSource.dll'
+          & $csc /nologo /target:library /optimize+ ('/out:'+$output) /r:System.ServiceProcess.dll /r:System.Core.dll /r:System.Security.dll $prepare $broker $reader $transport
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
+            throw 'R185 Windows broker source compilation failed'
+          }
+
+          # Inspect only a never-captured object. The invalid process handle
+          # MUST deny; never create a pipe, contact a peer or launch the broker.
+          $assembly = [System.Reflection.Assembly]::LoadFrom($output)
+          $type = $assembly.GetType('Vera.TrainingDay.HostBroker.PrepareV2PeerIdentity', $true)
+          if ($type.GetField('State').GetRawConstantValue() -cne 'HOLD') {
+            throw 'R185 peer identity state was not HOLD'
+          }
+          $instance = [System.Activator]::CreateInstance($type, $true)
+          try {
+            if ($type.GetProperty('AuthorizesTraining').GetValue($instance, $null)) {
+              throw 'R185 peer identity unexpectedly authorizes training'
+            }
+            $denyMethod = $type.GetMethod('DenyClaim', [System.Reflection.BindingFlags]'Instance,NonPublic')
+            if ($null -eq $denyMethod) { throw 'R185 denial contract missing' }
+            $denial = $denyMethod.Invoke($instance, @([uint32]0, [string]'', [string]'', [uint64]0))
+            if ($denial -cne 'HOLD_PROCESS_EXITED_OR_UNOBSERVABLE') {
+              throw "R185 invalid-handle identity unexpectedly accepted: $denial"
+            }
+          } finally {
+            ([System.IDisposable]$instance).Dispose()
+          }
+          Write-Output 'R185_PREPARE_SOURCE_SMOKE_PASS; SOURCE_ONLY_NOT_HOST_QUALIFIED'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Assert identity and workflow source-only negatives
+        shell: pwsh
+        run: |
+          python -m unittest -q tests.test_r185_prepare_identity_source tests.test_r185_prepare_workflow
+          if ($LASTEXITCODE -ne 0) { throw 'R185 source-only Python contracts failed' }
