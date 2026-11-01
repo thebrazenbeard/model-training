@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, "fix/**", "feature/**", "trainingday/**", "work/bv-successor-v3-task9-readiness-20260919"]
   pull_request:
-    branches: [main, "trainingday/**"]
+    branches: [main, "trainingday/**", "draft/r154-cognitive-source-intake-20261101"]
   workflow_dispatch:
 
 permissions:
