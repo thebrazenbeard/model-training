@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, "fix/**", "feature/**", "work/bv-successor-v3-task9-readiness-20260919"]
   pull_request:
-    branches: [main, "trainingday/**", "draft/r154-cognitive-source-intake-20261101"]
+    branches: [main, "trainingday/**", "draft/r154-cognitive-source-intake-20261101", "draft/r155-independent-rights-pair-source-20261101"]
   workflow_dispatch:
 
 permissions:
@@ -98,6 +98,7 @@ jobs:
             tests.test_ci_r16_source_contract \
             tests.test_cognitive_sft_intake \
             tests.test_rights_pair_evidence_r155 \
+            tests.test_rights_registry_evidence_r164 \
             tests.test_owner_historical_marker_contract \
             tests.test_owner_historical_evidence_preflight \
             tests.test_trainingday_readme_contract \
