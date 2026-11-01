@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import unittest
+import pytest
 
 ROOT=Path(__file__).resolve().parents[1]
 ORIGINAL=ROOT/"successor/experiments/V10R3R11_VERA_VOICE_EXECUTION_SPEC_20261014_V1.json"
@@ -34,6 +35,7 @@ class RetrySpecTests(unittest.TestCase):
         self.assertFalse(spec["authority"]["merge_authorized"])
         self.assertFalse(spec["authority"]["deploy_activate_authorized"])
 
+    @pytest.mark.owner_historical
     def test_old_attempt_and_r10_parent_not_retired(self):
         parent=Path(r"D:\VERA\models\adapters\v10r3r10-vera-voice-qwen35-r9-resume-20261013\adapter\adapter_model.safetensors")
         self.assertTrue(parent.is_file())
