@@ -54,6 +54,9 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --disable-pip-version-check -r requirements.txt
+          # Full-suite owner-controlled R18 Ed25519 verification needs the same
+          # pinned dependency as the independent rights-crypto source job.
+          pip install --disable-pip-version-check cryptography==46.0.3
           pip install --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.14.0+cpu
           # Runtime modules used by CPU-only checkpoint and optimizer tests.
           # Install after the CPU torch wheel; avoid resolving a second torch.
@@ -369,6 +372,9 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --disable-pip-version-check -r requirements.txt
+          # Full-suite owner-controlled R18 Ed25519 verification needs the same
+          # pinned dependency as the independent rights-crypto source job.
+          pip install --disable-pip-version-check cryptography==46.0.3
           pip install --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.14.0+cpu
           pip install --disable-pip-version-check --no-deps safetensors==0.8.0 torchao==0.18.0
       - name: Compile and test
