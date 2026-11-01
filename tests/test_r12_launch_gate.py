@@ -1,4 +1,6 @@
 """R12 rejects contested GPU and protected output rather than evicting services."""
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 import tempfile
 from pathlib import Path
@@ -41,6 +43,10 @@ class R12LaunchGateTests(unittest.TestCase):
                 self.assertEqual(original.read_text(encoding="utf8"), "preserve")
                 with self.assertRaisesRegex(RuntimeError, "Unsafe"):
                     validated_receipt(Path(temp) / "other" / later.name)
+                with self.assertRaisesRegex(RuntimeError, "Unsafe"):
+                    validated_receipt(parent / ".." / later.name)
+                with self.assertRaisesRegex(RuntimeError, "Unsafe"):
+                    validated_receipt(parent / "VERA_R12_FP32_LAUNCH_GATE_20261015_V0.json")
 
     def test_resource_thresholds_and_ready_path(self):
         held = classify(ram=8.99, virtual=11.99, gpu=3899, active=0, output_exists=False)

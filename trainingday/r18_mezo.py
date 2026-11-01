@@ -547,7 +547,30 @@ def _read_strict_json_value(path: Path, *, context: str) -> object:
         return value
 
     try:
-        result = json.loads(path.read_text(encoding="utf-8"),
+        raw = path.read_text(encoding="utf-8")
+        # Bound structural nesting independently of Python's JSON recursion
+        # limit; bracket characters inside JSON strings are not structure.
+        depth = 0
+        in_string = escaped = False
+        for char in raw:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            elif char == '"':
+                in_string = True
+            elif char in "[{":
+                depth += 1
+                if depth > 512:
+                    raise ValueError("JSON nesting exceeds evidence limit")
+            elif char in "]}":
+                depth -= 1
+                if depth < 0:
+                    raise ValueError("unmatched JSON closer")
+        result = json.loads(raw,
                             object_pairs_hook=unique_object_keys,
                             parse_constant=reject_non_json_constant,
                             parse_float=finite_json_float)

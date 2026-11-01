@@ -11,7 +11,29 @@ import json
 from pathlib import Path
 
 from trainingday.admission import AdmissionError, _hash_file
-from trainingday.train_neural import _parameter_digest, _required_base
+from trainingday.train_neural import R16_RECIPE, _parameter_digest, _required_base
+
+
+_R16_ONLY_RECEIPT_FIELDS = frozenset({
+    "r16_run_contract_sha256", "resumed_from_step",
+    "optimizer_resume_equivalence", "checkpoint_step",
+    "checkpoint_custody_file_sha256", "checkpoint_custody_state",
+})
+
+
+def _has_r16_custody_markers(receipt: dict, receipt_path: Path) -> bool:
+    """A downgraded status cannot bypass R16's stronger checkpoint gate."""
+    if (receipt.get("recipe") == R16_RECIPE
+            or any(key in receipt for key in _R16_ONLY_RECEIPT_FIELDS)):
+        return True
+    home = receipt_path.parent
+    for filename in ("r16-run-contract.json", "latest-checkpoint-custody.json"):
+        sidecar = home / filename
+        if sidecar.exists() or sidecar.is_symlink():
+            return True
+    trainer_work = home / "trainer-work"
+    return (trainer_work.is_symlink()
+            or any(trainer_work.glob("checkpoint-*")))
 
 
 def validate_receipt(
@@ -24,15 +46,34 @@ def validate_receipt(
     if not receipt_path.is_file() or receipt_path.is_symlink():
         raise AdmissionError("saved training receipt missing or symlinked")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    if (receipt.get("status") != "ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED"
+    r16_status = "R16_ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED"
+    if (receipt.get("status") == "ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED"
+            and _has_r16_custody_markers(receipt, receipt_path)):
+        raise AdmissionError("R16 custody markers cannot use legacy training status")
+    if (receipt.get("status") not in {"ADAPTER_SAVED_NOT_INDEPENDENTLY_RELOADED", r16_status}
             or receipt.get("mode") not in {"correct", "corrupt"}
-            or not isinstance(receipt.get("new_optimizer_steps"), int)
+            or type(receipt.get("new_optimizer_steps")) is not int
             or receipt["new_optimizer_steps"] < 1):
         raise AdmissionError("no actual trained adapter indicated")
     if not binding_path.is_file() or binding_path.is_symlink():
         raise AdmissionError("base binding unavailable")
     if _hash_file(binding_path) != receipt.get("base_binding_sha256"):
         raise AdmissionError("base binding changed since training")
+    if receipt["status"] == r16_status:
+        # R16 save receipts have a separate run contract and complete
+        # checkpoint byte/step custody. A status-only allowlist would admit
+        # forged R16 lineage; reuse its strict evaluator boundary before any
+        # subsequent fresh-process GPU reload.
+        from trainingday.eval_structural_r16 import (
+            R16_PRODUCER_HEAD, _r16_adapter,
+        )
+        if receipt.get("recipe") != R16_RECIPE:
+            raise AdmissionError("R16 reload recipe differs from R16 contract")
+        _r16_adapter(
+            receipt_path, binding_path,
+            producer_head=R16_PRODUCER_HEAD,
+            required_mode=receipt["mode"],
+        )
     # Optional protocol expectations are used by the R15 evaluator. Leave
     # generic R14 fresh-reload custody checks backward compatible.
     if expected_recipe is not None and receipt.get("recipe") != expected_recipe:
@@ -74,6 +115,8 @@ def verify(receipt_path: Path, binding_path: Path, output_path: Path) -> dict:
     if binding["revision"] != receipt.get("base_revision"):
         raise AdmissionError("pinned model revision differs from training")
 
+    from trainingday.physical_launch_authority import require_physical_launch_authority
+    require_physical_launch_authority(operation="R15/R16 independent adapter reload")
     import torch
     from peft import PeftModel
     from transformers import BitsAndBytesConfig, Qwen3_5ForCausalLM

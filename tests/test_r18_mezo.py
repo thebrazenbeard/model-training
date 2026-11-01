@@ -185,6 +185,13 @@ class R18SourceTests(unittest.TestCase):
                 with self.assertRaisesRegex(AdmissionError, f"invalid {context} JSON"):
                     reader(self.root / "synthetic.json")
 
+    def test_json_brackets_inside_string_do_not_count_as_structural_nesting(self):
+        payload = {"brackets": "[" * 1600 + "}" * 1600}
+        raw = json.dumps(payload)
+        with patch.object(Path, "read_text", return_value=raw):
+            self.assertEqual(_read_strict_json_value(
+                self.root / "synthetic.json", context="fit probes"), payload)
+
     def test_source_preflight_is_read_only_and_matches_r16_selection_order(self):
         preflight, cases, path = validate_source(self.args)
         self.assertEqual(preflight["selected_id_sha256"], selected_id_digest(ROWS))

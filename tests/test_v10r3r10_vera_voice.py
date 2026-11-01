@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -97,6 +98,7 @@ class R10VoiceCurriculumTests(unittest.TestCase):
         if adapter.exists():
             self.assertEqual(sha256(adapter), R9_ADAPTER_SHA256)
 
+    @pytest.mark.owner_historical
     def test_generated_spec_targets_qwen_successor_no_external_spend(self):
         spec = resume_spec(ROOT, "0" * 64)
         self.assertEqual(spec["source_subject"]["train_sha256"], "0" * 64)

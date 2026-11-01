@@ -27,6 +27,11 @@ from trainingday.r18_eval import (
 
 class R18EvaluatorTests(unittest.TestCase):
     def setUp(self):
+        # Synthetic-only unit cases exercise evaluation ordering; their mock
+        # host grant is NOT a production issuer, training lease or bank unseal.
+        host_stub = patch("trainingday.physical_launch_authority.require_physical_launch_authority")
+        host_stub.start()
+        self.addCleanup(host_stub.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)

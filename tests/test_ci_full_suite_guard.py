@@ -92,7 +92,11 @@ class CIWorkflowIdentityTests(unittest.TestCase):
 
     def test_both_revisions_are_attested_and_strictly_tested(self):
         jobs = self.workflow["jobs"]
-        self.assertEqual(set(jobs), {"pytest-source", "pytest-synthetic-merge"})
+        self.assertEqual(set(jobs), {
+            "pytest-source", "pytest-synthetic-merge",
+            "portable-source-contracts", "trainingday-r14-source",
+            "trainingday-r16-source", "windows-stage0-source",
+        })
         for name, expected in (("pytest-source", "EXPECTED_SOURCE_SHA"),
                                ("pytest-synthetic-merge", "EXPECTED_MERGE_SHA")):
             with self.subTest(job=name):

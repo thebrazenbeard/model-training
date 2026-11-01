@@ -4,8 +4,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import tempfile
 from pathlib import Path
 import unittest
+import pytest
 
 from successor.experiments import build_v10r3r11_vera_voice as r11
 from successor.experiments import preflight_v10r3r11_launch as gate
@@ -42,6 +44,27 @@ def synthetic():
 
 
 class R11SourceTests(unittest.TestCase):
+    def test_r10_spec_pin_accepts_only_exact_windows_newline_equivalence(self):
+        """The R10 receipt pins Windows CRLF bytes; Git stores the LF blob."""
+        source = (ROOT/r11.R10_SPEC_REL).read_bytes()
+        lf = source.replace(b"\r\n", b"\n")
+        self.assertNotIn(b"\r", lf)
+        with tempfile.TemporaryDirectory() as dirname:
+            path = Path(dirname)/"r10-spec.json"
+            for payload in (lf, lf.replace(b"\n", b"\r\n")):
+                with self.subTest(line_ending="CRLF" if b"\r" in payload else "LF"):
+                    path.write_bytes(payload)
+                    self.assertEqual(r11.r10_spec_sha256(path), r11.R10_SPEC_SHA)
+            for payload in (
+                lf.replace(b"\n", b"\r\n", 1),
+                lf.replace(b"\n", b"\r", 1),
+                lf.replace(b'"2026-10-13"', b'"2026-10-12"', 1),
+            ):
+                with self.subTest(rejected_digest=payload[:30]):
+                    path.write_bytes(payload)
+                    with self.assertRaises(ValueError):
+                        r11.r10_spec_sha256(path)
+
     def test_new_voice_examples_are_disjoint_from_r10(self):
         _,voice,held=synthetic()
         chosen=r11.select_unused_voices(voice,held)
@@ -110,6 +133,19 @@ class R11SourceTests(unittest.TestCase):
         self.assertFalse(spec["authority"]["deploy_activate_authorized"])
         self.assertFalse(spec["authority"]["merge_authorized"])
 
+    @pytest.mark.owner_historical
+    def test_generated_spec_binds_real_completed_parent(self):
+        spec=r11.build_spec(ROOT,"a"*64)
+        self.assertEqual(spec["resume_adapter"]["source_cumulative_optimizer_steps"],36)
+        self.assertEqual(spec["resume_adapter"]["next_train_row"],288)
+        self.assertEqual(spec["resume_adapter"]["adapter_model_sha256"],r11.R10_ADAPTER_SHA)
+        self.assertEqual(spec["development_window"]["row_count"],64)
+        self.assertEqual(spec["trainer"]["max_optimizer_steps"],8)
+        self.assertEqual(spec["output"]["namespace"],str(r11.R11_OUTPUT))
+        self.assertFalse(spec["authority"]["deploy_activate_authorized"])
+        self.assertFalse(spec["authority"]["merge_authorized"])
+
+
     def test_original_r10_crlf_spec_pin_remains_byte_exact(self):
         source=(ROOT/r11.R10_SPEC_REL).read_bytes()
         # The historical Windows R10 receipt signed CRLF bytes. Git's Linux
@@ -135,6 +171,7 @@ class R11SourceTests(unittest.TestCase):
         self.assertEqual(outcome["status"],"HOLD_NO_WEIGHT_CHANGE")
         self.assertEqual(len(outcome["reasons"]),9)
 
+    @pytest.mark.owner_historical
     def test_disk_spec_exactly_binds_outputs(self):
         spec=json.loads((ROOT/r11.R11_SPEC_REL).read_text("utf8"))
         corpus=r11.R11_DATA_DIR/"train.jsonl"
