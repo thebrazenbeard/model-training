@@ -1,7 +1,6 @@
 using System;
 using System.IO;
 using System.IO.Pipes;
-using System.Security.AccessControl;
 using System.Security.Principal;
 using System.ServiceProcess;
 using System.Diagnostics;
@@ -28,17 +27,6 @@ namespace Vera.TrainingDay.HostBroker {
       catch { }
       if(worker!=null) worker.Join(1200);
     }
-    static PipeSecurity StrictPipeAcl() {
-      var a=new PipeSecurity();
-      a.SetAccessRuleProtection(true,false);
-      a.AddAccessRule(new PipeAccessRule(
-        new SecurityIdentifier(WellKnownSidType.LocalSystemSid,null),
-        PipeAccessRights.FullControl,AccessControlType.Allow));
-      a.AddAccessRule(new PipeAccessRule(
-        new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid,null),
-        PipeAccessRights.ReadWrite,AccessControlType.Allow));
-      return a;
-    }
     static bool VerifiedAdminClient(NamedPipeServerStream pipe) {
       bool admin=false;
       pipe.RunAsClient(() => {
@@ -52,8 +40,7 @@ namespace Vera.TrainingDay.HostBroker {
     void Loop() {
       while(!stopping) {
         try {
-          using(var pipe=new NamedPipeServerStream(PipeName,PipeDirection.InOut,1,
-            PipeTransmissionMode.Byte,PipeOptions.Asynchronous,4096,4096,StrictPipeAcl())) {
+          using(var pipe=BrokerPipeTransport.CreateServer(PipeName)) {
             pipe.WaitForConnection();
             if(stopping) return;
             using(var reader=new StreamReader(pipe,System.Text.Encoding.ASCII,false,1024,true))

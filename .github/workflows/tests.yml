@@ -309,8 +309,9 @@ jobs:
           if (-not (Test-Path -LiteralPath $csc)) { throw 'Native .NET Framework C# compiler missing' }
           $source = Join-Path $PWD 'trainingday\windows_host_broker\TrainingDayHostBroker.cs'
           $reader = Join-Path $PWD 'trainingday\windows_host_broker\BoundedPipeRequest.cs'
+          $transport = Join-Path $PWD 'trainingday\windows_host_broker\BrokerPipeTransport.cs'
           $output = Join-Path $env:RUNNER_TEMP 'VeraTrainingDayHostBroker.exe'
-          & $csc /nologo /target:exe /optimize+ ('/out:'+$output) /r:System.ServiceProcess.dll /r:System.Core.dll /r:System.Security.dll $source $reader
+          & $csc /nologo /target:exe /optimize+ ('/out:'+$output) /r:System.ServiceProcess.dll /r:System.Core.dll /r:System.Security.dll $source $reader $transport
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
             throw 'Windows host broker compile failed'
           }
@@ -320,7 +321,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Broker reader regression compile failed' }
           & $contractOutput
           if ($LASTEXITCODE -ne 0) { throw 'Broker reader regressions failed' }
-          Write-Output 'Broker compiled and bounded request regression passed; no service installed or authority granted'
+          $securityContract = Join-Path $PWD 'tests\native_broker_transport_contract.cs'
+          $securityOutput = Join-Path $env:RUNNER_TEMP 'VeraTrainingDayBrokerTransportTests.exe'
+          & $csc /nologo /target:exe /optimize+ ('/out:'+$securityOutput) /r:System.Security.dll /r:System.Core.dll $transport $securityContract
+          if ($LASTEXITCODE -ne 0) { throw 'Broker transport regression compile failed' }
+          & $securityOutput
+          if ($LASTEXITCODE -ne 0) { throw 'Broker transport regressions failed' }
+          Write-Output 'Broker compiled; bounded requests and local transport regressions passed; no service installed or authority granted'
 
   pytest-synthetic-merge:
     # A green source head does not establish target-branch merge compatibility.
