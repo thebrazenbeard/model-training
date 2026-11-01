@@ -93,6 +93,7 @@ jobs:
             tests.test_ci_dependency_contract \
             tests.test_ci_portable_source_contract \
             tests.test_ci_r16_source_contract \
+            tests.test_cognitive_sft_intake \
             tests.test_owner_historical_marker_contract \
             tests.test_owner_historical_evidence_preflight \
             tests.test_trainingday_readme_contract \

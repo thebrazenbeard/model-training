@@ -39,6 +39,7 @@ class PortableSourceCIContractTests(unittest.TestCase):
         self.assertIn("tests.test_r18_checkpoint_commit", body)
         self.assertIn("tests.test_owner_historical_marker_contract", body)
         self.assertIn("tests.test_ci_r16_source_contract", body)
+        self.assertIn("tests.test_cognitive_sft_intake", body)
         self.assertIn("tests.test_owner_historical_evidence_preflight", body)
         self.assertIn("tests.test_trainingday_readme_contract", body)
         self.assertIn("tests.test_trainingday_host_launch_request", body)
@@ -46,6 +47,14 @@ class PortableSourceCIContractTests(unittest.TestCase):
         self.assertNotIn("unittest discover", body)
         self.assertNotIn("tests/test_*.py", body)
         self.assertNotIn("pytest -q", body)
+
+    def test_cognitive_sft_intake_has_live_portable_unittest_bridge(self):
+        body = _job("portable-source-contracts")
+        self.assertEqual(body.count("tests.test_cognitive_sft_intake"), 1)
+        suite = unittest.defaultTestLoader.loadTestsFromName(
+            "tests.test_cognitive_sft_intake"
+        )
+        self.assertGreaterEqual(suite.countTestCases(), 15)
 
     def test_full_pytest_remains_independent_red_diagnostic(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
