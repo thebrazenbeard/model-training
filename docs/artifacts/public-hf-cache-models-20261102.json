@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "kind": "verified_public_huggingface_weight_cache",
+  "verified_on": "2026-11-02",
+  "verification": "Full local SHA-256 and exact size independently matched the public Hugging Face immutable-revision API LFS metadata; API model ID was resolved for redirected repositories.",
+  "total_weight_bytes": 2413052681,
+  "models": [
+    {
+      "model_id": "dropbox-dash/faster-whisper-large-v3-turbo",
+      "requested_id": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+      "revision": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+      "path": "model.bin",
+      "size": 1617884929,
+      "sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da",
+      "download_command": "hf download dropbox-dash/faster-whisper-large-v3-turbo model.bin --revision 0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf --local-dir ABSOLUTE_WORKER_DIRECTORY/faster-whisper-large-v3-turbo"
+    },
+    {
+      "model_id": "Systran/faster-whisper-base.en",
+      "revision": "3d3d5dee26484f91867d81cb899cfcf72b96be6c",
+      "path": "model.bin",
+      "size": 145216508,
+      "sha256": "2a166925539a16005f14ff328359f9b9adb9dc4fb631bb3b227526862e93e2ef",
+      "download_command": "hf download Systran/faster-whisper-base.en model.bin --revision 3d3d5dee26484f91867d81cb899cfcf72b96be6c --local-dir ABSOLUTE_WORKER_DIRECTORY/faster-whisper-base-en"
+    },
+    {
+      "model_id": "Systran/faster-whisper-small.en",
+      "revision": "d1d751a5f8271d482d14ca55d9e2deeebbae577f",
+      "path": "model.bin",
+      "size": 483545366,
+      "sha256": "62b2a45b05ee59acb4a5341b33ee35e041395d378d418a18acfe4c9e768ee37a",
+      "download_command": "hf download Systran/faster-whisper-small.en model.bin --revision d1d751a5f8271d482d14ca55d9e2deeebbae577f --local-dir ABSOLUTE_WORKER_DIRECTORY/faster-whisper-small-en"
+    },
+    {
+      "model_id": "Systran/faster-whisper-tiny.en",
+      "revision": "0d3d19a32d3338f10357c0889762bd8d64bbdeba",
+      "path": "model.bin",
+      "size": 75537502,
+      "sha256": "1a5afae06a4db91c975c9a9d78be5cc110ee4ea022ad57d55492e4550e936b2a",
+      "download_command": "hf download Systran/faster-whisper-tiny.en model.bin --revision 0d3d19a32d3338f10357c0889762bd8d64bbdeba --local-dir ABSOLUTE_WORKER_DIRECTORY/faster-whisper-tiny-en"
+    },
+    {
+      "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+      "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "path": "model.safetensors",
+      "size": 90868376,
+      "sha256": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+      "download_command": "hf download sentence-transformers/all-MiniLM-L6-v2 model.safetensors --revision 1110a243fdf4706b3f48f1d95db1a4f5529b4d41 --local-dir ABSOLUTE_WORKER_DIRECTORY/all-MiniLM-L6-v2"
+    }
+  ],
+  "retention": "Read-only provenance. Not evidence of runtime ownership, current offline availability, complete model packaging, or permission to delete caches. Recheck live dependencies and test restore on a worker before relying on eviction."
+}
