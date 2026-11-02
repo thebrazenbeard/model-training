@@ -18,6 +18,8 @@ The route does not imply that LoRA training, data-rights admission, or a GPU
 lease has occurred. This experimental neural-weight route is distinct from
 the public identity bootcamp below.
 
+The Qwen3.5 4B line has a [pinned public upstream-base manifest](docs/artifacts/qwen35-4b-public-base-20261102.json) and [on-demand restore instructions](docs/artifacts/README.md). They record source weights and checksums only, **not** local fine-tunes, merged checkpoints, or qualification results.
+
 ## Hard invariant: zero monetary cost
 
 The bootcamp must not require metered model APIs or paid compute.

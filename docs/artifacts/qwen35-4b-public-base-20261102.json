@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "kind": "public_upstream_base_model",
+  "training_line": "qwen35-4b-hf-line",
+  "source": {
+    "provider": "Hugging Face",
+    "repository": "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive",
+    "revision": "d61dd146c8fd44c9a49cdb7f59f34e17b61902d8",
+    "url": "https://huggingface.co/rodrigomt/Qwen3.5-4B-Uncensored-Aggressive"
+  },
+  "retrieval": {
+    "command": "hf download rodrigomt/Qwen3.5-4B-Uncensored-Aggressive --revision d61dd146c8fd44c9a49cdb7f59f34e17b61902d8"
+  },
+  "files": [
+    {
+      "path": "model.safetensors-00001-of-00002.safetensors",
+      "size_bytes": 5329398720,
+      "sha256": "36dd0f7de62c546e7d163c2a4461208d731fad91ebea9bc31226b54c1c86511f"
+    },
+    {
+      "path": "model.safetensors-00002-of-00002.safetensors",
+      "size_bytes": 3990429440,
+      "sha256": "e2fb50b735a8e10210eece763097f906955ca9db6ba557215f549a46b622157f"
+    }
+  ],
+  "evidence": {
+    "observed_on": "2026-11-02",
+    "remote": "Public, ungated pinned-revision blob metadata supplied the expected sizes and SHA-256 digests.",
+    "local": "Both cached weight shards independently streamed and SHA-256 matched those remote digests."
+  },
+  "scope": "These are public upstream base-model weights, not a fine-tune, adapter, merged checkpoint, or training-output backup.",
+  "eviction_policy": "Manifest provenance alone is not a deletion authorization. Verify all job dependencies and expected redownload availability before evicting a local cache."
+}
