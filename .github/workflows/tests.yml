@@ -177,9 +177,10 @@ jobs:
               "tests.test_rights_registry_evidence_r164",
               "tests.test_owner_controlled_rights_v1",
               "tests.test_owner_key_enrollment_candidate_v1",
+              "tests.test_owner_exact_subject_v2",
           ])
           result = unittest.TextTestRunner(verbosity=2).run(suite)
-          if not result.wasSuccessful() or result.skipped or result.testsRun < 33:
+          if not result.wasSuccessful() or result.skipped or result.testsRun < 47:
               raise SystemExit("Rights cryptography source gate failed or skipped cases")
           print(f"RIGHTS_CRYPTO_SOURCE_ONLY: {result.testsRun} tests, zero skips; no rights ADMIT")
           PY
