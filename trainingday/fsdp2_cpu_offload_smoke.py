@@ -49,18 +49,25 @@ def main():
                 grads = [p.grad for p in model.parameters() if p.requires_grad]
                 if not grads or any(g is None for g in grads):
                     raise RuntimeError("missing sharded gradients")
+                if any(g.device.type != "cpu" for g in grads):
+                    raise RuntimeError("FSDP gradients not CPU-resident")
                 optimizer.step()
                 torch.cuda.synchronize()
                 records.append({"step": step, "loss": round(loss.item(), 8),
                                 "seconds": round(time.perf_counter()-started, 5)})
             after = digest(model)
             cpu_shards = all(p.device.type == "cpu" for p in model.parameters())
-            if before == after or not cpu_shards:
+            optimizer_tensors = [v for state in optimizer.state.values()
+                                 for v in state.values() if isinstance(v, torch.Tensor)]
+            cpu_optimizer = bool(optimizer_tensors) and all(v.device.type == "cpu"
+                                                        for v in optimizer_tensors)
+            if before == after or not cpu_shards or not cpu_optimizer:
                 raise RuntimeError("unchanged weights or shards not CPU-resident")
             print(json.dumps({"status": "SYNTHETIC_FSDP2_CPU_OFFLOAD_STEPS_PASS",
                 "model": "random_sequential_64_64_8", "qwen_weights_used": False,
                 "training_authorized": False, "steps": records,
                 "optimizer": "AdamW", "sharded_parameter_device": "cpu",
+                "gradient_device": "cpu", "optimizer_state_device": "cpu",
                 "before_sha256": before, "after_sha256": after,
                 "peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated()}))
         finally:
