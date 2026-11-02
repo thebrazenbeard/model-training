@@ -1,0 +1,49 @@
+name: TrainingDay Windows host readback source (NO host qualification)
+
+on:
+  push:
+    branches: [main, "trainingday/**"]
+  pull_request:
+    branches: [main, "trainingday/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-source-only:
+    runs-on: windows-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Parse readback PowerShell only (never execute on runner)
+        shell: pwsh
+        run: |
+          $script = 'trainingday/windows_host_broker/ReadOnlyHostReadback.ps1'
+          $tokens = $null
+          $parseErrors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script, [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors.Count -ne 0) {
+            $parseErrors | ForEach-Object { Write-Output $_.Message }
+            throw 'Readback PowerShell failed parse-only source qualification'
+          }
+          $commands = @($ast.FindAll({param($node)
+            $node -is [System.Management.Automation.Language.CommandAst]
+          }, $true) | ForEach-Object { $_.GetCommandName() })
+          $forbidden = @('Start-Process','Start-Service','Stop-Service','Restart-Service',
+            'Set-Acl','Set-Content','Add-Content','Set-Item','New-Item',
+            'Remove-Item','Move-Item','Copy-Item','Out-File','Invoke-Expression',
+            'Invoke-WebRequest','Invoke-RestMethod','Invoke-Command','Set-ExecutionPolicy')
+          foreach ($name in $forbidden) {
+            if ($commands -contains $name) {
+              throw "Forbidden readback command detected: $name"
+            }
+          }
+          Write-Output 'READBACK_WINDOWS_SOURCE_PARSE_PASS no host-service execution'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Run portable read-only source invariants
+        shell: pwsh
+        run: python -m unittest -q tests.test_trainingday_windows_readback_source
