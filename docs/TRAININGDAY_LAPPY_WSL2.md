@@ -91,7 +91,20 @@ python3 -m trainingday.lowmem_experiment
 ```
 
 This code cannot launch a training job: the physical authority check raises
-before any model, CUDA, data, or output effects. It also depends on the R18
-pinned-base loader and checkpoint mapping from the still-unintegrated neural
-TrainingDay source. WSL2 NVIDIA visibility does not lift that guard, prove
-PyTorch CUDA support, or establish fit in 4096 MiB of VRAM.
+before any model, CUDA, data, or output effects. The source tree now includes
+`trainingday.pinned_base` and `trainingday.qwen_text_checkpoint` as separately
+testable, fail-closed dependencies for local offline byte-hash checks and
+multimodal-to-text tensor-name projection. These are **source-only helpers**:
+the neural R18 trainer, protected host broker, installed Transformers/PEFT/CUDA
+stack, and actual checkpoint loading or optimizer fit remain unqualified.
+
+**Do not interchange the two upstream model identities.** The new
+`docs/artifacts/qwen35-4b-public-base-20261102.json` describes a cached public
+`rodrigomt/Qwen3.5-4B-Uncensored-Aggressive` checkpoint at revision
+`d61dd146c8fd44c9a49cdb7f59f34e17b61902d8`. This experimental R18
+source specifically binds official `Qwen/Qwen3.5-4B` at
+`851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`. The public cached manifest
+does **not** meet the R18 binding; a separate official snapshot, byte hashes,
+tokenizer, validated license/provenance, and signed authority are still needed.
+WSL2 NVIDIA visibility does not lift the guard, prove PyTorch CUDA support, or
+establish fit in 4096 MiB of VRAM.

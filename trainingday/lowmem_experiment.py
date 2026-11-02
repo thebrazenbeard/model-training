@@ -15,10 +15,9 @@ import sys
 from typing import Mapping
 
 from trainingday.physical_launch_authority import require_physical_launch_authority
+from trainingday.pinned_base import BASE_ID, BASE_REVISION, require_official_base
 
 
-BASE_ID = "Qwen/Qwen3.5-4B"
-BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 SCHEMA = "TRAININGDAY_LOWMEM_SOURCE_CANDIDATE_V1"
 EXECUTION_TARGET = "LAPPY_UBUNTU_26_04_WSL2_LOCAL_RTX3050"
 
@@ -55,7 +54,7 @@ def validate_declaration(declaration: Mapping[str, object]) -> None:
     if not any(re.fullmatch(r"model\.safetensors-[0-9]{5}-of-[0-9]{5}\.safetensors", name)
                for name in files):
         raise LowMemoryExperimentError("weight shard binding missing")
-    # This is syntax-only. The existing _required_base validates actual bytes.
+    # This is syntax-only. require_official_base separately validates actual bytes.
 
 
 def source_plan() -> dict:
@@ -211,12 +210,11 @@ def one_step_kernel(base_binding_path):
     import torch
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     from transformers import BitsAndBytesConfig, Qwen3_5ForCausalLM
-    from trainingday.train_neural import _required_base
     from trainingday.qwen_text_checkpoint import (
         index_binding_pin, prepare_text_loader, verify_text_load,
     )
 
-    base, snapshot = _required_base(base_binding_path)
+    base, snapshot = require_official_base(base_binding_path)
     validate_declaration(base)
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise LowMemoryExperimentError("BF16 CUDA GPU unavailable")

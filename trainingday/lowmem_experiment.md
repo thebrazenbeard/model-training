@@ -8,12 +8,22 @@ the existing R18 architecture. Run `python -m unittest tests.test_lowmem_experim
 
 The unexecuted `one_step_kernel` proposes BF16/NF4 double quantization with
 rank 4 on `q_proj`/`v_proj`, microbatch 1, sequence 64, checkpointed activations,
-and text-only Qwen3.5 weights. It reuses the **existing pinned R18** offline
-binding check, Qwen3.5 multimodal-to-text checkpoint key mapping, loading
-verification, and protected physical-launch hard hold. It cannot be run by a
+and text-only Qwen3.5 weights. It now has an **in-tree source-only** offline
+`trainingday.pinned_base` verifier, `qwen_text_checkpoint` tensor-key mapping,
+loading-shape verification, and protected physical-launch hard hold. The
+byte hashes are caller-supplied evidence, **not** authenticated host authority.
+It cannot be run by a
 CLI flag or environment variable. Any eventual host broker must authenticate
 operator, immutable plan, data rights, evaluator custody, host identity, and
 exclusive GPU lease independently before dispatching a protected job.
+
+The currently documented public cached checkpoint is the *different*
+`rodrigomt/Qwen3.5-4B-Uncensored-Aggressive` revision
+`d61dd146c8fd44c9a49cdb7f59f34e17b61902d8`, while this experiment
+requires official `Qwen/Qwen3.5-4B` revision
+`851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`. The verifier rejects the
+public cached model identity; no model substitution is authorized. An exact
+official snapshot and full SHA-256 binding have not been demonstrated here.
 
 Its success criterion, if ever physically permitted, is a nonzero gradient,
 completed `optimizer.step()`, *real changed LoRA-B tensor bytes*, and fresh CUDA
