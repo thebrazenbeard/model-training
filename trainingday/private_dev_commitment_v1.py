@@ -24,7 +24,7 @@ _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _INTEGER = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
 _SUBJECT_FIELDS = frozenset({
     "corpus_id", "manifest_sha256", "train_sha256", "selected_id_v2_sha256",
-    "generator_source_sha256",
+    "generator_source_sha256", "train_content_sha256",
 })
 _EXCLUSION_BANKS = frozenset({"R16_PROTECTED", "R18_EXTERNAL_OOD"})
 
@@ -90,8 +90,19 @@ def _index_entry(item: object) -> tuple[str, str]:
     return item["id"], item["prompt_sha256"]
 
 
-def _unique(entries: list[tuple[str, str]]) -> None:
-    _require(len({entry[0] for entry in entries}) == len(entries)
+def _train_index_entry(item: object) -> tuple[str, str, str]:
+    _require(type(item) is dict
+             and set(item) == {"id", "prompt_sha256", "answer_sha256"})
+    case_id, prompt_digest = _index_entry({"id": item["id"],
+                                           "prompt_sha256": item["prompt_sha256"]})
+    answer_digest = item["answer_sha256"]
+    _require(type(answer_digest) is str and _SHA.fullmatch(answer_digest) is not None)
+    return case_id, prompt_digest, answer_digest
+
+
+def _unique(entries: list[tuple[str, ...]]) -> None:
+    _require(len({unicodedata.normalize("NFKC", entry[0]).casefold()
+                  for entry in entries}) == len(entries)
              and len({entry[1] for entry in entries}) == len(entries))
 
 
@@ -112,13 +123,21 @@ def build_source_only_private_commitment(*, subject: dict,
         _require(type(subject[key]) is str and _SHA.fullmatch(subject[key]) is not None)
 
     _require(type(train_index) is list and len(train_index) == 1024)
-    train = [_index_entry(item) for item in train_index]
+    train = [_train_index_entry(item) for item in train_index]
     _unique(train)
     ids = [entry[0] for entry in train]
     selected_digest = _sha(
         SELECTED_ID_V2_SCHEMA.encode("ascii") + b"\x00"
         + json.dumps(ids, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     _require(selected_digest == subject["selected_id_v2_sha256"])
+    # Mirrors r18_qlora.train_content_digest, including the ordered answers.
+    # This checks only consistency with a caller declaration, not its provenance.
+    train_content_digest = _sha(_json_canonical([
+        {"id": case_id, "prompt_sha256": prompt_digest,
+         "answer_sha256": answer_digest}
+        for case_id, prompt_digest, answer_digest in train
+    ]))
+    _require(train_content_digest == subject["train_content_sha256"])
 
     _require(type(dev_jsonl) is bytes and 0 < len(dev_jsonl) <= 16 * 1024 * 1024
              and dev_jsonl.endswith(b"\n") and b"\r" not in dev_jsonl)
@@ -151,7 +170,11 @@ def build_source_only_private_commitment(*, subject: dict,
     _require(all(count == 64 for count in counts.values()))
     _unique(exclusion_index)
 
-    all_ids = [item[0] for item in train + dev_index + exclusion_index]
+    # Reject ambiguous case/NFKC aliases across splits as well as byte-exact
+    # duplicates. Keep original case IDs unchanged in the V2 source digest;
+    # this only strengthens the protected overlap rejection.
+    all_ids = [unicodedata.normalize("NFKC", item[0]).casefold()
+               for item in train + dev_index + exclusion_index]
     all_prompts = [item[1] for item in train + dev_index + exclusion_index]
     _require(len(all_ids) == len(set(all_ids))
              and len(all_prompts) == len(set(all_prompts)))
@@ -160,6 +183,7 @@ def build_source_only_private_commitment(*, subject: dict,
         "corpus_id": "R18_ARITHMETIC",
         "manifest_sha256": subject["manifest_sha256"],
         "train_sha256": subject["train_sha256"],
+        "train_content_sha256": train_content_digest,
         "selected_id_v2_sha256": selected_digest,
         "generator_source_sha256": subject["generator_source_sha256"],
         "dev_sha256": _sha(dev_jsonl),
@@ -168,6 +192,7 @@ def build_source_only_private_commitment(*, subject: dict,
         "protected_exclusion_count": len(exclusion_index),
         "private_content_returned": False,
         "independent_custody_authenticated": False,
+        "train_content_commitment_authenticated": False,
         "owner_identity_authenticated": False,
         "source_use_rights_verified": False,
         "host_ratification_authenticated": False,
