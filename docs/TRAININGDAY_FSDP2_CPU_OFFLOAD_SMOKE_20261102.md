@@ -37,8 +37,11 @@ access. CPU/GPU resource availability and NCCL support remain runtime-dependent.
 
 ## Physically observed result on Lappy
 
-A same-code prototype executed using the existing WSL PyTorch environment and
-reported:
+The prototype and the exact revised GitHub-published source at commit
+`1a69f3802f8375ff8e8ef4ed25cb767befade227` were both executed on Lappy WSL2
+and returned matching losses and parameter digests. The revised version also
+asserted **actual CPU gradient and AdamW optimizer-state residency**, not merely
+parameter placement. Results:
 
 | Step | Loss | Synchronized wall time |
 |---|---:|---:|
