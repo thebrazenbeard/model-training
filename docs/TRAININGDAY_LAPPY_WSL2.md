@@ -108,3 +108,10 @@ does **not** meet the R18 binding; a separate official snapshot, byte hashes,
 tokenizer, validated license/provenance, and signed authority are still needed.
 WSL2 NVIDIA visibility does not lift the guard, prove PyTorch CUDA support, or
 establish fit in 4096 MiB of VRAM.
+
+An [independent R199 synthetic arithmetic source candidate](../trainingday/synthetic_arithmetic.md)
+can generate 1,024 public TRAIN examples from first principles and return only
+an aggregate hash/count commitment for a separately nonce-derived 64-row DEV
+split. This is a **new corpus lineage**, not a substitute for the frozen R185
+R18 dataset or its custody/rights grants. It is not connected to the held
+neural kernel and does not authorize training.
