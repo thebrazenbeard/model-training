@@ -16,3 +16,25 @@ def numeric_question(prompt: str) -> str:
     if prompt.endswith(NUMERIC_SUFFIX):
         raise AdmissionError("numeric question already formatted")
     return prompt + NUMERIC_SUFFIX
+
+
+def r18_generation_prefix(tokenizer, numeric_prompt: str) -> str:
+    """Use one strict non-thinking Qwen chat prefix for R18 train and eval.
+
+    A tokenizer which cannot accept the explicit thinking-mode contract is
+    incompatible; silently retrying without that option can teach/evaluate
+    under different assistant prefixes. This checks callback behavior only,
+    not physical tokenizer identity or host custody.
+    """
+    if type(numeric_prompt) is not str or not numeric_prompt:
+        raise RuntimeError("R18 numeric prompt invalid")
+    try:
+        prefix = tokenizer.apply_chat_template(
+            [{"role": "user", "content": numeric_prompt}],
+            tokenize=False, add_generation_prompt=True, enable_thinking=False)
+    except (TypeError, AttributeError) as exc:
+        raise RuntimeError(
+            "R18 tokenizer lacks explicit non-thinking chat-template contract") from exc
+    if type(prefix) is not str or not prefix:
+        raise RuntimeError("R18 tokenizer returned invalid generation prefix")
+    return prefix

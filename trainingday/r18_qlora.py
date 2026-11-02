@@ -26,7 +26,7 @@ from pathlib import Path
 
 from trainingday.admission import AdmissionError, _hash_file, _strict_json
 from trainingday.labyrinth_intake import admit_labyrinth
-from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT
+from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, r18_generation_prefix
 from trainingday.train_neural import (
     R16_PRODUCER_HEAD, R16_V2_MANIFEST_SHA256, _control_rows,
     _parameter_digest, _required_base,
@@ -286,14 +286,12 @@ def preflight(args) -> tuple[dict, list[dict], Path, dict]:
 
 
 def _tensorize(tokenizer, examples: list[dict]) -> list[dict]:
-    from successor.experiments.train_v10_qwen35_authorized import _generation_prefix
-
     eos = tokenizer.eos_token
     if not eos:
         raise RuntimeError("pinned tokenizer missing EOS token")
     result = []
     for row in examples:
-        prompt = _generation_prefix(tokenizer, row["prompt"])
+        prompt = r18_generation_prefix(tokenizer, row["prompt"])
         head = tokenizer(prompt, add_special_tokens=False)["input_ids"]
         whole = tokenizer(prompt + row["response"] + eos,
                           add_special_tokens=False)["input_ids"]
