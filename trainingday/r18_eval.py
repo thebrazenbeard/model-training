@@ -31,7 +31,9 @@ from trainingday.eval_structural_r16 import (
     BANK_ID_SHA256, CORPUS_SHA256, R16_PRODUCER_HEAD, R16_RECIPE,
     _old_ids, _r16_adapter,
 )
-from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
+from trainingday.numeric_prompt import (
+    NUMERIC_QUESTION_CONTRACT, numeric_question, r18_generation_prefix,
+)
 from trainingday.structural_eval import preregister_r15_fresh_structural64
 from trainingday.train_neural import _parameter_digest, _required_base
 
@@ -722,9 +724,7 @@ def _run_model(cases: list[dict], session: _InferenceSession,
     results = []
     for case in cases:
         question = numeric_question(case["prompt"])
-        prefix = tokenizer.apply_chat_template(
-            [{"role": "user", "content": question}], tokenize=False,
-            add_generation_prompt=True, enable_thinking=False)
+        prefix = r18_generation_prefix(tokenizer, question)
         head = tokenizer(prefix, return_tensors="pt", add_special_tokens=False).to("cuda:0")
         prefix_size = head["input_ids"].shape[1]
         with torch.inference_mode():
