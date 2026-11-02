@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 import unittest
+import unicodedata
 
 from trainingday.private_dev_commitment_v1 import (
     CustodyInputError,
@@ -13,14 +14,16 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def index_entry(case_id, prompt):
-    normalized = " ".join(prompt.split()).casefold()
-    return {"id": case_id, "prompt_sha256": hashlib.sha256(normalized.encode()).hexdigest()}
+def index_entry(case_id, prompt, answer):
+    normalized = " ".join(unicodedata.normalize("NFKC", prompt).split()).casefold()
+    return {"id": case_id,
+            "prompt_sha256": hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+            "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest()}
 
 
 class PrivateDevCommitmentTests(unittest.TestCase):
     def setUp(self):
-        self.train_index = [index_entry(f"train-{n:04d}", f"Start with {n}. add 1.")
+        self.train_index = [index_entry(f"train-{n:04d}", f"Start with {n}. add 1.", str(n + 1))
                             for n in range(1024)]
         ids = [item["id"] for item in self.train_index]
         selected_v2 = hashlib.sha256(
@@ -30,6 +33,7 @@ class PrivateDevCommitmentTests(unittest.TestCase):
             "corpus_id": "R18_ARITHMETIC",
             "manifest_sha256": "a" * 64,
             "train_sha256": "b" * 64,
+            "train_content_sha256": hashlib.sha256(canonical(self.train_index)).hexdigest(),
             "selected_id_v2_sha256": selected_v2,
             "generator_source_sha256": "d" * 64,
         }
@@ -60,6 +64,8 @@ class PrivateDevCommitmentTests(unittest.TestCase):
         self.assertEqual(result["dev_sha256"], hashlib.sha256(
             b"\n".join(canonical(row) for row in self.dev_rows) + b"\n").hexdigest())
         self.assertFalse(result["independent_custody_authenticated"])
+        self.assertFalse(result["train_content_commitment_authenticated"])
+        self.assertEqual(result["train_content_sha256"], self.subject["train_content_sha256"])
         self.assertFalse(result["authorizes_training"])
         output = json.dumps(result)
         for marker in ("Start with", "dev-1", "train-0001", "r16-private", '"answer"'):
@@ -81,6 +87,51 @@ class PrivateDevCommitmentTests(unittest.TestCase):
         copied[0]["prompt"] = "START with   1. ADD 1."
         with self.assertRaises(CustodyInputError):
             self.make(dev_jsonl=b"\n".join(canonical(row) for row in copied) + b"\n")
+
+    def test_reject_forged_train_prompt_hash_even_with_same_selected_ids(self):
+        forged = copy.deepcopy(self.train_index)
+        forged[1]["prompt_sha256"] = hashlib.sha256(b"unrelated synthetic prompt").hexdigest()
+        dev_rows = copy.deepcopy(self.dev_rows)
+        dev_rows[0]["prompt"] = "Start with 1. add 1."
+        with self.assertRaises(CustodyInputError):
+            self.make(train_index=forged,
+                      dev_jsonl=b"\n".join(canonical(row) for row in dev_rows) + b"\n")
+
+    def test_reject_train_answer_hash_or_wrong_full_content_digest(self):
+        forged = copy.deepcopy(self.train_index)
+        forged[10]["answer_sha256"] = "f" * 64
+        with self.assertRaises(CustodyInputError):
+            self.make(train_index=forged)
+        subject = dict(self.subject)
+        subject["train_content_sha256"] = "e" * 64
+        with self.assertRaises(CustodyInputError):
+            self.make(subject=subject)
+
+    def test_reject_train_index_shape_and_order(self):
+        for mutation in (lambda rows: rows[0].pop("answer_sha256"),
+                         lambda rows: rows[0].update({"extra": "not valid"}),
+                         lambda rows: rows[0].update({"answer_sha256": "F" * 64}),
+                         lambda rows: rows[0].update({"prompt_sha256": 3}),
+                         lambda rows: rows.reverse()):
+            forged = copy.deepcopy(self.train_index)
+            mutation(forged)
+            with self.subTest(mutation=mutation), self.assertRaises(CustodyInputError):
+                self.make(train_index=forged)
+
+    def test_coforged_caller_hashes_still_cannot_grant(self):
+        # An attacker controlling both values can achieve internal consistency;
+        # this source module has no independently enrolled source commitment.
+        forged = copy.deepcopy(self.train_index)
+        forged[1]["prompt_sha256"] = hashlib.sha256(b"unrelated synthetic prompt").hexdigest()
+        subject = dict(self.subject)
+        subject["train_content_sha256"] = hashlib.sha256(canonical(forged)).hexdigest()
+        dev_rows = copy.deepcopy(self.dev_rows)
+        dev_rows[0]["prompt"] = "Start with 1. add 1."
+        result = self.make(subject=subject, train_index=forged,
+                           dev_jsonl=b"\n".join(canonical(row) for row in dev_rows) + b"\n")
+        self.assertEqual(result["status"], "HASHES_ONLY_UNAUTHENTICATED_HOLD")
+        self.assertFalse(result["train_content_commitment_authenticated"])
+        self.assertFalse(result["authorizes_training"])
 
     def test_reject_dev_protected_overlap(self):
         excluded = copy.deepcopy(self.excluded)
