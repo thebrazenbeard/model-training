@@ -44,12 +44,27 @@ internal static class NativeProbeReservationTests {
                 Need(lease.Phase == "RESERVED", "crash-opened reservation not preserved");
                 Reject<InvalidOperationException>(() => lease.Reserve(request, nonceThree));
             }
+            // A crash after dispatch intent is more consequential than a
+            // reservation-only crash: the harmless child might have run.
+            // Reopening must not silently count it as terminal or allow a
+            // new request without a retained child-exit witness.
+            string dispatchedJournal = Path.Combine(directory, "dispatch.log");
+            using (var lease = HostOwnedProbeReservation.OpenForNativeTestOnly(dispatchedJournal)) {
+                Need(lease.Reserve(request, nonceThree) == 1, "dispatch crash epoch missing");
+                lease.MarkDispatchIntent();
+            }
+            using (var lease = HostOwnedProbeReservation.OpenForNativeTestOnly(dispatchedJournal)) {
+                Need(lease.Epoch == 1 && lease.Phase == "DISPATCH_INTENT",
+                    "unresolved dispatch intent lost after reopen");
+                Reject<InvalidOperationException>(() => lease.Reserve(request, nonceTwo));
+                Reject<InvalidOperationException>(() => lease.MarkDispatchIntent());
+            }
             // Corrupt trailing byte may not be silently repaired or truncated.
             File.AppendAllText(journal, "incomplete", System.Text.Encoding.ASCII);
             Reject<InvalidDataException>(() => {
                 using (var invalid = HostOwnedProbeReservation.OpenForNativeTestOnly(journal)) { }
             });
-            Console.WriteLine("NATIVE_PROBE_RESERVATION_PASS monotonic=2 replay_denied=true concurrent_denied=true crash_hold=true job_exit_verified=true corrupt_denied=true");
+            Console.WriteLine("NATIVE_PROBE_RESERVATION_PASS monotonic=2 replay_denied=true concurrent_denied=true crash_hold=true dispatch_crash_hold=true job_exit_verified=true corrupt_denied=true");
             return 0;
         } finally {
             // The temporary native-test directory is known and owned by this test.
