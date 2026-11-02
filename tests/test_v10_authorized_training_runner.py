@@ -319,15 +319,15 @@ def test_start_receipt_is_exclusive_and_self_hashed(tmp_path: Path) -> None:
         )
 
 
-def test_plan_only_never_loads_training_stack(monkeypatch, tmp_path: Path) -> None:
+def test_plan_only_ready_claim_never_loads_training_stack(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         runner,
         "assess_preflight",
         lambda root: {
-            "status": "HOLD",
-            "training_allowed": False,
-            "reasons": ["patrick_exact_weight_change_authority"],
-            "training_authority": {"status": "ABSENT"},
+            "status": "READY_PRECONDITIONS",
+            "training_allowed": True,
+            "reasons": [],
+            "training_authority": {"status": "LOCALLY_CLAIMED"},
         },
     )
     called = False
@@ -412,10 +412,10 @@ def test_execute_hold_never_loads_stack_or_touches_output(
         runner,
         "assess_preflight",
         lambda root: {
-            "status": "HOLD",
-            "training_allowed": False,
-            "reasons": ["patrick_exact_weight_change_authority"],
-            "training_authority": {"status": "ABSENT"},
+            "status": "READY_PRECONDITIONS",
+            "training_allowed": True,
+            "reasons": [],
+            "training_authority": {"status": "LOCALLY_CLAIMED"},
         },
     )
     called = False
@@ -426,7 +426,8 @@ def test_execute_hold_never_loads_stack_or_touches_output(
         raise AssertionError("training stack must not load")
 
     output = tmp_path / "run"
-    with pytest.raises(runner.TrainingHold, match="preflight HOLD"):
+    # Even a locally forged READY preflight could not cross the physical gate.
+    with pytest.raises(runner.TrainingHold, match="HARD HOLD"):
         runner.execute_authorized_training(
             tmp_path,
             train_jsonl=tmp_path / "missing-train.jsonl",

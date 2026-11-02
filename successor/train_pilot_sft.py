@@ -8,6 +8,11 @@ import subprocess
 import time
 from pathlib import Path
 
+from trainingday.physical_launch_authority import (
+    PhysicalLaunchAuthorityUnavailable,
+    require_physical_launch_authority,
+)
+
 from successor.pilot_sft import (
     build_run_manifest,
     cosine_floor_scale,
@@ -101,8 +106,10 @@ def dry_run(spec_path: Path) -> dict:
 
 
 def train(spec_path: Path) -> dict:
-    # V3 readiness/authorization is checked inside prepare() before any model
-    # framework import or model-weight load can occur.
+    # The V3/spec preflight cannot mint a host-owned exclusive GPU lease.
+    # Require the independent physical-launch boundary before even prepare()
+    # reads private data or any model framework is imported.
+    require_physical_launch_authority(operation="legacy pilot SFT Qwen training")
     spec, base_manifest, train_rows, validation_rows, repo_root = prepare(spec_path)
 
     import torch
@@ -303,7 +310,11 @@ def main() -> None:
     if args.dry_run:
         print(json.dumps(dry_run(spec_path), indent=2))
         return
-    result = train(spec_path)
+    try:
+        result = train(spec_path)
+    except PhysicalLaunchAuthorityUnavailable as exc:
+        print("TRAINING_HOLD", json.dumps({"status": "HOLD", "reason": str(exc)}), flush=True)
+        raise SystemExit(2) from None
     print("TRAINING_COMPLETE", json.dumps(result), flush=True)
 
 

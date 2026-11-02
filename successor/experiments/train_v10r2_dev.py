@@ -7,6 +7,11 @@ import math
 import time
 from pathlib import Path
 
+from trainingday.physical_launch_authority import (
+    PhysicalLaunchAuthorityUnavailable,
+    require_physical_launch_authority,
+)
+
 # Import reusable training primitives without depending on the V10
 # final-bank authority gate. This is a development-training lane.
 from successor.experiments.train_v10_qwen35_authorized import (
@@ -601,6 +606,10 @@ def execute_dev_training(
     spec_path: Path,
     training_stack_loader=load_training_stack,
 ) -> dict:
+    # The local JSON development spec is not a host-issued GPU lease or an
+    # independently authenticated training grant. No Python path may begin
+    # physical work until the host broker owns that authorization boundary.
+    require_physical_launch_authority(operation="V10R2 development Qwen training")
     root = Path(repo_root)
     spec = load_and_validate_dev_spec(spec_path)
 
@@ -1019,7 +1028,7 @@ def _main(argv=None) -> int:
             train_jsonl=args.train_jsonl,
             spec_path=args.spec,
         )
-    except DevTrainingHold as exc:
+    except (DevTrainingHold, PhysicalLaunchAuthorityUnavailable) as exc:
         print(
             json.dumps(
                 {
