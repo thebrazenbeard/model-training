@@ -8,6 +8,16 @@ This repository hosts an **optional external training workbench** for native Cha
 
 Current repository work follows `PROTOCOL_V2_CURRENT.md`. That correction prevents redundant lease/permission recursion for already-assigned isolated reversible work while preserving this repository's real privacy, zero-cost, source-grounding, qualification, and protected-effect gates.
 
+## Separate neural-weight TrainingDay route
+
+The owner-selected **Lappy-only** GPU execution target is its existing
+**Ubuntu 26.04 WSL2 environment**, accessing the locally attached
+**NVIDIA RTX 3050** through WSL2 CUDA. The reproducible, read-only device
+preflight and its limits are in [TrainingDay Lappy WSL2](docs/TRAININGDAY_LAPPY_WSL2.md).
+The route does not imply that LoRA training, data-rights admission, or a GPU
+lease has occurred. This experimental neural-weight route is distinct from
+the public identity bootcamp below.
+
 ## Hard invariant: zero monetary cost
 
 The bootcamp must not require metered model APIs or paid compute.
