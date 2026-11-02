@@ -8,6 +8,10 @@ This repository hosts an **optional external training workbench** for native Cha
 
 Current repository work follows `PROTOCOL_V2_CURRENT.md`. That correction prevents redundant lease/permission recursion for already-assigned isolated reversible work while preserving this repository's real privacy, zero-cost, source-grounding, qualification, and protected-effect gates.
 
+## Public Qwen3.5 base-model provenance
+
+The separate Qwen3.5 4B training line now has a [pinned public upstream-base manifest](docs/artifacts/qwen35-4b-public-base-20261102.json) and [restore instructions](docs/artifacts/README.md). These record source weights and checksums only, **not** local fine-tunes, merged checkpoints, or qualification results.
+
 ## Hard invariant: zero monetary cost
 
 The bootcamp must not require metered model APIs or paid compute.
