@@ -1,6 +1,8 @@
 """Source-only tests; no torch, CUDA, model download, or host invocation."""
 
 import json
+import inspect
+import re
 import struct
 import subprocess
 import sys
@@ -23,6 +25,47 @@ def declaration():
 
 
 class LowMemSourceTests(unittest.TestCase):
+    def test_cuda_load_peak_is_observed_before_step_peak_reset(self):
+        # Source-only order check: the protected kernel must not erase a
+        # potentially higher transient quantized model load peak.
+        source = inspect.getsource(one_step_kernel)
+        resets = [match.start() for match in re.finditer(
+            r"torch\.cuda\.reset_peak_memory_stats\(\)", source)]
+        load = source.index("Qwen3_5ForCausalLM.from_pretrained(")
+        load_peak = source.index("load_peak_cuda_allocated_bytes =")
+        forward = source.index("loss = model(")
+        self.assertEqual(len(resets), 2)
+        self.assertLess(resets[0], load)
+        self.assertLess(load, load_peak)
+        self.assertLess(load_peak, resets[1])
+        self.assertLess(resets[1], forward)
+
+    def test_load_peak_dominates_smaller_optimizer_step_peak(self):
+        from trainingday.lowmem_experiment import summarize_cuda_phase_peaks
+        result = summarize_cuda_phase_peaks(
+            load_allocated=3_700_000_000, load_reserved=3_900_000_000,
+            step_allocated=2_600_000_000, step_reserved=3_100_000_000)
+        self.assertEqual(result["peak_cuda_allocated_bytes"], 3_700_000_000)
+        self.assertEqual(result["peak_cuda_reserved_bytes"], 3_900_000_000)
+        self.assertEqual(result["load_peak_cuda_allocated_bytes"], 3_700_000_000)
+        self.assertEqual(result["step_peak_cuda_allocated_bytes"], 2_600_000_000)
+        self.assertFalse(result["physical_training_authorized"])
+
+        reversed_peaks = summarize_cuda_phase_peaks(
+            load_allocated=1_000, load_reserved=2_000,
+            step_allocated=3_000, step_reserved=4_000)
+        self.assertEqual(reversed_peaks["peak_cuda_allocated_bytes"], 3_000)
+        self.assertEqual(reversed_peaks["peak_cuda_reserved_bytes"], 4_000)
+        self.assertEqual(result["cuda_peak_scope"], "PYTORCH_PROCESS_ALLOCATOR_ONLY")
+        for invalid in (
+            (True, 2, 1, 2), (-1, 2, 1, 2), (3, 2, 1, 2), (1, 2, 3, 2),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(
+                    LowMemoryExperimentError):
+                summarize_cuda_phase_peaks(
+                    load_allocated=invalid[0], load_reserved=invalid[1],
+                    step_allocated=invalid[2], step_reserved=invalid[3])
+
     def test_source_plan_denies_and_preserves_offload_distinction(self):
         p = source_plan()
         self.assertFalse(p["authorizes_training"])
