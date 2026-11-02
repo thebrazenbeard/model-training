@@ -1,5 +1,9 @@
 # Public Qwen3.5 4B base-model restore
 
+For five separately checked public Hugging Face cache weights (Whisper and MiniLM), see the [pinned public-cache manifest](public-hf-cache-models-20261102.json). That record is not proof of a running consumer or authorization to delete local caches.
+
+Replace the ABSOLUTE_WORKER_DIRECTORY placeholder in a manifest command with the selected absolute destination on VN1, VN2, or another worker. Download only what a job needs and verify the restored file's SHA-256 and size; single cached weight entries do not necessarily contain every tokenizer/config file a model runtime needs.
+
 The [pinned manifest](qwen35-4b-public-base-20261102.json) records the publicly retrievable upstream base for the `qwen35-4b-hf-line` training track. It does **not** contain locally trained checkpoints, adapters, private datasets, or any assertion that a training run is qualified.
 
 The two model-weight shards (9,319,828,160 bytes total) were independently SHA-256 checked against Hugging Face blob metadata at the immutable revision `d61dd146c8fd44c9a49cdb7f59f34e17b61902d8` on 2026-11-02.
