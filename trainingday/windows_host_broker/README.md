@@ -25,6 +25,26 @@ An independent steward-issued admissible TRAIN dataset decision, an actual R19-0
 
 Service status and source/CI checks cannot be substituted for authenticated physical launch authority.
 
+## Host-owned probe reservation prototype (next source candidate; not deployed)
+
+`HostOwnedProbeReservation.cs` is an **isolated native-test component**, not
+imported by the installed service or callable by the Python trainer. On
+Windows it opens a journal with an OS-exclusive file handle, validates every
+hash-linked append and strictly increasing reservation epoch, durably consumes
+nonces before test dispatch intent, refuses concurrent opens and replay, and
+keeps an unfinished reservation in permanent `HOLD` after a simulated crash.
+It will not automatically clear ambiguous state. A terminal transition
+requires the real harmless Windows JobObject child to be killed and observed
+exited through a retained kernel process handle, not just a reusable PID.
+
+The exact Windows CI lane compiles and executes its native regression. This
+does **not** own CUDA, establish GPU exclusivity or trusted clock/expiry,
+authenticate administrator-policy path ACLs, obtain an external monotonic NAS
+witness, or ratify R18 corpus rights. An admin changing or rolling back the
+local journal remains outside its authority model. Do not wire a positive
+training route into this test component; production integration requires the
+independent service, identity, rights, immutable plan and NAS checks above.
+
 ## R162 source-only bounded request hardening
 
 The successor source adds `BoundedPipeRequest.Read`: a total 1,500 ms input deadline, maximum 128 printable ASCII bytes, CRLF/LF framing validation, and cooperative service-stop cancellation. On timeout it disposes the active pipe, waits for native overlapped I/O completion before closing its event handle, and never interprets the request as authorization. Windows native tests exercise normal requests, 128/129-byte boundaries, malformed controls, idle and slow-drip clients, stop cancellation, and a healthy request after a timeout.
