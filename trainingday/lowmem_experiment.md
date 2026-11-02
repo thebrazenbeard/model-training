@@ -20,6 +20,21 @@ completed `optimizer.step()`, *real changed LoRA-B tensor bytes*, and fresh CUDA
 peak memory telemetry. Unit tests use **fake** tensor bytes and establish only
 that the pure witness check distinguishes actual changes from declarations.
 
+### CUDA memory evidence boundary
+
+The source kernel resets PyTorch CUDA peak counters **before** the quantized
+`from_pretrained` load. It captures allocated and reserved peaks for the
+model-load/LoRA-preparation phase before the second reset, then captures a
+separate optimizer-step phase. The legacy `peak_cuda_*` fields report the
+maximum across both phases so a larger transient load peak cannot disappear.
+Synthetic unit tests exercise the case where loading exceeds step usage.
+
+These values cover **only the current process's PyTorch allocator**. They do
+not include other processes' VRAM, driver allocations, total device use,
+host RAM, or the peak of a load that fails before measurement. They are not
+an independent 4 GiB fit witness; a protected host-owned process must also
+capture device-level GPU and host-RAM telemetry through real repeated steps.
+
 The candidate uses no CPU or disk offload. A 4-bit base that fits for inference
 can still OOM on a backward pass. The current Lappy environment remains
 unqualified for this experiment. Qwen3.5 4-bit QLoRA also has a reported

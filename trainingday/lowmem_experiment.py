@@ -156,6 +156,31 @@ def evaluate_optimizer_witness(*, before: Mapping[str, bytes], after: Mapping[st
     }
 
 
+def summarize_cuda_phase_peaks(*, load_allocated: int, load_reserved: int,
+                               step_allocated: int, step_reserved: int) -> dict:
+    """Retain both CUDA allocator phases, even if loading was the high-water mark.
+
+    These process-local PyTorch allocator counters do not measure another
+    process's VRAM, system RAM, transient driver allocations, or device-wide
+    memory availability. They cannot independently establish memory fit.
+    """
+    values = (load_allocated, load_reserved, step_allocated, step_reserved)
+    if (any(type(value) is not int or value < 0 for value in values)
+            or load_allocated > load_reserved or step_allocated > step_reserved):
+        raise LowMemoryExperimentError("invalid CUDA allocator phase peaks")
+    return {
+        "load_peak_cuda_allocated_bytes": load_allocated,
+        "load_peak_cuda_reserved_bytes": load_reserved,
+        "step_peak_cuda_allocated_bytes": step_allocated,
+        "step_peak_cuda_reserved_bytes": step_reserved,
+        # Preserve the old public keys, but make their scope explicit.
+        "peak_cuda_allocated_bytes": max(load_allocated, step_allocated),
+        "peak_cuda_reserved_bytes": max(load_reserved, step_reserved),
+        "cuda_peak_scope": "PYTORCH_PROCESS_ALLOCATOR_ONLY",
+        "physical_training_authorized": False,
+    }
+
+
 def _snapshot_lora_b(model) -> dict[str, bytes]:
     """Capture actual CPU bytes for adapter B tensors, never model inputs."""
     result = {}
@@ -195,6 +220,10 @@ def one_step_kernel(base_binding_path):
     text_config, mapping = prepare_text_loader(
         snapshot, expected_index_sha256=index_sha, expected_shards=shards)
     torch.manual_seed(73504)
+    # Begin the load-phase high-water mark before the quantized weight load.
+    # A later step-only reset must not erase its potentially larger peak.
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
     quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                               bnb_4bit_use_double_quant=True,
                               bnb_4bit_compute_dtype=torch.bfloat16)
@@ -219,6 +248,10 @@ def one_step_kernel(base_binding_path):
     model.train()
     before = _snapshot_lora_b(model)
     optimizer = torch.optim.AdamW(trainable, lr=1e-3)
+    torch.cuda.synchronize()
+    load_peak_cuda_allocated_bytes = int(torch.cuda.max_memory_allocated())
+    load_peak_cuda_reserved_bytes = int(torch.cuda.max_memory_reserved())
+    # Reset only after persisting the load + adapter-preparation high-water mark.
     torch.cuda.reset_peak_memory_stats()
     ids = torch.randint(10, 10_000, (1, 64), device="cuda")
     optimizer.zero_grad(set_to_none=True)
@@ -232,16 +265,18 @@ def one_step_kernel(base_binding_path):
     optimizer.step()
     torch.cuda.synchronize()
     after = _snapshot_lora_b(model)
+    step_peak_cuda_allocated_bytes = int(torch.cuda.max_memory_allocated())
+    step_peak_cuda_reserved_bytes = int(torch.cuda.max_memory_reserved())
     witness = evaluate_optimizer_witness(
         before=before, after=after, loss=float(loss.item()),
         gradient_norm=float(gradient_norm.item()), optimizer_step_returned=True)
-    witness.update(
-        peak_cuda_allocated_bytes=int(torch.cuda.max_memory_allocated()),
-        peak_cuda_reserved_bytes=int(torch.cuda.max_memory_reserved()),
-        actual_cpu_offload_used=False,
-        checkpoint_written=False,
-        eval_access=False,
-    )
+    witness.update(summarize_cuda_phase_peaks(
+        load_allocated=load_peak_cuda_allocated_bytes,
+        load_reserved=load_peak_cuda_reserved_bytes,
+        step_allocated=step_peak_cuda_allocated_bytes,
+        step_reserved=step_peak_cuda_reserved_bytes))
+    witness.update(actual_cpu_offload_used=False, checkpoint_written=False,
+                   eval_access=False)
     return witness
 
 
