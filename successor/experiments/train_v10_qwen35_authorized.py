@@ -795,6 +795,19 @@ def execute_authorized_training(
     output_dir: Path,
     training_stack_loader: Callable[[], object] = load_training_stack,
 ) -> dict:
+    # A locally supplied V10 preflight is not physical launch authority.
+    # Enforce the host-owned boundary before reading artifacts, touching the
+    # output namespace, importing CUDA-capable libraries, or training weights.
+    from trainingday.physical_launch_authority import (
+        PhysicalLaunchAuthorityUnavailable,
+        require_physical_launch_authority,
+    )
+
+    try:
+        require_physical_launch_authority(operation="V10 Qwen3.5-4B training")
+    except PhysicalLaunchAuthorityUnavailable as exc:
+        raise TrainingHold(str(exc)) from exc
+
     root = Path(repo_root)
     preflight = assess_preflight(root)
     _require_ready_preflight(preflight)
@@ -1073,6 +1086,25 @@ def plan_execution(
             "status": "HOLD",
             "training_stack_loaded": False,
             "reasons": list(preflight.get("reasons", [])),
+            "preflight": preflight,
+            "effect": "READ_ONLY_PLAN_NO_WEIGHT_CHANGE",
+        }
+
+    # Source-level preconditions can be READY while the physical process is
+    # forbidden. A plan must not load the model stack or advertise READY then.
+    from trainingday.physical_launch_authority import (
+        PhysicalLaunchAuthorityUnavailable,
+        require_physical_launch_authority,
+    )
+
+    try:
+        require_physical_launch_authority(operation="V10 Qwen3.5-4B training plan")
+    except PhysicalLaunchAuthorityUnavailable as exc:
+        return {
+            "schema": "V10_QWEN35_AUTHORIZED_TRAINING_PLAN_V1",
+            "status": "HOLD",
+            "training_stack_loaded": False,
+            "reasons": [str(exc)],
             "preflight": preflight,
             "effect": "READ_ONLY_PLAN_NO_WEIGHT_CHANGE",
         }
