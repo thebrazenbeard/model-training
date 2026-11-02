@@ -1,0 +1,46 @@
+{
+  "artifacts": [
+    {
+      "url": "https://huggingface.co/rodrigomt/Qwen3.5-4B-Uncensored-Aggressive/resolve/d61dd146c8fd44c9a49cdb7f59f34e17b61902d8/model.safetensors-00001-of-00002.safetensors",
+      "sha256": "36dd0f7de62c546e7d163c2a4461208d731fad91ebea9bc31226b54c1c86511f",
+      "size": 5329398720,
+      "destination_relpath": "qwen35-base/model.safetensors-00001-of-00002.safetensors"
+    },
+    {
+      "url": "https://huggingface.co/rodrigomt/Qwen3.5-4B-Uncensored-Aggressive/resolve/d61dd146c8fd44c9a49cdb7f59f34e17b61902d8/model.safetensors-00002-of-00002.safetensors",
+      "sha256": "e2fb50b735a8e10210eece763097f906955ca9db6ba557215f549a46b622157f",
+      "size": 3990429440,
+      "destination_relpath": "qwen35-base/model.safetensors-00002-of-00002.safetensors"
+    },
+    {
+      "url": "https://huggingface.co/dropbox-dash/faster-whisper-large-v3-turbo/resolve/0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf/model.bin",
+      "sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da",
+      "size": 1617884929,
+      "destination_relpath": "faster-whisper-large-v3-turbo/model.bin"
+    },
+    {
+      "url": "https://huggingface.co/Systran/faster-whisper-base.en/resolve/3d3d5dee26484f91867d81cb899cfcf72b96be6c/model.bin",
+      "sha256": "2a166925539a16005f14ff328359f9b9adb9dc4fb631bb3b227526862e93e2ef",
+      "size": 145216508,
+      "destination_relpath": "faster-whisper-base-en/model.bin"
+    },
+    {
+      "url": "https://huggingface.co/Systran/faster-whisper-small.en/resolve/d1d751a5f8271d482d14ca55d9e2deeebbae577f/model.bin",
+      "sha256": "62b2a45b05ee59acb4a5341b33ee35e041395d378d418a18acfe4c9e768ee37a",
+      "size": 483545366,
+      "destination_relpath": "faster-whisper-small-en/model.bin"
+    },
+    {
+      "url": "https://huggingface.co/Systran/faster-whisper-tiny.en/resolve/0d3d19a32d3338f10357c0889762bd8d64bbdeba/model.bin",
+      "sha256": "1a5afae06a4db91c975c9a9d78be5cc110ee4ea022ad57d55492e4550e936b2a",
+      "size": 75537502,
+      "destination_relpath": "faster-whisper-tiny-en/model.bin"
+    },
+    {
+      "url": "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/model.safetensors",
+      "sha256": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+      "size": 90868376,
+      "destination_relpath": "all-MiniLM-L6-v2/model.safetensors"
+    }
+  ]
+}

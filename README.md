@@ -25,7 +25,11 @@ The Qwen3.5 4B line has a [pinned public upstream-base manifest](docs/artifacts/
 `rodrigomt/Qwen3.5-4B-Uncensored-Aggressive`, **not** the official
 `Qwen/Qwen3.5-4B-Base`; model IDs and revisions are not interchangeable.
 These files record source weights and checksums only, **not** local
-fine-tunes, merged checkpoints, or qualification results.
+fine-tunes, merged checkpoints, or qualification results. A single
+[read-only OCD verification catalog](docs/artifacts/ocd-verify-public-hf-20261102.json)
+supports OCD verification of all seven pinned public HF weight files from
+the two source manifests; it does not combine or replace distinct models or
+training runs.
 
 ## Hard invariant: zero monetary cost
 
