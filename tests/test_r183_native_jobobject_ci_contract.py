@@ -16,6 +16,9 @@ class NativeJobObjectCITests(unittest.TestCase):
         self.assertIn("native_jobobject_child_custody.cs", job)
         self.assertIn("NATIVE_JOB_CUSTODY_PASS", job)
         self.assertIn("NativeCustodyTest.exe", job)
+        self.assertIn("HostOwnedProbeReservation.cs", job)
+        self.assertIn("native_broker_probe_reservation.cs", job)
+        self.assertIn("NATIVE_PROBE_RESERVATION_PASS", job)
         self.assertNotIn("continue-on-error", job)
         self.assertNotIn("|| true", job)
 

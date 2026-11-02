@@ -12,6 +12,7 @@ internal sealed class JobObjectChildCustody : IDisposable {
     const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE=0x00002000;
     const int JobObjectExtendedLimitInformation=9;
     const uint STILL_ACTIVE=259;
+    const uint WAIT_OBJECT_0=0, WAIT_FAILED=0xFFFFFFFF;
     IntPtr job, process, thread;
     bool disposed;
     public int ProcessId { get; private set; }
@@ -73,6 +74,8 @@ internal sealed class JobObjectChildCustody : IDisposable {
     static extern bool TerminateProcess(IntPtr process, uint exitCode);
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
     // A test-only, fixed executable and loopback target. Intentionally no
     // public arbitrary-command or training launch method exists here.
     public static JobObjectChildCustody LaunchHarmlessProbe() {
@@ -128,6 +131,19 @@ internal sealed class JobObjectChildCustody : IDisposable {
                 throw NativeError("GetExitCodeProcess");
             return code==STILL_ACTIVE;
         }
+    }
+    // For the native reservation regression only: close the owning Job,
+    // then verify actual termination using the still-open process HANDLE,
+    // never a claimed PID or process name that could be reused.
+    internal bool CloseJobAndConfirmChildExit() {
+        if (disposed) throw new ObjectDisposedException("JobObjectChildCustody");
+        if (job==IntPtr.Zero || process==IntPtr.Zero)
+            throw new InvalidOperationException("test child custody already released");
+        if (!CloseHandle(job)) throw NativeError("CloseHandle JobObject");
+        job=IntPtr.Zero;
+        uint wait=WaitForSingleObject(process, 5000);
+        if (wait==WAIT_FAILED) throw NativeError("WaitForSingleObject");
+        return wait==WAIT_OBJECT_0;
     }
     public void Dispose() {
         if (disposed) return;
