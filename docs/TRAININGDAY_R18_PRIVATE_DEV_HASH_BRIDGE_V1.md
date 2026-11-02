@@ -29,6 +29,15 @@ known R185 packet-file SHA nor the V2 selected-ID digest is accepted as a
 substitute for a separately authenticated full TRAIN-content commitment.
 The output explicitly marks `train_content_commitment_authenticated=false`.
 
+Case IDs are compared across TRAIN, DEV and protected exclusion indexes using
+conservative NFKC-plus-casefold *collision rejection* in addition to raw
+identity. For example, `train-0001`, `TRAIN-0001`, and a fullwidth spelling
+cannot coexist as apparently disjoint rows. This does not rewrite source IDs
+or change their byte-exact ordered selected-ID V2 digest. The normalization
+only prevents presentation aliases from evading overlap checks; it is not a
+semantic deduplication guarantee, and can reject intentionally distinct
+case-sensitive names as a safer false positive.
+
 The R18 external OOD bank exists separately in `r18_eval_source.py`; this
 module does **not** create, open, or unseal it. The Labyrinth cognitive
 SFT corpus in Draft #110/#111 is a different dataset and cannot substitute

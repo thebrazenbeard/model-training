@@ -139,6 +139,23 @@ class PrivateDevCommitmentTests(unittest.TestCase):
         with self.assertRaises(CustodyInputError):
             self.make(protected_exclusions_json=canonical(excluded))
 
+    def test_reject_ambiguous_id_aliases_across_splits(self):
+        # Raw-byte distinct IDs may still identify the same case to a reader.
+        # Do not let case/NFKC presentation aliases evade the exclusion gate.
+        for alias in ("TRAIN-0001", "ｔｒａｉｎ-０００１"):
+            dev = copy.deepcopy(self.dev_rows)
+            dev[0]["id"] = alias
+            with self.subTest(alias=alias), self.assertRaises(CustodyInputError):
+                self.make(dev_jsonl=b"\n".join(canonical(row) for row in dev) + b"\n")
+        dev = copy.deepcopy(self.dev_rows)
+        dev[1]["id"] = "DEV-1"
+        with self.assertRaises(CustodyInputError):
+            self.make(dev_jsonl=b"\n".join(canonical(row) for row in dev) + b"\n")
+        excluded = copy.deepcopy(self.excluded)
+        excluded[0]["id"] = "DEV-1"
+        with self.assertRaises(CustodyInputError):
+            self.make(protected_exclusions_json=canonical(excluded))
+
     def test_reject_malformed_or_implicit_provenance(self):
         for raw in (b"not json\n", b"{}\n", b"{}", b"\xef\xbb\xbf{}\n"):
             with self.subTest(raw=raw), self.assertRaises(CustodyInputError):

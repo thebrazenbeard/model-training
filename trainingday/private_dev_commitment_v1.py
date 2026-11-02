@@ -101,7 +101,8 @@ def _train_index_entry(item: object) -> tuple[str, str, str]:
 
 
 def _unique(entries: list[tuple[str, ...]]) -> None:
-    _require(len({entry[0] for entry in entries}) == len(entries)
+    _require(len({unicodedata.normalize("NFKC", entry[0]).casefold()
+                  for entry in entries}) == len(entries)
              and len({entry[1] for entry in entries}) == len(entries))
 
 
@@ -169,7 +170,11 @@ def build_source_only_private_commitment(*, subject: dict,
     _require(all(count == 64 for count in counts.values()))
     _unique(exclusion_index)
 
-    all_ids = [item[0] for item in train + dev_index + exclusion_index]
+    # Reject ambiguous case/NFKC aliases across splits as well as byte-exact
+    # duplicates. Keep original case IDs unchanged in the V2 source digest;
+    # this only strengthens the protected overlap rejection.
+    all_ids = [unicodedata.normalize("NFKC", item[0]).casefold()
+               for item in train + dev_index + exclusion_index]
     all_prompts = [item[1] for item in train + dev_index + exclusion_index]
     _require(len(all_ids) == len(set(all_ids))
              and len(all_prompts) == len(set(all_prompts)))
