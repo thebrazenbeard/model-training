@@ -10,7 +10,7 @@ identity bootcamp** described in the root README. The bootcamp does not write
 model weights. Nothing in this page makes private training data publishable or
 issues training authority.
 
-## Physically observed baseline (2026-11-02)
+## Historical initial baseline (2026-11-02, before WSL environment setup)
 
 Read-only Lappy observation established:
 
@@ -20,7 +20,10 @@ Read-only Lappy observation established:
 - WSL system Python: **3.14.4**, no verified `pip` or PyTorch training stack;
 - WSL available RAM at probe: about **4.9 GiB** (variable with workload).
 
-These are **device observations**, not a measured 4 GiB LoRA training fit.
+These were the **initial device observations**, not the final state of Lappy
+later that day and not a measured 4 GiB Qwen LoRA training fit. See
+[the subsequent WSL CUDA runtime observations](TRAININGDAY_WSL2_RUNTIME_EVIDENCE_20261102.md)
+before treating the initial Python/RAM figures as current.
 WSL2 GPU access still uses the Windows host driver. A visible CUDA device does
 not imply physical GPU exclusivity or grant the source-data rights required by
 the frozen TrainingDay gates.
@@ -60,11 +63,15 @@ python3 -m unittest -v tests.test_lappy_wsl2_preflight
 
 ## Neural-training work still required
 
-Before attempting Qwen3.5-4B Vera LoRA training, the separately controlled
-neural runner must be source-integrated, and a compatible Python environment,
-GPU-enabled PyTorch/quantization/PEFT stack, exact weight/tokenizer provenance,
-local RAM+VRAM fit, protected evaluator custody, data-rights grant, and real
-host GPU authorization must be verified. Do not weaken those checks to obtain
+Before attempting new qualified Qwen3.5-4B Vera LoRA training, the separately
+controlled neural runner must be integrated and admitted for that job. An
+isolated Python/CUDA/quantization
+stack has now passed **tiny synthetic optimizer** probes on Lappy
+([measured evidence](TRAININGDAY_WSL2_RUNTIME_EVIDENCE_20261102.md)).
+That does not establish full Qwen3.5-4B loading, 4 GiB GPU fit,
+training-capable offload, exact weight/tokenizer provenance, protected
+evaluator custody, a data-rights grant, or real host GPU authorization.
+Do not weaken those checks to obtain
 a superficial "started" result.
 
 The intended artifact flow, once authorized and genuinely run, is:
@@ -78,6 +85,11 @@ The intended artifact flow, once authorized and genuinely run, is:
    not itself a conventional PEFT training checkpoint.
 
 None of these four neural-weight steps is implemented by the preflight module.
+Separately, [R16 Draft PR #140](https://github.com/thebrazenbeard/model-training/pull/140)
+records earlier **physical Qwen3.5 NF4 correct/corrupt eight-step LoRA runs**
+with adapter hashes and checkpoint custody. Those PR receipts are a different
+evidence class from this preflight and from the subsequent **tiny synthetic**
+WSL probes; they do not establish authorized promotion or generalization.
 
 ## Experimental neural source, still held
 
@@ -95,8 +107,10 @@ before any model, CUDA, data, or output effects. The source tree now includes
 `trainingday.pinned_base` and `trainingday.qwen_text_checkpoint` as separately
 testable, fail-closed dependencies for local offline byte-hash checks and
 multimodal-to-text tensor-name projection. These are **source-only helpers**:
-the neural R18 trainer, protected host broker, installed Transformers/PEFT/CUDA
-stack, and actual checkpoint loading or optimizer fit remain unqualified.
+the neural R18 trainer, protected host broker, integration with the isolated
+Transformers/PEFT/CUDA environment, and actual full-checkpoint loading or
+optimizer fit remain unqualified. Small CUDA/LoRA kernels were separately
+measured in the [dated runtime evidence](TRAININGDAY_WSL2_RUNTIME_EVIDENCE_20261102.md).
 
 **Do not interchange the two upstream model identities.** The new
 `docs/artifacts/qwen35-4b-public-base-20261102.json` describes a cached public
@@ -106,5 +120,6 @@ source specifically binds official `Qwen/Qwen3.5-4B` at
 `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`. The public cached manifest
 does **not** meet the R18 binding; a separate official snapshot, byte hashes,
 tokenizer, validated license/provenance, and signed authority are still needed.
-WSL2 NVIDIA visibility does not lift the guard, prove PyTorch CUDA support, or
-establish fit in 4096 MiB of VRAM.
+WSL2 NVIDIA **visibility alone** does not lift the guard or prove PyTorch CUDA
+support. Subsequent tiny PyTorch probes did confirm CUDA operations, but still
+do not establish Qwen3.5-4B fit in 4096 MiB of VRAM.

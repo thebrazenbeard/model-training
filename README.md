@@ -14,11 +14,18 @@ The owner-selected **Lappy-only** GPU execution target is its existing
 **Ubuntu 26.04 WSL2 environment**, accessing the locally attached
 **NVIDIA RTX 3050** through WSL2 CUDA. The reproducible, read-only device
 preflight and its limits are in [TrainingDay Lappy WSL2](docs/TRAININGDAY_LAPPY_WSL2.md).
-The route does not imply that LoRA training, data-rights admission, or a GPU
+The [dated WSL runtime evidence record](docs/TRAININGDAY_WSL2_RUNTIME_EVIDENCE_20261102.md)
+separately identifies measured synthetic CUDA optimizer work and the
+remaining model-training qualification limits.
+The route does not imply **production Qwen** LoRA training, data-rights admission, or a GPU
 lease has occurred. This experimental neural-weight route is distinct from
 the public identity bootcamp below.
 
-The Qwen3.5 4B line has a [pinned public upstream-base manifest](docs/artifacts/qwen35-4b-public-base-20261102.json) and [on-demand restore instructions](docs/artifacts/README.md). They record source weights and checksums only, **not** local fine-tunes, merged checkpoints, or qualification results.
+The Qwen3.5 4B line has a [pinned public upstream-base manifest](docs/artifacts/qwen35-4b-public-base-20261102.json) and [on-demand restore instructions](docs/artifacts/README.md). The pinned repository is specifically
+`rodrigomt/Qwen3.5-4B-Uncensored-Aggressive`, **not** the official
+`Qwen/Qwen3.5-4B-Base`; model IDs and revisions are not interchangeable.
+These files record source weights and checksums only, **not** local
+fine-tunes, merged checkpoints, or qualification results.
 
 ## Hard invariant: zero monetary cost
 
