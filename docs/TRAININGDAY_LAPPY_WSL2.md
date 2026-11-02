@@ -78,3 +78,20 @@ The intended artifact flow, once authorized and genuinely run, is:
    not itself a conventional PEFT training checkpoint.
 
 None of these four neural-weight steps is implemented by the preflight module.
+
+## Experimental neural source, still held
+
+The separate `trainingday.lowmem_experiment` source candidate contains a
+reviewable Qwen3.5-4B NF4/LoRA rank-4, sequence-64 optimizer-step kernel and
+an unrunnable ZeRO-3 CPU-offload *hypothesis*. Its command-line form prints
+only a hard-HOLD plan:
+
+```bash
+python3 -m trainingday.lowmem_experiment
+```
+
+This code cannot launch a training job: the physical authority check raises
+before any model, CUDA, data, or output effects. It also depends on the R18
+pinned-base loader and checkpoint mapping from the still-unintegrated neural
+TrainingDay source. WSL2 NVIDIA visibility does not lift that guard, prove
+PyTorch CUDA support, or establish fit in 4096 MiB of VRAM.
