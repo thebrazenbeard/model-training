@@ -1,0 +1,102 @@
+name: TrainingDay host broker native source checks (HOLD only)
+
+on:
+  push:
+    paths:
+      - ".github/workflows/trainingday-host-broker-native.yml"
+      - "trainingday/windows_host_broker/**"
+      - "tests/native_broker_*.cs"
+      - "tests/native_jobobject_child_custody.cs"
+  pull_request:
+    paths:
+      - ".github/workflows/trainingday-host-broker-native.yml"
+      - "trainingday/windows_host_broker/**"
+      - "tests/native_broker_*.cs"
+      - "tests/native_jobobject_child_custody.cs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-hold-source:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - name: Refuse unqualified repository context
+        shell: pwsh
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if ($env:REPOSITORY_PRIVATE -ne 'false') {
+            throw 'This source check requires the qualified public repository context'
+          }
+
+      - name: Checkout exact source HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact source identity
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = (git rev-parse --verify HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SHA) { throw "HEAD mismatch: $actual" }
+          $tree = (git rev-parse 'HEAD^{tree}').Trim()
+          Write-Output "Source HEAD: $actual; tree: $tree"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Native HOLD source HEAD: $actual; tree: $tree"
+
+      - name: Compile deny-only broker and test bounded local pipe
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { throw 'Native C# compiler missing' }
+          $root = Join-Path $PWD 'trainingday/windows_host_broker'
+          $broker = Join-Path $root 'TrainingDayHostBroker.cs'
+          $reader = Join-Path $root 'BoundedPipeRequest.cs'
+          $transport = Join-Path $root 'BrokerPipeTransport.cs'
+          $exe = Join-Path $env:RUNNER_TEMP 'VeraTrainingDayBrokerSource.exe'
+          & $csc /nologo /target:exe /optimize+ ('/out:'+$exe) /r:System.ServiceProcess.dll /r:System.Core.dll /r:System.Security.dll $broker $reader $transport
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) { throw 'Broker source compile failed' }
+          $readerExe = Join-Path $env:RUNNER_TEMP 'BrokerBoundedRequestTests.exe'
+          & $csc /nologo /target:exe ('/out:'+$readerExe) $reader (Join-Path $PWD 'tests/native_broker_request_contract.cs')
+          if ($LASTEXITCODE -ne 0) { throw 'Request tests compile failed' }
+          & $readerExe
+          if ($LASTEXITCODE -ne 0) { throw 'Request tests failed' }
+          $pipeExe = Join-Path $env:RUNNER_TEMP 'BrokerPipeTransportTests.exe'
+          & $csc /nologo /target:exe ('/out:'+$pipeExe) /r:System.Security.dll /r:System.Core.dll $transport (Join-Path $PWD 'tests/native_broker_transport_contract.cs')
+          if ($LASTEXITCODE -ne 0) { throw 'Transport tests compile failed' }
+          & $pipeExe
+          if ($LASTEXITCODE -ne 0) { throw 'Transport tests failed' }
+          Write-Output 'Deny-only broker, bounded request and local pipe source PASS; no installation'
+
+      - name: Exercise actual Windows JobObject harmless child custody
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          $custody = Join-Path $PWD 'trainingday/windows_host_broker/JobObjectChildCustody.cs'
+          $test = Join-Path $PWD 'tests/native_jobobject_child_custody.cs'
+          $exe = Join-Path $env:RUNNER_TEMP 'JobObjectChildCustodyTests.exe'
+          & $csc /nologo /target:exe ('/out:'+$exe) $custody $test
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) { throw 'JobObject test compile failed' }
+          $output = & $exe
+          if ($LASTEXITCODE -ne 0 -or $output -notmatch 'NATIVE_JOB_CUSTODY_PASS') { throw 'JobObject child custody failed' }
+          Write-Output $output
+
+      - name: Exercise durable host-owned harmless probe journal
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          $root = Join-Path $PWD 'trainingday/windows_host_broker'
+          $custody = Join-Path $root 'JobObjectChildCustody.cs'
+          $journal = Join-Path $root 'HostOwnedProbeReservation.cs'
+          $test = Join-Path $PWD 'tests/native_broker_probe_reservation.cs'
+          $exe = Join-Path $env:RUNNER_TEMP 'HostOwnedProbeReservationTests.exe'
+          & $csc /nologo /target:exe ('/out:'+$exe) $custody $journal $test
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) { throw 'Probe tests compile failed' }
+          $output = & $exe
+          if ($LASTEXITCODE -ne 0 -or $output -notmatch 'NATIVE_PROBE_RESERVATION_PASS') { throw 'Probe journal/custody failed' }
+          Write-Output $output
