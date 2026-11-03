@@ -83,7 +83,10 @@ def _train_phase(root: Path, phase: str, *, custody_sha256: str | None) -> dict:
         optim="adamw_torch", lr_scheduler_type="constant", warmup_steps=0,
         seed=SEED, data_seed=SEED, dataloader_num_workers=0,
         save_strategy="steps", save_steps=PAUSE_STEP, save_only_model=False,
-        save_safetensors=True, logging_strategy="no", eval_strategy="no",
+        # Transformers v5 removed the save_safetensors TrainingArguments kwarg;
+        # PEFT adapter checkpoints are still safetensors by default, and the
+        # production custody validator requires actual adapter_model.safetensors.
+        logging_strategy="no", eval_strategy="no",
         report_to="none", disable_tqdm=True, remove_unused_columns=False,
     )
     witness = StepWitness()
