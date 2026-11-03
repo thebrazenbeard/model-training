@@ -21,7 +21,9 @@ SCHEMA = "TRAININGDAY_QWEN35_TINY_HELDOUT_CONTROLS_V1"
 VOCAB = 96
 BOS, ADD, EQUAL, EOS = 1, 3, 4, 2
 NUMBER_OFFSET = 20
-SEEDS = (35032, 35033, 35034, 35035, 35036)
+# Predeclared 20-seed extension; retains the original five, without
+# selecting seeds after observing their signed held-out outcomes.
+SEEDS = tuple(range(35032, 35052))
 STEPS = 4
 BATCH_SIZE = 4
 
