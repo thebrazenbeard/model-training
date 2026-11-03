@@ -164,6 +164,16 @@ class R201OwnerClaimCandidateTest(unittest.TestCase):
         with self.assertRaisesRegex(AdmissionError, "canonical JSON"):
             self.inspect(raw=raw)
 
+    def test_overflowed_json_exponent_uses_declared_evidence_error(self):
+        original = canonical(self.claim)
+        needle = b'"owner_key_epoch":5'
+        self.assertIn(needle, original)
+        for exponent in (b'1e999', b'-1e999'):
+            with self.subTest(exponent=exponent):
+                raw = original.replace(needle, b'"owner_key_epoch":' + exponent)
+                with self.assertRaisesRegex(AdmissionError, "nonfinite numeric value"):
+                    self.inspect(raw=raw)
+
     def test_replay_epoch_expiry_and_boolean_epoch_refuse(self):
         with self.assertRaises(AdmissionError):
             self.inspect(minimum_owner_key_epoch=6)
