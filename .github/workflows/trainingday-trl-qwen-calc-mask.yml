@@ -1,0 +1,76 @@
+name: TRAININGDAY TRL 1.17.1 official Qwen tokenizer mask gate
+
+on:
+  push:
+    branches: ["fix/**", "test/**"]
+    paths:
+      - ".github/workflows/trainingday-trl-qwen-calc-mask.yml"
+      - "tests/test_trainingday_real_trl_qwen_collator.py"
+      - "trainingday/calc_tokenization.py"
+      - "trainingday/calc_curriculum.py"
+  pull_request:
+    branches: [main, "fix/**", "trainingday/**"]
+    paths:
+      - ".github/workflows/trainingday-trl-qwen-calc-mask.yml"
+      - "tests/test_trainingday_real_trl_qwen_collator.py"
+      - "trainingday/calc_tokenization.py"
+      - "trainingday/calc_curriculum.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qwen-public-calc-trl-mask:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out pinned public Calc oracle
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: thebrazenbeard/calc
+          ref: 17e12d0f659b42732fb98e5730732aba9ff1b488
+          path: .ci-calcoracle
+          persist-credentials: false
+      - name: Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned free CPU-only TRL runtime
+        run: |
+          python -m pip install --disable-pip-version-check \
+            --index-url https://download.pytorch.org/whl/cpu 'torch==2.14.0+cpu'
+          python -m pip install --disable-pip-version-check \
+            'transformers==5.22.1' 'trl==1.17.1' \
+            'tokenizers==0.23.3' 'datasets==4.7.0' 'huggingface_hub==1.33.0'
+      - name: Fetch only the immutable public Qwen tokenizer.json
+        id: tokenizer
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          from huggingface_hub import hf_hub_download
+          path = hf_hub_download(
+              "Qwen/Qwen3.5-4B", filename="tokenizer.json",
+              revision="851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+          )
+          sha = hashlib.sha256(open(path, "rb").read()).hexdigest()
+          if sha != "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42":
+              raise SystemExit("official Qwen tokenizer bytes mismatch")
+          with open(__import__("os").environ["GITHUB_ENV"], "a") as output:
+              output.write("TRAININGDAY_QWEN_TOKENIZER_JSON=" + path + "\n")
+          print("PINNED_QWEN_TOKENIZER_JSON_SHA256=" + sha)
+          PY
+      - name: Real SFTTrainer dataloader and 1,024-row collator boundary
+        env:
+          TRAININGDAY_REAL_TRL_QWEN: "1"
+          PYTHONPATH: ".ci-calcoracle/src:."
+          CUDA_VISIBLE_DEVICES: ""
+          WANDB_DISABLED: "true"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: python -m unittest discover -s tests -p 'test_trainingday_real_trl_qwen_collator.py' -v
