@@ -2,7 +2,7 @@ name: TRAININGDAY official Qwen3.5 CPU meta-only PEFT names
 
 on:
   push:
-    branches: ["fix/trainingday-qwen35-meta-skeleton-*"]
+    branches: ["fix/trainingday-qwen35-meta-skeleton-*", "test/trainingday-qwen35-three-lane-integration-20261103"]
   pull_request:
     branches: ["fix/trainingday-qwen35-adapter-coverage-20261103"]
   workflow_dispatch:
