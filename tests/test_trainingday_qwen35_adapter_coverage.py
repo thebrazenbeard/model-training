@@ -18,16 +18,17 @@ class _Param:
 
 
 class _FakeNamedModel:
-    def __init__(self, modules, trainables):
+    def __init__(self, modules, trainables, all_parameters):
         self.modules = modules
         self.trainables = trainables
+        self.all_parameters = all_parameters
 
     def named_modules(self):
         return ((name, object()) for name in self.modules)
 
     def named_parameters(self):
         return ((name, _Param(name in self.trainables))
-                for name in self.trainables | {"model.embed_tokens.weight"})
+                for name in self.all_parameters)
 
 
 class AdapterNameCoverageTests(unittest.TestCase):
@@ -56,12 +57,18 @@ class AdapterNameCoverageTests(unittest.TestCase):
             f"{name}.lora_{side}.default.weight"
             for name in self.full_targets for side in ("A", "B")
         }
+        self.modules.update({
+            f"{name}.lora_{side}.default"
+            for name in self.full_targets for side in ("A", "B")
+        })
+        self.all_parameters = self.trainables | {"model.embed_tokens.weight"}
 
     def audit(self, **overrides):
         args = {
             "layer_types": self.layer_types,
             "module_names": self.modules,
             "trainable_parameter_names": self.trainables,
+            "all_parameter_names": self.all_parameters,
         }
         args.update(overrides)
         return audit_minimal_lora_coverage(**args)
@@ -96,21 +103,45 @@ class AdapterNameCoverageTests(unittest.TestCase):
                 f"{self.prefix}0.linear_attn.in_proj_qkv.lora_A.default.weight"
             })
 
+    def test_frozen_gdn_lora_module_subtree_must_not_count_as_zero_coverage(self):
+        # Hostile counterexample: adapter exists but all its weights are frozen.
+        # The prior guard inspected only trainable names and falsely passed.
+        forbidden = f"{self.prefix}0.linear_attn.in_proj_qkv.lora_A.default"
+        with self.assertRaisesRegex(AdapterCoverageError, "adapter"):
+            self.audit(module_names=self.modules | {forbidden})
+        # A frozen adapter weight inventory must be rejected even if its module
+        # subtree is concealed in the caller-supplied module enumeration.
+        forbidden_weight = forbidden + ".weight"
+        with self.assertRaisesRegex(AdapterCoverageError, "adapter"):
+            self.audit(all_parameter_names=self.all_parameters | {forbidden_weight})
+
+    def test_missing_adapter_module_subtree_is_not_proven_by_parameter_names(self):
+        a_module = next(name for name in self.modules if ".lora_A.default" in name)
+        with self.assertRaisesRegex(AdapterCoverageError, "module subtrees missing"):
+            self.audit(module_names=self.modules - {a_module})
+
     def test_unexpected_trainable_base_weight_and_duplicate_names_rejected(self):
         with self.assertRaisesRegex(AdapterCoverageError, "outside q/v"):
             self.audit(trainable_parameter_names=self.trainables | {
                 "base_model.model.model.embed_tokens.weight"
             })
         with self.assertRaisesRegex(AdapterCoverageError, "duplicate"):
-            self.audit(module_names=list(self.modules) + [next(iter(self.modules))])
+            projection = next(name for name in self.modules if name.endswith(".q_proj"))
+            self.audit(module_names=list(self.modules) + [projection])
         with self.assertRaisesRegex(AdapterCoverageError, "missing"):
             self.audit(trainable_parameter_names=list(self.trainables) * 2)
 
     def test_loaded_model_wrapper_uses_named_module_and_parameter_probes(self):
-        fake = _FakeNamedModel(self.modules, self.trainables)
+        fake = _FakeNamedModel(self.modules, self.trainables, self.all_parameters)
         evidence = audit_loaded_minimal_lora_model(fake, self.layer_types)
         self.assertEqual(evidence["target_projection_modules"], 16)
         fake.trainables = self.trainables - {sorted(self.trainables)[0]}
+        with self.assertRaises(AdapterCoverageError):
+            audit_loaded_minimal_lora_model(fake, self.layer_types)
+        fake.trainables = self.trainables
+        fake.all_parameters = self.all_parameters | {
+            f"{self.prefix}0.linear_attn.in_proj_qkv.lora_B.default.weight"
+        }
         with self.assertRaises(AdapterCoverageError):
             audit_loaded_minimal_lora_model(fake, self.layer_types)
 
