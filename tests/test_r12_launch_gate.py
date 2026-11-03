@@ -1,6 +1,11 @@
 """R12 rejects contested GPU and protected output rather than evicting services."""
 import unittest
-from successor.experiments.preflight_r12_launch import classify, validated_receipt, RECEIPT
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import successor.experiments.preflight_r12_launch as launch_gate
+from successor.experiments.preflight_r12_launch import classify, validated_receipt
 
 
 class R12LaunchGateTests(unittest.TestCase):
@@ -18,13 +23,24 @@ class R12LaunchGateTests(unittest.TestCase):
         self.assertIn("OUTPUT_EXISTS_PRESERVE_ADAPTER", result["reasons"])
 
     def test_retry_receipt_is_distinct_and_scoped(self):
-        from pathlib import Path
-        later = RECEIPT.with_name("VERA_R12_FP32_LAUNCH_GATE_20261015_V999999.json")
-        self.assertEqual(validated_receipt(later), later.resolve())
-        with self.assertRaisesRegex(RuntimeError, "exists"):
-            validated_receipt(RECEIPT)
-        with self.assertRaisesRegex(RuntimeError, "Unsafe"):
-            validated_receipt(Path("C:/TEMP/VERA_R12_FP32_LAUNCH_GATE_20261015_V2.json"))
+        # The real R12 receipt is a Windows-only host artifact. Exercise the
+        # same pathname and no-overwrite policy on a fresh, owned fixture so
+        # Linux CI does not rely on a private D:\\VERA file being present.
+        with TemporaryDirectory() as temp:
+            bound = Path(temp) / "VERA_R12_FP32_LAUNCH_GATE_20261015_V1.json"
+            bound.write_text("{}", encoding="utf-8")
+            with patch.object(launch_gate, "RECEIPT", bound):
+                later = bound.with_name("VERA_R12_FP32_LAUNCH_GATE_20261015_V999999.json")
+                self.assertEqual(validated_receipt(later), later.resolve())
+                with self.assertRaisesRegex(RuntimeError, "exists"):
+                    validated_receipt(bound)
+                self.assertEqual(bound.read_text(encoding="utf-8"), "{}")
+                self.assertFalse(later.exists())
+                with self.assertRaisesRegex(RuntimeError, "Unsafe"):
+                    validated_receipt(Path(temp) / "other" /
+                                      "VERA_R12_FP32_LAUNCH_GATE_20261015_V2.json")
+                with self.assertRaisesRegex(RuntimeError, "Unsafe"):
+                    validated_receipt(Path(temp) / "other.json")
 
     def test_resource_thresholds_and_ready_path(self):
         held = classify(ram=8.99, virtual=11.99, gpu=3899, active=0, output_exists=False)
