@@ -10,6 +10,81 @@ from trainingday import qwen35_full32_trl_integrated_cpu as integrated
 
 
 class TinyIntegratedTrlTests(unittest.TestCase):
+    def test_each_trl_target_gradient_and_delta_has_negative_controls(self):
+        # Exercise both production fail-closed helpers without heavy Torch
+        # dependencies; the hosted dynamic run supplies the 152 real tensors.
+        class Grad:
+            def __init__(self, magnitude, finite=True):
+                self.magnitude = magnitude
+                self.finite = finite
+
+            def abs(self):
+                return self
+
+            def sum(self):
+                return self.magnitude
+
+        class Param:
+            def __init__(self, grad, value):
+                self.grad = grad
+                self.value = value
+
+            def detach(self):
+                return self.value
+
+        class Finite:
+            def __init__(self, result):
+                self.result = result
+
+            def all(self):
+                return self.result
+
+        is_finite = lambda grad: Finite(grad.finite)
+        by_target = {
+            "gdn": Param(Grad(0.000001), 11),
+            "attention": Param(Grad(0.5), 12),
+        }
+        result = integrated._require_nonzero_target_gradients(
+            by_target, is_finite=is_finite)
+        self.assertEqual(set(result), set(by_target))
+        self.assertEqual(integrated._require_target_updates(
+            by_target, {"gdn": 10, "attention": 10},
+            equal=lambda before, after: before == after), 2)
+        by_target["gdn"].grad = Grad(0.0)
+        with self.assertRaisesRegex(AssertionError, "zero=\\['gdn'\\]"):
+            integrated._require_nonzero_target_gradients(
+                by_target, is_finite=is_finite)
+        by_target["gdn"].grad = None
+        with self.assertRaisesRegex(AssertionError, "missing_or_nonfinite"):
+            integrated._require_nonzero_target_gradients(
+                by_target, is_finite=is_finite)
+        by_target["gdn"].grad = Grad(2.0, finite=False)
+        with self.assertRaisesRegex(AssertionError, "missing_or_nonfinite"):
+            integrated._require_nonzero_target_gradients(
+                by_target, is_finite=is_finite)
+        by_target["gdn"].grad = Grad(2.0)
+        with self.assertRaisesRegex(AssertionError, "attention"):
+            integrated._require_target_updates(
+                by_target, {"gdn": 10, "attention": 12},
+                equal=lambda before, after: before == after)
+        with self.assertRaisesRegex(AssertionError, "set mismatch"):
+            integrated._require_target_updates(
+                by_target, {"gdn": 10},
+                equal=lambda before, after: before == after)
+
+    def test_152_named_trl_peft_targets_not_only_global_or_layer_sums(self):
+        source = inspect.getsource(integrated.run)
+        for required in (
+            "peft_modules = dict(model.named_modules())",
+            "if set(injected) != set(targets):",
+            "len({id(p) for p in b_by_target.values()}) != 152",
+            "_require_nonzero_target_gradients(",
+            "_require_target_updates(",
+            '"trl_masked_lora_b_targets_with_nonzero_gradients"',
+            '"trl_masked_lora_b_targets_changed_after_step"',
+        ):
+            self.assertIn(required, source)
+
     def test_repro_diagnostics_bind_exact_masked_training_batch(self):
         hasher = inspect.getsource(integrated._sha_integer_tensor)
         source = inspect.getsource(integrated.run)
