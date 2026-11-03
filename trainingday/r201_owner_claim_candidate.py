@@ -79,6 +79,21 @@ def _strict_json(raw: bytes) -> object:
         raise ClaimEvidenceError("R201 owner claim invalid UTF-8 JSON") from exc
 
 
+def _canonical_claim_bytes(claim: object) -> bytes:
+    """Encode only canonical, representable UTF-8; reject escaped surrogates.
+
+    Python's JSON decoder accepts escaped lone UTF-16 surrogates, but
+    ``ensure_ascii=False`` cannot encode them as UTF-8. Normalize that
+    malformed input to our evidence-rejection contract before any authority
+    or signature result can be returned.
+    """
+    try:
+        return json.dumps(claim, sort_keys=True, ensure_ascii=False,
+                          allow_nan=False, separators=(",", ":")).encode("utf-8")
+    except UnicodeError as exc:
+        raise ClaimEvidenceError("R201 owner claim contains invalid Unicode") from exc
+
+
 def _time(value: object) -> datetime:
     _require(type(value) is str and UTC.fullmatch(value) is not None,
              "R201 owner UTC timestamp malformed")
@@ -105,9 +120,7 @@ def inspect_r201_owner_claim_candidate(
     claim = _strict_json(claim_bytes)
     _require(type(claim) is dict and set(claim) == FIELDS,
              "R201 owner claim field set invalid")
-    _require(claim_bytes == json.dumps(claim, sort_keys=True,
-             ensure_ascii=False, allow_nan=False,
-             separators=(",", ":")).encode("utf-8"),
+    _require(claim_bytes == _canonical_claim_bytes(claim),
              "R201 owner claim must be canonical JSON")
     expected = {
         "schema": SCHEMA, "corpus_id": CORPUS_ID,
