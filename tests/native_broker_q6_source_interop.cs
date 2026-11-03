@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Web.Script.Serialization;
 using Vera.TrainingDay.HostBroker;
 
@@ -74,6 +75,24 @@ internal static class HostQ6SourceInteropNativeTests {
         Require(true, "same key in distinct objects remains valid");
         RejectWire("{\"safe\":1,\"safe\":2}", "plain duplicate stand-alone rejected");
         RejectWire("{\"a\":1} trailing", "trailing JSON text rejected");
+
+        // An actual UTF-8 wire bound, not merely a UTF-16 character bound.
+        // This ignored root source field is outside both canonical SHA inputs;
+        // only the pre-deserialization size guard can reject the oversized JSON.
+        const string originalCommit = "752a3e80df9be868926d18c574e4b9739e6f7581";
+        Require(raw.Contains(originalCommit), "size falsifier has expected source field");
+        string utf8Oversized = raw.Replace(originalCommit, new string('\u00e9', 34000));
+        Require(utf8Oversized.Length < 65536
+                && Encoding.UTF8.GetByteCount(utf8Oversized) > 65536,
+                "non-ASCII source is below char cap but above byte cap");
+        Reject(utf8Oversized, "UTF-8 wire above 64 KiB rejected");
+        RejectWire("{\"x\":\"" + '\uD800' + "\"}",
+            "unpaired UTF-16 high surrogate rejected before decode");
+        string emoji = Char.ConvertFromUtf32(0x1F600);
+        UniqueJsonMemberGuard.RequireUniqueKeys("{\"x\":\"" + emoji + "\"}");
+        Require(true, "valid surrogate pair allowed under byte cap");
+        RejectWire("{\"\\uD83D\\uDE00\":1,\"" + emoji + "\":2}",
+            "escaped and literal surrogate pair duplicate key rejected");
 
         Reject(raw.Replace("HOLD_CLAIM", "ALLOW"), "caller rights claim mutation");
         Reject(raw.Replace("851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",

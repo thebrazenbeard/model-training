@@ -205,6 +205,17 @@ internal sealed class UniqueJsonMemberGuard {
     internal static void RequireUniqueKeys(string input) {
         if (input == null || input.Length > 65536)
             throw new FormatException("source wire length invalid");
+        // string.Length is UTF-16 code units, not the UTF-8 wire size. Reject
+        // overlong non-ASCII fixtures and unpaired surrogates before parsing.
+        // The strict encoder prevents replacement fallback from hiding an
+        // invalid in-memory JSON string at this source-only boundary.
+        int wireBytes;
+        try { wireBytes = new UTF8Encoding(false, true).GetByteCount(input); }
+        catch (EncoderFallbackException) {
+            throw new FormatException("source wire UTF-8 invalid");
+        }
+        if (wireBytes > 65536)
+            throw new FormatException("source wire UTF-8 byte length invalid");
         var scan = new UniqueJsonMemberGuard(input);
         scan.Value(0);
         scan.Space();
