@@ -119,6 +119,10 @@ def _run_arm(torch, *, seed: int, train_pairs: list[tuple[int, int]],
         {"embed": model.base_model.model.model.embed_tokens.weight}
     )
     before = _answer_nll(model, withheld_pairs, torch)
+    # Diagnostic only: the 16 examples actually used for optimization.
+    # This is NOT heldout generalization; evaluate the true labels in both arms.
+    seen_pairs = train_pairs[:STEPS * BATCH_SIZE]
+    before_seen = _answer_nll(model, seen_pairs, torch)
     train_answers = [left + right for left, right in train_pairs]
     source_answers = list(train_answers[:STEPS * BATCH_SIZE])
     if shuffled:
@@ -166,7 +170,11 @@ def _run_arm(torch, *, seed: int, train_pairs: list[tuple[int, int]],
     ):
         raise AssertionError("frozen embedding changed during optimizer work")
     after = _answer_nll(model, withheld_pairs, torch)
+    after_seen = _answer_nll(model, seen_pairs, torch)
     return {"before_answer_nll": before, "after_answer_nll": after,
+            "seen_before_answer_nll": before_seen,
+            "seen_after_answer_nll": after_seen,
+            "seen_improvement": before_seen - after_seen,
             "improvement": before - after, "optimizer_steps": STEPS,
             "train_step_losses": losses, "lora_b_changed": True,
             "frozen_embedding_unchanged": True,
@@ -191,17 +199,21 @@ def run() -> dict:
                             withheld_pairs=withheld_pairs, shuffled=True)
         if abs(trained["before_answer_nll"] - shuffled["before_answer_nll"]) > 1e-6:
             raise AssertionError("controls differ before training")
+        if abs(trained["seen_before_answer_nll"] - shuffled["seen_before_answer_nll"]) > 1e-6:
+            raise AssertionError("seen controls differ before training")
         results.append({"seed": seed, "train_count": len(train_pairs),
                         "withheld_count": len(withheld_pairs),
                         "train_pair_digest": hashlib.sha256(json.dumps(train_pairs).encode()).hexdigest(),
                         "withheld_pair_digest": hashlib.sha256(json.dumps(withheld_pairs).encode()).hexdigest(),
                         "frozen_answer_nll": trained["before_answer_nll"],
                         "correct_feedback": trained, "shuffled_feedback": shuffled,
-                        "advantage_vs_shuffled": shuffled["after_answer_nll"] - trained["after_answer_nll"]})
+                        "advantage_vs_shuffled": shuffled["after_answer_nll"] - trained["after_answer_nll"],
+                        "seen_advantage_vs_shuffled": shuffled["seen_after_answer_nll"] - trained["seen_after_answer_nll"]})
     if torch.cuda.is_initialized():
         raise AssertionError("CUDA initialized during CPU-only experiment")
     advantages = [row["advantage_vs_shuffled"] for row in results]
     improvements = [row["correct_feedback"]["improvement"] for row in results]
+    seen_advantages = [row["seen_advantage_vs_shuffled"] for row in results]
     return {"schema": SCHEMA, "status": "HELDOUT_CONTROLS_MEASURED_NO_QUALITY_CLAIM",
             "architecture": "RANDOM_TINY_32L_QWEN35_24GDN_8ATTN_152_LORA_NOT_OFFICIAL_4B",
             "task": "generated_addition_answer_token_nll_with_unseen_unordered_operand_pairs",
@@ -215,6 +227,8 @@ def run() -> dict:
             "correct_beats_shuffled_seeds": sum(x > 0 for x in advantages),
             "correct_improves_frozen_seeds": sum(x > 0 for x in improvements),
             "mean_advantage_vs_shuffled_nats": sum(advantages) / len(advantages),
+            "correct_beats_shuffled_seen_seeds": sum(x > 0 for x in seen_advantages),
+            "mean_seen_advantage_vs_shuffled_nats": sum(seen_advantages) / len(seen_advantages),
             "results": results,
             "cpu_elapsed_seconds": time.monotonic() - start,
             "interpretation": "Report signed NLL deltas; improvement is not presumed.",
