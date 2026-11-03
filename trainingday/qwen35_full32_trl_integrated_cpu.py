@@ -40,6 +40,15 @@ def _sha_tensor(tensor) -> str:
     return hashlib.sha256(tensor.detach().float().cpu().contiguous().numpy().tobytes()).hexdigest()
 
 
+def _sha_integer_tensor(tensor) -> str:
+    """Hash actual padded token/label bytes, without lossy float conversion."""
+    import torch
+
+    return hashlib.sha256(
+        tensor.detach().to(device="cpu", dtype=torch.int64).contiguous().numpy().tobytes()
+    ).hexdigest()
+
+
 def _construct_base(torch):
     from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
 
@@ -148,6 +157,7 @@ def run() -> dict:
         raise AssertionError("tokenizer special ids differ")
     base = _construct_base(torch)
     base_embed_sha = _sha_tensor(base.model.embed_tokens.weight)
+    base_qkv_sha = _sha_tensor(base.model.layers[0].linear_attn.in_proj_qkv.weight)
     probe_ids = torch.tensor([rows[0]["input_ids"]], dtype=torch.long)
     parent_base_logits_sha = _sha_tensor(_probe_logits(base, probe_ids, torch))
     targets = smoke.expected_target_modules()
@@ -158,6 +168,10 @@ def run() -> dict:
         task_type="CAUSAL_LM", target_modules=targets,
     ))
     before_sha = _adapter_b_hash(model)
+    lora_a = {name: p for name, p in model.named_parameters() if ".lora_A." in name}
+    if len(lora_a) != 152:
+        raise AssertionError("wrong LoRA-A target count before optimizer")
+    before_a_sha = smoke._hash_tensors(lora_a)
     trainable = [p for p in model.parameters() if p.requires_grad]
     if not trainable or any("lora_" not in n for n, p in model.named_parameters() if p.requires_grad):
         raise AssertionError("unintended trainable base parameters")
@@ -200,6 +214,29 @@ def run() -> dict:
         if any(-100 not in labels or sum(x != -100 for x in labels) < 2
                for _, labels in observed):
             raise AssertionError("some synthetic rows lack prompt masks or answer supervision")
+
+        # Diagnostic only. These are the *actual* padded tensors used in the
+        # optimizer step, not the sorted full-curriculum membership witness.
+        first_batch_sha = {
+            "input_ids_sha256": _sha_integer_tensor(first_batch["input_ids"]),
+            "labels_sha256": _sha_integer_tensor(first_batch["labels"]),
+            "attention_mask_sha256": _sha_integer_tensor(first_batch["attention_mask"]),
+            "input_ids_shape": list(first_batch["input_ids"].shape),
+            "labels_shape": list(first_batch["labels"].shape),
+            "attention_mask_shape": list(first_batch["attention_mask"].shape),
+        }
+        full_masked_rows_sha = hashlib.sha256(
+            json.dumps(observed, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        numerical_environment = {
+            "torch": str(torch.__version__),
+            "threads": torch.get_num_threads(),
+            "interop_threads": torch.get_num_interop_threads(),
+            "initial_seed_at_step": torch.initial_seed(),
+            "deterministic_algorithms_enabled": torch.are_deterministic_algorithms_enabled(),
+            "mkldnn_enabled": torch.backends.mkldnn.enabled,
+            "cpu_capability": torch.backends.cpu.get_cpu_capability(),
+        }
 
         model.train()
         optimizer = torch.optim.AdamW(trainable, lr=5e-3)
@@ -282,6 +319,14 @@ def run() -> dict:
         "before_lora_b_sha256": before_sha, "after_and_reloaded_lora_b_sha256": after_sha,
         "trained_and_reloaded_logits_sha256": trained_logits_sha,
         "masked_training_loss": float(loss.item()),
+        "repro_diagnostics_v1": {
+            "first_optimizer_batch": first_batch_sha,
+            "all_eight_masked_rows_sha256": full_masked_rows_sha,
+            "initial_lora_a_sha256": before_a_sha,
+            "initial_frozen_embedding_sha256": base_embed_sha,
+            "initial_frozen_layer0_qkv_sha256": base_qkv_sha,
+            "numerical_environment": numerical_environment,
+        },
         "elapsed_seconds": time.monotonic() - start, "process_peak_rss_kib": peak_rss_kib,
         "cuda_initialized": False, "official_pretrained_weights_loaded": False,
         "missing_adapter_rejected_in_fresh_process": True,
