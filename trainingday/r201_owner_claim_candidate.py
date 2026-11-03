@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from datetime import datetime, timezone
 
 from trainingday.calc_curriculum import (
@@ -123,7 +124,9 @@ def inspect_r201_owner_claim_candidate(
     _require(type(expected_owner_identity) is str
              and 1 <= len(expected_owner_identity) <= 120
              and claim["owner_identity"] == expected_owner_identity
-             and claim["owner_identity"].strip() == claim["owner_identity"],
+             and claim["owner_identity"].strip() == claim["owner_identity"]
+             and not any(unicodedata.category(char) in {"Cc", "Cf"}
+                         for char in claim["owner_identity"]),
              "R201 owner identity mismatch")
     _require(type(claim["decision"]) is str and claim["decision"] in DECISIONS,
              "R201 owner decision invalid")

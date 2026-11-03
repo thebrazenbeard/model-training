@@ -30,7 +30,7 @@ jobs:
           python-version: '3.12'
       - name: Install only real Ed25519 verifier
         run: python -m pip install --disable-pip-version-check cryptography==46.0.3
-      - name: Validate dependency and seven synthetic signature tests
+      - name: Validate dependency and eight synthetic signature tests
         run: |
           python -c 'from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; assert Ed25519PrivateKey'
           PYTHONDONTWRITEBYTECODE=1 python -m unittest -q tests.test_r201_owner_claim_candidate

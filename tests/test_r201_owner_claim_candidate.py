@@ -132,6 +132,13 @@ class R201OwnerClaimCandidateTest(unittest.TestCase):
         with self.assertRaises(AdmissionError):
             self.inspect(mixed)
 
+    def test_signed_invisible_owner_identity_refuses(self):
+        for bad in ("synthetic\u200dtest-owner", "synthetic\ntest-owner"):
+            with self.subTest(identity=repr(bad)):
+                forged = dict(self.claim, owner_identity=bad)
+                with self.assertRaises(AdmissionError):
+                    self.inspect(forged, expected_owner_identity=bad)
+
     def test_replay_epoch_expiry_and_boolean_epoch_refuse(self):
         with self.assertRaises(AdmissionError):
             self.inspect(minimum_owner_key_epoch=6)
