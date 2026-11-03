@@ -110,6 +110,39 @@ def _adapter_b_hash(model):
     return smoke._hash_tensors(b_params)
 
 
+def _require_nonzero_target_gradients(b_by_target, *, is_finite) -> dict[str, float]:
+    """Fail if even one named LoRA-B target was inactive in the TRL batch."""
+    absent_or_nonfinite = []
+    gradient_sums = {}
+    for target, param in b_by_target.items():
+        grad = param.grad
+        if grad is None or not bool(is_finite(grad).all()):
+            absent_or_nonfinite.append(target)
+        else:
+            gradient_sums[target] = float(grad.abs().sum())
+    zero_gradient_targets = sorted(
+        target for target, magnitude in gradient_sums.items() if magnitude <= 0.0)
+    if absent_or_nonfinite or zero_gradient_targets or len(gradient_sums) != len(b_by_target):
+        raise AssertionError(
+            "TRL individual target gradient failure: "
+            f"missing_or_nonfinite={sorted(absent_or_nonfinite)}; "
+            f"zero={zero_gradient_targets}")
+    return gradient_sums
+
+
+def _require_target_updates(b_by_target, before_by_target, *, equal) -> int:
+    """Demand bytewise tensor change for each target after the same AdamW step."""
+    if set(b_by_target) != set(before_by_target):
+        raise AssertionError("TRL individual target before/after set mismatch")
+    unchanged_targets = sorted(
+        target for target, param in b_by_target.items()
+        if equal(before_by_target[target], param.detach()))
+    if unchanged_targets:
+        raise AssertionError(
+            f"TRL individual target failed to change after AdamW: {unchanged_targets}")
+    return len(b_by_target)
+
+
 def _probe_logits(model, ids, torch):
     model.eval()
     with torch.no_grad():
@@ -175,6 +208,31 @@ def run() -> dict:
     trainable = [p for p in model.parameters() if p.requires_grad]
     if not trainable or any("lora_" not in n for n, p in model.named_parameters() if p.requires_grad):
         raise AssertionError("unintended trainable base parameters")
+    # Reuse the full32 per-target witness contract in the *actual TRL path*.
+    # A global digest or nonzero layer aggregate cannot rule out a dead target.
+    peft_modules = dict(model.named_modules())
+    injected = {}
+    for module_name, module in peft_modules.items():
+        for target in targets:
+            if module_name == target or module_name.endswith("." + target):
+                if target in injected:
+                    raise AssertionError(f"ambiguous TRL PEFT runtime match: {target}")
+                if not (hasattr(module, "lora_A") and hasattr(module, "lora_B")):
+                    raise AssertionError(f"missing TRL PEFT injection: {module_name}")
+                injected[target] = module_name
+    if set(injected) != set(targets):
+        raise AssertionError(f"TRL PEFT runtime target coverage {len(injected)}/{len(targets)}")
+    b_by_target = {
+        target: peft_modules[module_name].lora_B["default"].weight
+        for target, module_name in injected.items()
+    }
+    b_trainable = {name: p for name, p in model.named_parameters()
+                   if p.requires_grad and ".lora_B." in name}
+    if (len(b_trainable) != 152
+            or len({id(p) for p in b_by_target.values()}) != 152
+            or {id(p) for p in b_by_target.values()} != {id(p) for p in b_trainable.values()}):
+        raise AssertionError("TRL PEFT target-to-trainable LoRA-B mapping not bijective")
+    before_by_target = {target: p.detach().clone() for target, p in b_by_target.items()}
 
     # All eight synthetic examples pass through real SFTTrainer preprocessing;
     # only the first dataloader batch takes an optimizer step to bound CPU RAM.
@@ -256,7 +314,13 @@ def run() -> dict:
                 raise AssertionError(f"nonfinite or missing gradient layer={layer}")
             if sum(float(g.abs().sum()) for g in grads) == 0:
                 raise AssertionError(f"zero LoRA-B gradient layer={layer}")
+        # All 152 must individually receive a nonzero, finite gradient in this
+        # SAME completion-masked TRL batch (not another synthetic-token test).
+        gradient_sums = _require_nonzero_target_gradients(
+            b_by_target, is_finite=torch.isfinite)
         optimizer.step()
+        updated_target_count = _require_target_updates(
+            b_by_target, before_by_target, equal=torch.equal)
         after_sha = _adapter_b_hash(model)
         if after_sha == before_sha:
             raise AssertionError("integrated optimizer did not update LoRA-B")
@@ -316,6 +380,9 @@ def run() -> dict:
         "actual_optimizer_examples": 2, "model_config_vocab": TOKENIZER_VOCAB,
         "all_ids_unmodified": True, "trl_completion_mask_derived_labels": True,
         "hybrid_layers": 32, "lora_b_tensors": 152,
+        "trl_masked_lora_b_targets_with_nonzero_gradients": len(gradient_sums),
+        "trl_masked_smallest_target_gradient_sum": min(gradient_sums.values()),
+        "trl_masked_lora_b_targets_changed_after_step": updated_target_count,
         "before_lora_b_sha256": before_sha, "after_and_reloaded_lora_b_sha256": after_sha,
         "trained_and_reloaded_logits_sha256": trained_logits_sha,
         "masked_training_loss": float(loss.item()),
