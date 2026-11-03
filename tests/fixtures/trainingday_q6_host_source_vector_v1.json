@@ -1,0 +1,66 @@
+{
+  "schema": "TRAININGDAY_Q6_HOST_SOURCE_VECTOR_V1",
+  "source": {
+    "model_training_commit": "752a3e80df9be868926d18c574e4b9739e6f7581",
+    "labyrinth_commit": "80bd918be22d3618d45fcb8689cc8e43e85464af"
+  },
+  "golden_request_digests": {
+    "host_launch_sha256": "be5f84f4711c9bb4eb3b4ff86b9c7e9d4b75972beb69c633bcf98ca982e66f5b",
+    "q6_cas_sha256": "23fbdfba43880bd6b43b5e752805d80dd3ecbe20dd7e5871f2d7a6925abd2370"
+  },
+  "host_launch": {
+    "schema": "TRAININGDAY_HOST_LAUNCH_DECLARATION_V1",
+    "source": {
+      "source_commit_sha1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_tree_sha1": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "corpus_manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "corpus_producer_commit_sha1": "dddddddddddddddddddddddddddddddddddddddd",
+      "training_input_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "base_binding_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "base_model_id": "Qwen/Qwen3.5-4B",
+      "base_revision_sha1": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
+    },
+    "rights": {
+      "decision_id": "test-only-rights-claim",
+      "decision_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "covered_manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "declared_disposition": "HOLD_CLAIM",
+      "purported_owner": "unverified-test-owner"
+    },
+    "plan": {
+      "run_id": "q6-interop-source-test",
+      "protocol": "R16_CHECKPOINTABLE",
+      "mode": "correct",
+      "optimizer_steps": 16,
+      "selected_cases": 128,
+      "seed": 41,
+      "learning_rate_ppb": 20000,
+      "expected_zero_digest_sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    "lease": {
+      "host_instance": "test-host-unqualified",
+      "caller_principal": "test-caller-unqualified",
+      "gpu_lease_id": "claimed-lease-not-issued",
+      "gpu_lease_epoch": 7,
+      "request_nonce": "5555555555555555555555555555555555555555555555555555555555555555",
+      "issued_at_unix": 1793700000,
+      "expires_at_unix": 1793700600,
+      "expected_witness_epoch": 12,
+      "expected_witness_head_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  },
+  "q6_cas_request": {
+    "schema": "labyrinth.q6-independent-witness.source-r121.v1",
+    "operation": "CAS",
+    "nonce": "22222222222222222222222222222222",
+    "expected": {"commit_index": 12, "head_sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+    "new": {"commit_index": 13, "head_sha256": "3333333333333333333333333333333333333333333333333333333333333333"}
+  },
+  "authority": {
+    "source_only_unqualified": true,
+    "authorizes_training": false,
+    "host_gpu_lease_issued": false,
+    "independent_q6_witness_installed": false,
+    "model_execution_authenticated": false
+  }
+}
