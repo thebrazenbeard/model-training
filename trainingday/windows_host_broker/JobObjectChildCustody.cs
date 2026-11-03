@@ -18,6 +18,28 @@ internal sealed class JobObjectChildCustody : IDisposable {
     public int ProcessId { get; private set; }
     private JobObjectChildCustody() {}
 
+    // A caller-reported PID is not a process identity. These facts are read
+    // from the still-owned kernel process HANDLE, never from a name or a
+    // separately reopened PID (which Windows may eventually reuse).
+    internal sealed class OwnedProcessIdentity {
+        internal readonly int Pid;
+        internal readonly ulong CreationFileTimeUtc;
+        internal OwnedProcessIdentity(int pid, ulong created) {
+            Pid = pid; CreationFileTimeUtc = created;
+        }
+        internal bool Matches(int claimedPid, ulong claimedCreationFileTimeUtc) {
+            return claimedPid == Pid && claimedCreationFileTimeUtc == CreationFileTimeUtc;
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct FileTimeValue {
+        public uint LowDateTime, HighDateTime;
+        internal ulong Value {
+            get { return ((ulong)HighDateTime << 32) | LowDateTime; }
+        }
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     struct BasicLimits {
         public long PerProcessUserTimeLimit, PerJobUserTimeLimit;
@@ -70,6 +92,12 @@ internal sealed class JobObjectChildCustody : IDisposable {
     static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern uint GetProcessId(IntPtr process);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool GetProcessTimes(IntPtr process,
+        out FileTimeValue creation, out FileTimeValue exit,
+        out FileTimeValue kernel, out FileTimeValue user);
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool TerminateProcess(IntPtr process, uint exitCode);
     [DllImport("kernel32.dll", SetLastError=true)]
@@ -131,6 +159,21 @@ internal sealed class JobObjectChildCustody : IDisposable {
                 throw NativeError("GetExitCodeProcess");
             return code==STILL_ACTIVE;
         }
+    }
+    internal OwnedProcessIdentity ReadOwnedKernelIdentityForNativeTestOnly() {
+        if (disposed) throw new ObjectDisposedException("JobObjectChildCustody");
+        if (process == IntPtr.Zero)
+            throw new InvalidOperationException("owned process handle absent");
+        uint kernelPid = GetProcessId(process);
+        if (kernelPid == 0) throw NativeError("GetProcessId");
+        if (kernelPid > Int32.MaxValue || kernelPid != (uint)ProcessId)
+            throw new InvalidOperationException("child PID does not match retained HANDLE");
+        FileTimeValue creation, exit, kernel, user;
+        if (!GetProcessTimes(process, out creation, out exit, out kernel, out user))
+            throw NativeError("GetProcessTimes");
+        if (creation.Value == 0)
+            throw new InvalidOperationException("owned child creation time missing");
+        return new OwnedProcessIdentity((int)kernelPid, creation.Value);
     }
     // For the native reservation regression only: close the owning Job,
     // then verify actual termination using the still-open process HANDLE,

@@ -16,6 +16,17 @@ internal static class NativeCustodyTests {
             Require(pid > 0, "child PID absent");
             Require(custody.IsInJob, "child was not bound to native job");
             Require(custody.IsAlive, "child ended before custody close");
+            var observed = custody.ReadOwnedKernelIdentityForNativeTestOnly();
+            Require(observed.CreationFileTimeUtc > 0, "kernel creation timestamp absent");
+            Require(observed.Matches(pid, observed.CreationFileTimeUtc),
+                "retained handle identity did not match real child");
+            Require(!observed.Matches(pid + 1, observed.CreationFileTimeUtc),
+                "forged/reused PID accepted");
+            Require(!observed.Matches(pid, observed.CreationFileTimeUtc + 1),
+                "same PID with different creation-time accepted");
+            var reread = custody.ReadOwnedKernelIdentityForNativeTestOnly();
+            Require(reread.Matches(observed.Pid, observed.CreationFileTimeUtc),
+                "retained kernel HANDLE identity changed during custody");
         }
         bool alive = true;
         for (int i=0; i<30; i++) {
@@ -29,7 +40,16 @@ internal static class NativeCustodyTests {
             if (!alive) break;
         }
         Require(!alive, "child survived closing kill-on-close JobObject");
-        Console.WriteLine("NATIVE_JOB_CUSTODY_PASS child_assigned=true killed_on_close=true");
+        using (var custody = JobObjectChildCustody.LaunchHarmlessProbe()) {
+            var beforeExit = custody.ReadOwnedKernelIdentityForNativeTestOnly();
+            Require(custody.CloseJobAndConfirmChildExit(),
+                "owned process handle did not observe job-close exit");
+            Require(!custody.IsAlive, "job child still active after kernel wait");
+            var afterExit = custody.ReadOwnedKernelIdentityForNativeTestOnly();
+            Require(afterExit.Matches(beforeExit.Pid, beforeExit.CreationFileTimeUtc),
+                "process HANDLE identity changed after observed termination");
+        }
+        Console.WriteLine("NATIVE_JOB_CUSTODY_PASS child_assigned=true killed_on_close=true kernel_pid_creation_binding=true false_claims_rejected=true exited_handle_identity_stable=true");
         return 0;
     }
 }
