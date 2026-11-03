@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import inspect
 import unittest
 
@@ -104,6 +105,11 @@ class TinyIntegratedTrlTests(unittest.TestCase):
             self.assertIn(required, source)
 
     def test_integer_batch_fingerprint_detects_label_and_order_mutations(self):
+        # The repository-wide lightweight test job intentionally does not
+        # install Torch.  The dedicated full32 TRL workflow does, and runs
+        # this exact dynamic fingerprint assertion there.
+        if importlib.util.find_spec("torch") is None:
+            self.skipTest("requires Torch; exercised by full32 TRL CPU workflow")
         import torch
 
         original_ids = torch.tensor([[10, 11], [20, 21]], dtype=torch.long)
