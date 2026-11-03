@@ -2,7 +2,7 @@ name: TRAININGDAY official Qwen3.5 CPU meta-only PEFT names
 
 on:
   push:
-    branches: ["fix/trainingday-qwen35-meta-skeleton-*"]
+    branches: ["fix/trainingday-qwen35-meta-skeleton-*", "test/trainingday-qwen35-meta-text-memory-*"]
   pull_request:
     branches: ["fix/trainingday-qwen35-adapter-coverage-20261103"]
   workflow_dispatch:
@@ -37,6 +37,8 @@ jobs:
           python -m pip install --no-cache-dir --only-binary=:all: \
             'transformers==5.22.1' 'accelerate==1.12.0' 'peft==0.21.2'
           python -m pip check
+      - name: Verify zero-GPU source memory arithmetic and negative controls
+        run: python -m unittest -v tests.test_trainingday_qwen35_meta_skeleton_probe
       - name: Fetch only official pinned config metadata (64 KiB cap)
         shell: bash
         run: |
@@ -73,4 +75,16 @@ jobs:
           }
           if any(result.get(key) != value for key, value in expected.items()):
               raise SystemExit("meta-only evidence omitted or overclaimed a protected effect")
+          budget = result.get("base_text_meta_memory", {})
+          n = budget.get("text_parameter_elements")
+          emb = budget.get("tied_embedding_parameter_elements")
+          if (type(n) is not int or type(emb) is not int or not 0 < emb < n
+                  or budget.get("bf16_full_resident_weight_bytes") != 2 * n
+                  or budget.get("optimistic_nf4_with_bf16_embedding_bytes")
+                     != 2 * emb + (n - emb + 1) // 2
+                  or budget.get("full_resident_bf16_weights_exceed_four_gib")
+                     != (2 * n > 4 * 1024 ** 3)
+                  or budget.get("memory_fit") != "UNKNOWN"
+                  or budget.get("training_authorized") is not False):
+              raise SystemExit("actual text meta memory bound malformed or overclaimed")
           PY
