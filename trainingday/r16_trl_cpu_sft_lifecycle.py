@@ -26,6 +26,39 @@ from trainingday.checkpoint_stop import build_checkpoint_stop_callback
 SEED = 41
 PAUSE_STEP = 8
 TARGET_STEPS = 16
+SYNTHETIC_ROWS = 32
+
+
+def _synthetic_example(index: int) -> dict:
+    """A distinct, public token-only row with an observable sample identity."""
+    if type(index) is not int or not 0 <= index < SYNTHETIC_ROWS:
+        raise ValueError("synthetic sample index must be 0..31")
+    # Vocabulary ID 4+index is unique and occurs at a fixed *prompt* offset.
+    # No private data, external tokenizer, or model download is involved.
+    tokens = [1, 4 + index, 7, 10, 13, 16, 19, 2]
+    return {"input_ids": tokens, "attention_mask": [1] * len(tokens),
+            "labels": [-100] * 4 + tokens[4:],
+            "completion_mask": [0] * 4 + [1] * 4}
+
+
+def _verify_sample_continuity(paused: list, resumed: list, control: list) -> list[int]:
+    """Reject reorder, replay, omissions, uniform samples and forged counts.
+
+    Source tests deliberately perturb this comparator. Runtime evidence still
+    requires actual forwards, witnessed *after* TRL has built its real batches.
+    """
+    for sequence, expected in ((paused, PAUSE_STEP),
+                               (resumed, TARGET_STEPS - PAUSE_STEP),
+                               (control, TARGET_STEPS)):
+        if (type(sequence) is not list or len(sequence) != expected
+                or any(type(sample) is not int or not 0 <= sample < SYNTHETIC_ROWS
+                       for sample in sequence)):
+            raise AssertionError("invalid actual model-forward sample witness")
+    if len(set(control)) != TARGET_STEPS:
+        raise AssertionError("sample witness lacks distinct control examples")
+    if paused + resumed != control:
+        raise AssertionError("TRL actual model-forward sample sequence changed on resume")
+    return control
 
 
 def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
@@ -49,13 +82,36 @@ def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
     torch.use_deterministic_algorithms(True)
     set_seed(SEED)
 
-    class StepWitness(TrainerCallback):
+    class ModelForwardSampleWitness:
+        """Observe the real GPT-2 forward, not dataloader prefetch or a mock."""
+
         def __init__(self):
+            self.samples: list[int] = []
+
+        def observe(self, _model, _args, kwargs):
+            tokens = kwargs.get("input_ids")
+            if (not isinstance(tokens, torch.Tensor)
+                    or tuple(tokens.shape) != (1, 8)):
+                raise AssertionError("unexpected real TRL model-forward batch shape")
+            sample = int(tokens[0, 1].item()) - 4
+            if not 0 <= sample < SYNTHETIC_ROWS:
+                raise AssertionError("TRL model-forward sample identity missing")
+            self.samples.append(sample)
+
+    class StepWitness(TrainerCallback):
+        def __init__(self, sample_probe: ModelForwardSampleWitness):
             self.ends: list[int] = []
             self.optimizer_events = 0
+            self.samples_at_step: list[int] = []
+            self.sample_probe = sample_probe
 
         def on_step_end(self, args, state, control, **kwargs):
             self.ends.append(int(state.global_step))
+            # One batch and one forward per optimizer step by contract.
+            # A prefetch-only or duplicate forward is not credited.
+            if len(self.sample_probe.samples) != len(self.ends):
+                raise AssertionError("sample forward count does not match optimizer steps")
+            self.samples_at_step.append(self.sample_probe.samples[-1])
             return control
 
         def on_optimizer_step(self, args, state, control, **kwargs):
@@ -80,11 +136,7 @@ def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
                       task_type="CAUSAL_LM")
     # A real HF datasets.Dataset is mandatory: TRL SFTTrainer rejects plain
     # torch.utils.data.Dataset. The completion-only mask is explicit.
-    row = {"input_ids": [1, 4, 7, 10, 13, 16, 19, 2],
-           "attention_mask": [1] * 8,
-           "labels": [-100, -100, -100, -100, 13, 16, 19, 2],
-           "completion_mask": [0, 0, 0, 0, 1, 1, 1, 1]}
-    dataset = Dataset.from_list([dict(row) for _ in range(32)])
+    dataset = Dataset.from_list([_synthetic_example(i) for i in range(SYNTHETIC_ROWS)])
 
     namespace = "paused" if phase in {"pause", "resume"} else "control"
     work = root / namespace / "trainer-work"
@@ -112,24 +164,31 @@ def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
         TrainerCallback, trainer_work=work, contract_sha256=contract_sha,
         stop_step=PAUSE_STEP,
     ) if phase == "pause" else None)
-    witness = StepWitness()
+    sample_probe = ModelForwardSampleWitness()
+    witness = StepWitness(sample_probe)
     trainer = SFTTrainer(
         model=base, args=config, train_dataset=dataset,
         processing_class=tokenizer, peft_config=lora,
         callbacks=[witness] + ([stopper] if stopper is not None else []),
     )
-    if phase == "resume":
-        checkpoint = work / "checkpoint-8"
-        external = root / "external-custody.json"
-        if (external_sha256 is None or len(external_sha256) != 64
-                or not external.is_file() or external.is_symlink()
-                or hashlib.sha256(external.read_bytes()).hexdigest() != external_sha256):
-            raise AssertionError("external custody receipt pin missing or changed")
-        receipt = json.loads(external.read_text(encoding="utf-8"))
-        validate_custody(checkpoint, receipt, contract_sha256=contract_sha)
-        trainer.train(resume_from_checkpoint=str(checkpoint))
-    else:
-        trainer.train()
+    # GPT-2's base object remains inside the PEFT wrapper built by TRL.
+    # A forward pre-hook observes the actual input IDs consumed by that model.
+    forward_handle = base.register_forward_pre_hook(sample_probe.observe, with_kwargs=True)
+    try:
+        if phase == "resume":
+            checkpoint = work / "checkpoint-8"
+            external = root / "external-custody.json"
+            if (external_sha256 is None or len(external_sha256) != 64
+                    or not external.is_file() or external.is_symlink()
+                    or hashlib.sha256(external.read_bytes()).hexdigest() != external_sha256):
+                raise AssertionError("external custody receipt pin missing or changed")
+            receipt = json.loads(external.read_text(encoding="utf-8"))
+            validate_custody(checkpoint, receipt, contract_sha256=contract_sha)
+            trainer.train(resume_from_checkpoint=str(checkpoint))
+        else:
+            trainer.train()
+    finally:
+        forward_handle.remove()
 
     observed = int(trainer.state.global_step)
     required = PAUSE_STEP if phase == "pause" else TARGET_STEPS
@@ -142,6 +201,9 @@ def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
         raise AssertionError(f"{phase}: Trainer stepped outside phase: {witness.ends}")
     if witness.optimizer_events != len(expected_ends):
         raise AssertionError(f"{phase}: optimizer event count not phase length")
+    if (witness.samples_at_step != sample_probe.samples
+            or len(witness.samples_at_step) != len(expected_ends)):
+        raise AssertionError("real TRL batch sequence not linked to optimizer steps")
     if phase == "pause":
         custody = create_custody(work / "checkpoint-8", contract_sha256=contract_sha)
         if custody != stopper.custody:
@@ -160,6 +222,8 @@ def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
         raise AssertionError("TRL did not create trainable LoRA adapter")
     return {"phase": phase, "global_step": observed,
             "step_sequence": witness.ends,
+            "model_forward_sample_sequence": witness.samples_at_step,
+            "sample_witness_from_real_model_forward": True,
             "optimizer_callback_events": witness.optimizer_events,
             "trainable_count": count, "trainable_sha256": h.hexdigest(),
             "tiny_random_model": True, "trl_sfttrainer_exercised": True,
@@ -215,9 +279,16 @@ def _main() -> None:
             raise AssertionError("TRL fresh resume and uninterrupted LoRA weights differ")
         if resume["trainable_count"] != control["trainable_count"]:
             raise AssertionError("TRL LoRA parameter counts differ")
+        sample_sequence = _verify_sample_continuity(
+            pause["model_forward_sample_sequence"],
+            resume["model_forward_sample_sequence"],
+            control["model_forward_sample_sequence"],
+        )
         print(json.dumps({"status": "R16_TINY_TRL_SFT_CPU_LIFECYCLE_PASS",
                           "phases": phases, "post_process_custody_sha_verified": True,
                           "tiny_trl_resume_equivalence": True,
+                          "real_forward_sample_sequence_verified": True,
+                          "full_sample_sequence_sha256": canonical_sha({"samples": sample_sequence}),
                           "qwen_model_exercised": False, "gpu_operators": 0,
                           "training_authority": False}, sort_keys=True))
 
