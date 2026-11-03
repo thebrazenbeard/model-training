@@ -15,23 +15,30 @@ from trainingday.lowmem_experiment import one_step_kernel
 class MockCuda:
     def __init__(self):
         self.synchronized = 0
+        self.observed_device_indices = []
 
-    def synchronize(self):
+    def synchronize(self, device):
         self.synchronized += 1
+        self.observed_device_indices.append(device)
 
-    def mem_get_info(self):
+    def mem_get_info(self, device):
+        self.observed_device_indices.append(device)
         return (1_000_000_000, 4_000_000_000)
 
-    def memory_allocated(self):
+    def memory_allocated(self, device):
+        self.observed_device_indices.append(device)
         return 400_000_000
 
-    def memory_reserved(self):
+    def memory_reserved(self, device):
+        self.observed_device_indices.append(device)
         return 500_000_000
 
-    def max_memory_allocated(self):
+    def max_memory_allocated(self, device):
+        self.observed_device_indices.append(device)
         return 600_000_000
 
-    def max_memory_reserved(self):
+    def max_memory_reserved(self, device):
+        self.observed_device_indices.append(device)
         return 700_000_000
 
 
@@ -46,10 +53,12 @@ class MemoryTelemetryTests(unittest.TestCase):
         with patch("trainingday.lowmem_budget_telemetry.read_linux_host_memory",
                    return_value={"host_mem_available_bytes": 10_000_000_000,
                                  "process_resident_bytes": 200_000_000}):
-            records = [capture_memory_phase(torch, phase=phase)
+            records = [capture_memory_phase(torch, phase=phase, device_index=0)
                        for phase in ("before_load", "after_load", "after_step")]
         result = summarize_memory_timeline(records)
         self.assertEqual(torch.cuda.synchronized, 3)
+        self.assertEqual(torch.cuda.observed_device_indices, [0] * 18)
+        self.assertEqual(result["device_index"], 0)
         self.assertEqual(result["device_total_bytes"], 4_000_000_000)
         self.assertEqual(result["minimum_sampled_device_free_bytes"], 1_000_000_000)
         self.assertEqual(result["maximum_process_cuda_peak_reserved_bytes"], 700_000_000)
@@ -70,7 +79,7 @@ class MemoryTelemetryTests(unittest.TestCase):
         with patch("trainingday.lowmem_budget_telemetry.read_linux_host_memory",
                    return_value={"host_mem_available_bytes": 9_000_000_000,
                                  "process_resident_bytes": 200_000_000}):
-            records = [capture_memory_phase(MockTorch(), phase=phase)
+            records = [capture_memory_phase(MockTorch(), phase=phase, device_index=0)
                        for phase in ("before_load", "after_load", "after_step")]
         cases = (
             (0, "device_free_bytes", 4_000_000_001),
@@ -89,6 +98,20 @@ class MemoryTelemetryTests(unittest.TestCase):
             summarize_memory_timeline(records[:2])
         with self.assertRaises(MemoryTelemetryError):
             summarize_memory_timeline([records[1], records[0], records[2]])
+        # GPU 0 and GPU 1 can have exactly equal physical memory capacity.
+        # Capacity equality must never substitute for device identity.
+        same_capacity_other_gpu = [dict(record) for record in records]
+        same_capacity_other_gpu[1]["device_index"] = 1
+        with self.assertRaises(MemoryTelemetryError):
+            summarize_memory_timeline(same_capacity_other_gpu)
+        with self.assertRaises(MemoryTelemetryError):
+            summarize_memory_timeline([dict(record, device_index=True)
+                                       for record in records])
+        for bad_device in (True, -1, "0", None):
+            with self.subTest(bad_device=bad_device), self.assertRaises(
+                    MemoryTelemetryError):
+                capture_memory_phase(MockTorch(), phase="before_load",
+                                     device_index=bad_device)
 
     def test_protected_kernel_collects_each_phase_without_relaxing_hold(self):
         source = inspect.getsource(one_step_kernel)
@@ -96,7 +119,7 @@ class MemoryTelemetryTests(unittest.TestCase):
         first_import = source.index("    import torch")
         self.assertLess(hold, first_import)
         for phase in ("before_load", "after_load", "after_step"):
-            self.assertIn(f'capture_memory_phase(torch, phase="{phase}")', source)
+            self.assertIn(f'capture_memory_phase(torch, phase="{phase}", device_index=0)', source)
         self.assertIn('witness["device_host_memory"] = summarize_memory_timeline(', source)
         from trainingday.physical_launch_authority import PhysicalLaunchAuthorityUnavailable
         with self.assertRaises(PhysicalLaunchAuthorityUnavailable):

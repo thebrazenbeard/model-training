@@ -30,7 +30,7 @@ class LowMemSourceTests(unittest.TestCase):
         # potentially higher transient quantized model load peak.
         source = inspect.getsource(one_step_kernel)
         resets = [match.start() for match in re.finditer(
-            r"torch\.cuda\.reset_peak_memory_stats\(\)", source)]
+            r"torch\.cuda\.reset_peak_memory_stats\(0\)", source)]
         load = source.index("Qwen3_5ForCausalLM.from_pretrained(")
         load_peak = source.index("load_peak_cuda_allocated_bytes =")
         forward = source.index("loss = model(")

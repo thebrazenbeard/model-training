@@ -55,7 +55,7 @@ def read_linux_host_memory() -> dict[str, int]:
     }
 
 
-def capture_memory_phase(torch, *, phase: str) -> dict:
+def capture_memory_phase(torch, *, phase: str, device_index: int) -> dict:
     """Capture device-wide free memory plus process-local PyTorch counters.
 
     `torch` is dependency-injected so the source guard is CPU-testable. The
@@ -64,16 +64,19 @@ def capture_memory_phase(torch, *, phase: str) -> dict:
     """
     if phase not in PHASES:
         raise MemoryTelemetryError("unrecognized lowmem phase")
-    torch.cuda.synchronize()
-    free, total = torch.cuda.mem_get_info()
+    if type(device_index) is not int or device_index < 0:
+        raise MemoryTelemetryError("invalid explicit CUDA device index")
+    torch.cuda.synchronize(device_index)
+    free, total = torch.cuda.mem_get_info(device_index)
     result = {
         "phase": phase,
+        "device_index": device_index,
         "device_free_bytes": free,
         "device_total_bytes": total,
-        "process_cuda_allocated_bytes": torch.cuda.memory_allocated(),
-        "process_cuda_reserved_bytes": torch.cuda.memory_reserved(),
-        "process_cuda_peak_allocated_bytes": torch.cuda.max_memory_allocated(),
-        "process_cuda_peak_reserved_bytes": torch.cuda.max_memory_reserved(),
+        "process_cuda_allocated_bytes": torch.cuda.memory_allocated(device_index),
+        "process_cuda_reserved_bytes": torch.cuda.memory_reserved(device_index),
+        "process_cuda_peak_allocated_bytes": torch.cuda.max_memory_allocated(device_index),
+        "process_cuda_peak_reserved_bytes": torch.cuda.max_memory_reserved(device_index),
     }
     result.update(read_linux_host_memory())
     validate_memory_phase(result)
@@ -83,6 +86,8 @@ def capture_memory_phase(torch, *, phase: str) -> dict:
 def validate_memory_phase(record: Mapping[str, object]) -> None:
     if type(record) is not dict or record.get("phase") not in PHASES:
         raise MemoryTelemetryError("unrecognized memory phase record")
+    if type(record.get("device_index")) is not int or record["device_index"] < 0:
+        raise MemoryTelemetryError("missing or invalid CUDA device identity")
     keys = ("device_free_bytes", "device_total_bytes",
             "process_cuda_allocated_bytes", "process_cuda_reserved_bytes",
             "process_cuda_peak_allocated_bytes", "process_cuda_peak_reserved_bytes",
@@ -113,11 +118,13 @@ def summarize_memory_timeline(records: list[dict]) -> dict:
     for record in records:
         validate_memory_phase(record)
     if ([record["phase"] for record in records] != list(PHASES)
+            or len({record["device_index"] for record in records}) != 1
             or len({record["device_total_bytes"] for record in records}) != 1):
         raise MemoryTelemetryError("phase ordering or GPU identity changed")
     total = records[0]["device_total_bytes"]
     return {
         "status": "MEMORY_TELEMETRY_FIELDS_VALIDATED_FIT_UNQUALIFIED",
+        "device_index": records[0]["device_index"],
         "device_total_bytes": total,
         "minimum_sampled_device_free_bytes": min(
             record["device_free_bytes"] for record in records),
