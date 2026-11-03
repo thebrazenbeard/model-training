@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -19,10 +20,13 @@ class CrossJobArtifactReceiptTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / custody.witness.MANIFEST).write_bytes(b"source-manifest")
         digest = hashlib.sha256(b"source-manifest").hexdigest()
+        (self.root / custody.DIAGNOSTIC).write_bytes(b"synthetic-read-only-diagnostic")
+        diagnostic_digest = hashlib.sha256(b"synthetic-read-only-diagnostic").hexdigest()
         self.receipt = {"schema": custody.SCHEMA, "writer_run_id": "123456",
                         "writer_job": "writer", "writer_pid": 333,
                         "writer_cpu": {"model": "synthetic-test", "flags_sha256": "d" * 64},
                         "checkpoint_manifest_sha256": digest,
+                        "diagnostic_snapshot_sha256": diagnostic_digest,
                         "direct_adapter_sha256": "a" * 64,
                         "direct_optimizer_sha256": "b" * 64,
                         "direct_logits_sha256": "c" * 64,
@@ -44,6 +48,30 @@ class CrossJobArtifactReceiptTest(unittest.TestCase):
         (self.root / custody.witness.MANIFEST).write_bytes(b"tampered")
         with self.assertRaisesRegex(ValueError, "manifest corrupted"):
             self._read()
+
+    def test_perturbed_diagnostic_snapshot_rejected_before_torch(self):
+        (self.root / custody.DIAGNOSTIC).write_bytes(b"tampered")
+        with self.assertRaisesRegex(ValueError, "diagnostic snapshot corrupted"):
+            self._read()
+
+    def test_predeclared_numeric_envelope_falsifier(self):
+        same = custody._scalar_drift([1.0, 0.0, -2.0], [1.0, 0.0, -2.0])
+        self.assertEqual(same["changed_elements"], 0)
+        self.assertEqual(same["outside_predeclared_envelope"], 0)
+        tiny = custody._scalar_drift([1.0], [1.0 + 1e-8])
+        self.assertEqual(tiny["outside_predeclared_envelope"], 0)
+        deliberately_perturbed = custody._scalar_drift(
+            [1.0, 0.0, -2.0], [1.1, 0.0, -2.0])
+        self.assertEqual(deliberately_perturbed["changed_elements"], 1)
+        self.assertEqual(deliberately_perturbed["outside_predeclared_envelope"], 1)
+        self.assertGreater(deliberately_perturbed["max_abs"], 0.09)
+        self.assertEqual(deliberately_perturbed["elements"], 3)
+        self.assertAlmostEqual(deliberately_perturbed["mean_abs"], 0.1 / 3)
+        for reference, observed in (([], []), ([1.0], [1.0, 2.0]),
+                                    ([math.nan], [1.0])):
+            with self.subTest(reference=reference, observed=observed):
+                with self.assertRaises(ValueError):
+                    custody._scalar_drift(reference, observed)
 
     def test_positive_grant_rejected(self):
         self.receipt["training_authorized"] = True
