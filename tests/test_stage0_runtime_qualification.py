@@ -1,4 +1,7 @@
 import importlib.util
+from pathlib import Path
+import subprocess
+import sys
 
 from successor.experiments import qualify_v10r3r3_stage0_runtime as stage0
 
@@ -310,6 +313,54 @@ def test_stage0_gpu_lock_rejects_concurrent_holder_and_releases(tmp_path):
         with pytest.raises(stage0.Stage0Hold, match="exclusive Stage-0 GPU lock"):
             with stage0.exclusive_stage0_gpu_lock(lock_path):
                 pass
+
+    with stage0.exclusive_stage0_gpu_lock(lock_path):
+        pass
+
+
+def test_stage0_gpu_lock_rejects_separate_process_and_releases(tmp_path):
+    lock_path = tmp_path / "stage0-interprocess.lock"
+    child = (
+        "from pathlib import Path\n"
+        "import sys\n"
+        "from successor.experiments.qualify_v10r3r3_stage0_runtime "
+        "import Stage0Hold, exclusive_stage0_gpu_lock\n"
+        "try:\n"
+        "    with exclusive_stage0_gpu_lock(Path(sys.argv[1])):\n"
+        "        print('ACQUIRED')\n"
+        "except Stage0Hold:\n"
+        "    print('HELD')\n"
+    )
+
+    def probe():
+        return subprocess.run(
+            [sys.executable, "-c", child, str(lock_path)],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+
+    with stage0.exclusive_stage0_gpu_lock(lock_path):
+        denied = probe()
+    assert denied.returncode == 0, denied.stderr
+    assert denied.stdout.strip() == "HELD"
+
+    acquired = probe()
+    assert acquired.returncode == 0, acquired.stderr
+    assert acquired.stdout.strip() == "ACQUIRED"
+
+
+def test_stage0_gpu_lock_releases_after_body_exception(tmp_path):
+    lock_path = tmp_path / "stage0-body-exception.lock"
+    try:
+        with stage0.exclusive_stage0_gpu_lock(lock_path):
+            raise RuntimeError("injected body failure")
+    except RuntimeError as exc:
+        assert str(exc) == "injected body failure"
+    else:
+        raise AssertionError("lock context suppressed unexpected body failure")
 
     with stage0.exclusive_stage0_gpu_lock(lock_path):
         pass
