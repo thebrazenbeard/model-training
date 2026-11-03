@@ -188,7 +188,18 @@ def _save(path, model, optimizer, batch, frozen_sha, names, torch):
     assert _validate_checkpoint(path) == manifest
 
 
-def _resume(path: Path):
+def _apply_checkpoint_rng(torch, rng_state, *, test_only_setter=None) -> int:
+    """Invoke exactly one checkpoint RNG setter, after validation is complete.
+
+    The test-only override replaces this call alone. It cannot suppress RNG
+    setter calls made by model or TRL setup before this point.
+    """
+    setter = torch.set_rng_state if test_only_setter is None else test_only_setter
+    setter(rng_state)
+    return 1
+
+
+def _resume(path: Path, *, _test_only_checkpoint_rng_setter=None):
     # Run the integrity gate before importing the model framework or unpickling.
     manifest = _validate_checkpoint(path)
     integrated._offline_cpu()
@@ -217,7 +228,8 @@ def _resume(path: Path):
     rng_state = payload["rng_state"]
     if hashlib.sha256(rng_state.numpy().tobytes()).hexdigest() != manifest["rng_state_sha256"]:
         raise ValueError("RNG state differs from saved checkpoint")
-    torch.set_rng_state(rng_state)
+    checkpoint_rng_setter_calls = _apply_checkpoint_rng(
+        torch, rng_state, test_only_setter=_test_only_checkpoint_rng_setter)
     loss = _step(torch, model, optimizer, batches[1])
     ids = torch.tensor([integrated._synthetic_rows(integrated._load_tokenizer(
         Path(os.environ["TRAININGDAY_QWEN_TOKENIZER_JSON"])))[0]["input_ids"]], dtype=torch.long)
@@ -226,6 +238,7 @@ def _resume(path: Path):
             "logits_sha256": integrated._sha_tensor(integrated._probe_logits(model, ids, torch)),
             "optimizer_state_sha256": _optimizer_digest(optimizer),
             "after_resume_optimizer_steps": sorted({int(x["step"]) for x in optimizer.state.values()}),
+            "checkpoint_rng_setter_calls": checkpoint_rng_setter_calls,
             "cuda_initialized": torch.cuda.is_initialized()}
 
 
