@@ -1,0 +1,107 @@
+name: TRAININGDAY tiny Qwen3.5 cross-job public checkpoint custody CPU
+
+on:
+  push:
+    branches: [test/trainingday-qwen35-cross-job-artifact-20261103]
+  pull_request:
+    paths:
+      - trainingday/qwen35_full32_trl_cross_job_artifact_cpu.py
+      - tests/test_trainingday_qwen35_full32_trl_cross_job_artifact_cpu.py
+      - .github/workflows/trainingday-qwen35-full32-trl-cross-job-artifact-cpu.yml
+
+permissions:
+  contents: read
+
+jobs:
+  writer:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      CUDA_VISIBLE_DEVICES: ''
+      ATEN_CPU_CAPABILITY: default
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+      MKL_CBWR: COMPATIBLE
+      TRAININGDAY_QWEN_TOKENIZER_JSON: /tmp/trainingday-qwen35-official-tokenizer.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install pinned public CPU dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            --index-url https://download.pytorch.org/whl/cpu 'torch==2.14.0+cpu'
+          python -m pip install --disable-pip-version-check \
+            'transformers==5.22.1' 'peft==0.21.2' 'trl==1.17.1' \
+            'datasets==4.7.0' 'tokenizers==0.23.3'
+      - name: Verify public pinned Qwen tokenizer bytes
+        env:
+          HF_HUB_OFFLINE: '0'
+        run: |
+          curl --fail --location --retry 2 --silent --show-error \
+            'https://huggingface.co/Qwen/Qwen3.5-4B/resolve/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/tokenizer.json' \
+            --output "$TRAININGDAY_QWEN_TOKENIZER_JSON"
+          python -c 'import hashlib,os,pathlib; p=pathlib.Path(os.environ["TRAININGDAY_QWEN_TOKENIZER_JSON"]); assert hashlib.sha256(p.read_bytes()).hexdigest()=="5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42"'
+      - name: Source-level cross-job artifact rejection tests
+        run: python -m unittest discover -s tests -p 'test_trainingday_qwen35_full32_trl_cross_job_artifact_cpu.py' -v
+      - name: Train one real masked step and export versioned LoRA plus AdamW checkpoint
+        run: python -m trainingday.qwen35_full32_trl_cross_job_artifact_cpu --write /tmp/trainingday-cross-job-public-v1
+      - name: Persist synthetic-only checkpoint for one day
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: trainingday-tiny-public-checkpoint-${{ github.run_id }}
+          path: /tmp/trainingday-cross-job-public-v1/
+          retention-days: 1
+          if-no-files-found: error
+
+  reader:
+    if: ${{ github.event.repository.private == false }}
+    needs: writer
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      CUDA_VISIBLE_DEVICES: ''
+      ATEN_CPU_CAPABILITY: default
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+      MKL_CBWR: COMPATIBLE
+      TRAININGDAY_QWEN_TOKENIZER_JSON: /tmp/trainingday-qwen35-official-tokenizer.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install same pinned public CPU dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            --index-url https://download.pytorch.org/whl/cpu 'torch==2.14.0+cpu'
+          python -m pip install --disable-pip-version-check \
+            'transformers==5.22.1' 'peft==0.21.2' 'trl==1.17.1' \
+            'datasets==4.7.0' 'tokenizers==0.23.3'
+      - name: Download temporary public synthetic checkpoint to NEW job
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: trainingday-tiny-public-checkpoint-${{ github.run_id }}
+          path: /tmp/trainingday-cross-job-public-v1
+      - name: Verify independent pinned tokenizer bytes again
+        env:
+          HF_HUB_OFFLINE: '0'
+        run: |
+          curl --fail --location --retry 2 --silent --show-error \
+            'https://huggingface.co/Qwen/Qwen3.5-4B/resolve/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/tokenizer.json' \
+            --output "$TRAININGDAY_QWEN_TOKENIZER_JSON"
+          python -c 'import hashlib,os,pathlib; p=pathlib.Path(os.environ["TRAININGDAY_QWEN_TOKENIZER_JSON"]); assert hashlib.sha256(p.read_bytes()).hexdigest()=="5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42"'
+      - name: Fresh-job real TRL second-step optimizer continuation from artifact
+        run: python -m trainingday.qwen35_full32_trl_cross_job_artifact_cpu --read /tmp/trainingday-cross-job-public-v1
