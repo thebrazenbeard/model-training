@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-from importlib.machinery import SourceFileLoader
+from importlib.machinery import PathFinder, SourceFileLoader
 import json
 import math
 from pathlib import Path
@@ -22,12 +22,48 @@ SCHEMA = "VERA_TRAININGDAY_R201_CALC_POLYNOMIAL_V1"
 CALC_REPOSITORY = "thebrazenbeard/calc"
 CALC_REVISION = "17e12d0f659b42732fb98e5730732aba9ff1b488"
 CALC_SYMBOLIC_SHA256 = "aba705f0d4370afa35538280f3db00ecbe36da1b3f3ca083ee29ebc292113b0b"
+CALC_INIT_SHA256 = "4bb35910f0f5897476911d7846498915e8a7150f7993d79a12360570c5199cf4"
 ORACLE_FAMILY = "CALC_SYMBOLIC_BOUNDED_INTEGER_POLYNOMIAL_DERIVATIVE_AT_POINT"
 TRAIN_COUNT = 1024
 
 
 class CalcCurriculumError(ValueError):
     """Invalid source binding or mathematical oracle result."""
+
+
+def _preflight_calc_files() -> tuple[Path, Path]:
+    """Hash the package initializer and oracle *before* normal Python import.
+
+    PathFinder avoids user-installed meta-path finders for the initial lookup
+    of ordinary on-disk Python modules.  This is a static provenance check, not
+    a sandbox or protection against concurrent filesystem replacement.
+    """
+    package = PathFinder.find_spec("calc")
+    if (package is None or not isinstance(package.loader, SourceFileLoader)
+            or type(package.origin) is not str
+            or not package.submodule_search_locations):
+        raise CalcCurriculumError(
+            "Calc symbolic source unavailable; install the pinned local Calc checkout"
+        )
+    symbolic = PathFinder.find_spec("calc.symbolic", package.submodule_search_locations)
+    if (symbolic is None or not isinstance(symbolic.loader, SourceFileLoader)
+            or type(symbolic.origin) is not str):
+        raise CalcCurriculumError(
+            "Calc symbolic source unavailable; install the pinned local Calc checkout"
+        )
+    try:
+        init_path = Path(package.origin).resolve(strict=True)
+        symbolic_path = Path(symbolic.origin).resolve(strict=True)
+        if (init_path.name != "__init__.py" or symbolic_path.name != "symbolic.py"
+                or init_path.parent != symbolic_path.parent):
+            raise CalcCurriculumError("Calc package/source identity mismatch")
+        if hashlib.sha256(init_path.read_bytes()).hexdigest() != CALC_INIT_SHA256:
+            raise CalcCurriculumError("Calc package initializer SHA256 differs from pinned source")
+        if hashlib.sha256(symbolic_path.read_bytes()).hexdigest() != CALC_SYMBOLIC_SHA256:
+            raise CalcCurriculumError("Calc symbolic module SHA256 differs from pinned source")
+    except OSError as exc:
+        raise CalcCurriculumError("Calc source unavailable during pre-import verification") from exc
+    return init_path, symbolic_path
 
 
 def _canonical_json(value: dict) -> bytes:
@@ -43,9 +79,10 @@ def _load_verified_symbolic():
     """Use only the known Calc symbolic source, never silently fall back.
 
     Import is a normal Python dependency operation, *not* a secure sandbox.
-    Hashing the imported file detects ordinary provenance mismatch, but a
-    mutable filesystem or compromised interpreter is not authenticated here.
+    Verify both package initializer and module before execution as well as
+    after import.  A mutable filesystem or interpreter is not authenticated.
     """
+    _init_path, preflight_path = _preflight_calc_files()
     try:
         symbolic = importlib.import_module("calc.symbolic")
     except ImportError as exc:
@@ -64,8 +101,14 @@ def _load_verified_symbolic():
     if type(origin) is not str:
         raise CalcCurriculumError("Calc symbolic source path unavailable")
     path = Path(origin).resolve(strict=True)
-    if Path(spec.origin).resolve(strict=True) != path:
+    if Path(spec.origin).resolve(strict=True) != path or path != preflight_path:
         raise CalcCurriculumError("Calc symbolic module spec/source path mismatch")
+    parent = sys.modules.get("calc")
+    if (type(parent) is not ModuleType
+            or type(getattr(parent, "__file__", None)) is not str
+            or Path(parent.__file__).resolve(strict=True) != _init_path
+            or hashlib.sha256(_init_path.read_bytes()).hexdigest() != CALC_INIT_SHA256):
+        raise CalcCurriculumError("Calc package changed or was substituted during import")
     if path.name != "symbolic.py":
         raise CalcCurriculumError("unexpected Calc symbolic module filename")
     if hashlib.sha256(path.read_bytes()).hexdigest() != CALC_SYMBOLIC_SHA256:

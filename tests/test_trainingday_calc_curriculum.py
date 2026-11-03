@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+from pathlib import Path
 import re
+import sys
+from tempfile import TemporaryDirectory
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -13,6 +17,51 @@ from trainingday import calc_curriculum as curriculum
 
 
 class CalcCurriculumSourceTests(unittest.TestCase):
+    def test_untrusted_calc_source_never_executes_before_hash_check(self):
+        # A stale/malicious installed package must be rejected *before* its
+        # __init__ or symbolic.py top-level code has any chance to execute.
+        with TemporaryDirectory() as temp:
+            package = Path(temp) / "calc"
+            package.mkdir()
+            marker = Path(temp) / "EXECUTED"
+            payload = f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n"
+            (package / "__init__.py").write_text(payload)
+            (package / "symbolic.py").write_text(payload)
+            saved = {name: sys.modules.pop(name) for name in
+                     ("calc.symbolic", "calc") if name in sys.modules}
+            try:
+                with patch.object(sys, "path", [temp] + sys.path):
+                    with self.assertRaises(curriculum.CalcCurriculumError):
+                        curriculum._load_verified_symbolic()
+            finally:
+                for name in ("calc.symbolic", "calc"):
+                    sys.modules.pop(name, None)
+                sys.modules.update(saved)
+            self.assertFalse(marker.exists(), "unverified Calc code was executed")
+
+    def test_untrusted_calc_initializer_never_executes(self):
+        with TemporaryDirectory() as temp:
+            package = Path(temp) / "calc"
+            package.mkdir()
+            marker = Path(temp) / "PACKAGE_EXECUTED"
+            initializer = f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n"
+            (package / "__init__.py").write_text(initializer)
+            source = "Const = object\nVar = object\n"
+            (package / "symbolic.py").write_text(source)
+            saved = {name: sys.modules.pop(name) for name in
+                     ("calc.symbolic", "calc") if name in sys.modules}
+            try:
+                with patch.object(sys, "path", [temp] + sys.path), \
+                        patch.object(curriculum, "CALC_SYMBOLIC_SHA256",
+                                     hashlib.sha256(source.encode()).hexdigest()):
+                    with self.assertRaises(curriculum.CalcCurriculumError):
+                        curriculum._load_verified_symbolic()
+            finally:
+                for name in ("calc.symbolic", "calc"):
+                    sys.modules.pop(name, None)
+                sys.modules.update(saved)
+            self.assertFalse(marker.exists(), "unverified Calc initializer was executed")
+
     def test_freeze_and_no_hidden_dev_or_grant(self):
         self.assertEqual(curriculum.TRAIN_COUNT, 1024)
         self.assertEqual(curriculum.CALC_REVISION,
@@ -41,7 +90,9 @@ class CalcCurriculumSourceTests(unittest.TestCase):
             Const = object
             Var = object
 
-        with patch.object(curriculum.importlib, "import_module", return_value=Impostor):
+        with patch.object(curriculum, "_preflight_calc_files",
+                          return_value=(Path(__file__), Path(__file__))), \
+                patch.object(curriculum.importlib, "import_module", return_value=Impostor):
             with self.assertRaisesRegex(curriculum.CalcCurriculumError,
                                         "not a Python module"):
                 curriculum.train_rows()
@@ -51,7 +102,9 @@ class CalcCurriculumSourceTests(unittest.TestCase):
         # legitimate source path and functions but is not that imported module.
         real = SimpleNamespace(__file__="/trusted/calc/symbolic.py",
                                Const=object, Var=object)
-        with patch.object(curriculum.importlib, "import_module", return_value=real):
+        with patch.object(curriculum, "_preflight_calc_files",
+                          return_value=(Path(__file__), Path(__file__))), \
+                patch.object(curriculum.importlib, "import_module", return_value=real):
             with self.assertRaisesRegex(curriculum.CalcCurriculumError,
                                         "not a Python module"):
                 curriculum.train_rows()
@@ -59,7 +112,9 @@ class CalcCurriculumSourceTests(unittest.TestCase):
         fake_module.__file__ = "/trusted/calc/symbolic.py"
         fake_module.Const = object
         fake_module.Var = object
-        with patch.object(curriculum.importlib, "import_module", return_value=fake_module):
+        with patch.object(curriculum, "_preflight_calc_files",
+                          return_value=(Path(__file__), Path(__file__))), \
+                patch.object(curriculum.importlib, "import_module", return_value=fake_module):
             with self.assertRaisesRegex(curriculum.CalcCurriculumError,
                                         "module identity is unverified"):
                 curriculum.train_rows()
