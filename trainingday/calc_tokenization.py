@@ -16,7 +16,7 @@ import re
 from trainingday.pinned_base import BASE_ID, BASE_REVISION
 
 
-SCHEMA = "TRAININGDAY_CALC_TOKENIZATION_SOURCE_ONLY_V1"
+SCHEMA = "TRAININGDAY_CALC_TOKENIZATION_SOURCE_ONLY_V2"
 CALC_REPO = "thebrazenbeard/calc"
 CALC_REVISION = "17e12d0f659b42732fb98e5730732aba9ff1b488"
 CALC_MANIFEST_SCHEMA = "VERA_TRAININGDAY_R201_CALC_POLYNOMIAL_V1"
@@ -103,19 +103,24 @@ def _tokenize_one(row: dict, tokenizer, max_sequence_length: int) -> dict:
              and all(char not in prompt for char in ("\r", "\n", "\x00"))
              and type(answer) is str and 1 <= len(answer) <= 32
              and _EXACT_INTEGER.fullmatch(answer) is not None)
-    prefix = f"Q: {prompt}\nA: "
+    # The visible text remains "A: <answer>", but the separator belongs to
+    # the supervised completion. On the official Qwen3.5 BPE tokenizer a
+    # negative answer can merge " -" into one token. Leaving the space in
+    # the masked prefix instead produces a noncanonical token boundary.
+    prefix = f"Q: {prompt}\nA:"
+    completion = " " + answer
     prefix_ids = _tokens(tokenizer, prefix)
-    answer_ids = _tokens(tokenizer, answer)
+    completion_ids = _tokens(tokenizer, completion)
     eos = getattr(tokenizer, "eos_token_id", None)
     _require(type(eos) is int and 0 <= eos < (1 << 31)
-             and eos not in prefix_ids and eos not in answer_ids)
-    joined_ids = prefix_ids + answer_ids
+             and eos not in prefix_ids and eos not in completion_ids)
+    joined_ids = prefix_ids + completion_ids
     _require(len(joined_ids) + 1 <= max_sequence_length)
     # A context-sensitive tokenizer can merge across the answer boundary while
     # both the canonical and concatenated sequences decode to identical text.
     # Text round-trip alone therefore cannot prove answer-label alignment.
     # Reject such sources rather than silently using noncanonical token IDs.
-    whole_ids = _tokens(tokenizer, prefix + answer)
+    whole_ids = _tokens(tokenizer, prefix + completion)
     _require(whole_ids == joined_ids)
     try:
         decoded = tokenizer.decode(
@@ -124,12 +129,12 @@ def _tokenize_one(row: dict, tokenizer, max_sequence_length: int) -> dict:
         )
     except (AttributeError, TypeError, ValueError) as exc:
         raise CalcTokenizationError("tokenizer decode unavailable") from exc
-    _require(type(decoded) is str and decoded == prefix + answer)
+    _require(type(decoded) is str and decoded == prefix + completion)
     input_ids = joined_ids + [eos]
     return {
         "id": identifier,
         "input_ids": input_ids,
-        "labels": [-100] * len(prefix_ids) + answer_ids + [eos],
+        "labels": [-100] * len(prefix_ids) + completion_ids + [eos],
         "attention_mask": [1] * len(input_ids),
     }
 
