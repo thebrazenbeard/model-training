@@ -28,6 +28,32 @@ PAUSE_STEP = 8
 TARGET_STEPS = 16
 
 
+def _canonical_state_sha256(value, torch) -> str:
+    """Hash actual optimizer/scheduler state without process-local objects.
+
+    Parameter IDs and tensors come from the framework's state_dict; we never
+    deserialize a guessed checkpoint or substitute synthetic state values.
+    """
+    def normalize(item):
+        if isinstance(item, torch.Tensor):
+            tensor = item.detach().to(device="cpu").contiguous()
+            return {"type": "tensor", "dtype": str(tensor.dtype),
+                    "shape": list(tensor.shape),
+                    "sha256": hashlib.sha256(tensor.numpy().tobytes()).hexdigest()}
+        if isinstance(item, dict):
+            return {str(key): normalize(part)
+                    for key, part in sorted(item.items(), key=lambda pair: str(pair[0]))}
+        if isinstance(item, (list, tuple)):
+            return [normalize(part) for part in item]
+        if item is None or isinstance(item, (str, int, float, bool)):
+            return item
+        raise AssertionError(f"unsupported framework state field: {type(item).__name__}")
+
+    encoded = json.dumps(normalize(value), sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -79,11 +105,12 @@ def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
                       target_modules=["c_attn"], fan_in_fan_out=True,
                       task_type="CAUSAL_LM")
     # A real HF datasets.Dataset is mandatory: TRL SFTTrainer rejects plain
-    # torch.utils.data.Dataset. The completion-only mask is explicit.
+    # torch.utils.data.Dataset. Deliberately omit prebuilt labels: TRL must
+    # derive actual -100 prompt masks from completion_mask itself.
     row = {"input_ids": [1, 4, 7, 10, 13, 16, 19, 2],
            "attention_mask": [1] * 8,
-           "labels": [-100, -100, -100, -100, 13, 16, 19, 2],
            "completion_mask": [0, 0, 0, 0, 1, 1, 1, 1]}
+    expected_completion_labels = [-100, -100, -100, -100, 13, 16, 19, 2]
     dataset = Dataset.from_list([dict(row) for _ in range(32)])
 
     namespace = "paused" if phase in {"pause", "resume"} else "control"
@@ -118,6 +145,17 @@ def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
         processing_class=tokenizer, peft_config=lora,
         callbacks=[witness] + ([stopper] if stopper is not None else []),
     )
+    # Inspect a genuine batch produced by TRL's configured collator. This is
+    # the semantic contract for completion-only supervision, not just a copy
+    # of the input dataset's label declaration.
+    batch = next(iter(trainer.get_train_dataloader()))
+    actual_ids = batch["input_ids"][0].tolist()
+    actual_labels = batch["labels"][0].tolist()
+    if (actual_ids != row["input_ids"]
+            or actual_labels != expected_completion_labels):
+        raise AssertionError(
+            f"TRL completion mask mismatch: ids={actual_ids}, labels={actual_labels}"
+        )
     if phase == "resume":
         checkpoint = work / "checkpoint-8"
         external = root / "external-custody.json"
@@ -147,6 +185,16 @@ def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
         if custody != stopper.custody:
             raise AssertionError("checkpoint changed after TRL on_save")
 
+    optimizer_state = trainer.optimizer.state_dict()
+    if (not optimizer_state.get("state")
+            or not any("exp_avg" in slot and "exp_avg_sq" in slot
+                       for slot in optimizer_state["state"].values())):
+        raise AssertionError("real AdamW optimizer moments unavailable")
+    if trainer.lr_scheduler is None:
+        raise AssertionError("actual Trainer LR scheduler unavailable")
+    optimizer_sha = _canonical_state_sha256(optimizer_state, torch)
+    scheduler_sha = _canonical_state_sha256(trainer.lr_scheduler.state_dict(), torch)
+
     adapter = trainer.model
     h = hashlib.sha256()
     count = 0
@@ -161,6 +209,9 @@ def _run_phase(root: Path, phase: str, *, external_sha256: str | None) -> dict:
     return {"phase": phase, "global_step": observed,
             "step_sequence": witness.ends,
             "optimizer_callback_events": witness.optimizer_events,
+            "completion_mask_verified_on_actual_trl_batch": True,
+            "optimizer_state_sha256": optimizer_sha,
+            "lr_scheduler_state_sha256": scheduler_sha,
             "trainable_count": count, "trainable_sha256": h.hexdigest(),
             "tiny_random_model": True, "trl_sfttrainer_exercised": True,
             "qwen_model_exercised": False, "cuda_visible": False,
@@ -215,9 +266,16 @@ def _main() -> None:
             raise AssertionError("TRL fresh resume and uninterrupted LoRA weights differ")
         if resume["trainable_count"] != control["trainable_count"]:
             raise AssertionError("TRL LoRA parameter counts differ")
+        if resume["optimizer_state_sha256"] != control["optimizer_state_sha256"]:
+            raise AssertionError("TRL optimizer moments differ after fresh 8+8 resume")
+        if resume["lr_scheduler_state_sha256"] != control["lr_scheduler_state_sha256"]:
+            raise AssertionError("TRL scheduler state differs after fresh 8+8 resume")
         print(json.dumps({"status": "R16_TINY_TRL_SFT_CPU_LIFECYCLE_PASS",
                           "phases": phases, "post_process_custody_sha_verified": True,
                           "tiny_trl_resume_equivalence": True,
+                          "completion_only_mask_verified": True,
+                          "optimizer_state_resume_equivalence": True,
+                          "scheduler_state_resume_equivalence": True,
                           "qwen_model_exercised": False, "gpu_operators": 0,
                           "training_authority": False}, sort_keys=True))
 
