@@ -166,6 +166,8 @@ internal static class HostQ6CanonicalSourceInterop {
                 || Text(cas, "operation") != "CAS"
                 || Number(lease, "expected_witness_epoch") != Number(expected, "commit_index")
                 || Text(lease, "expected_witness_head_sha256") != Text(expected, "head_sha256")
+                || Number(expected, "commit_index") < 0
+                || Number(expected, "commit_index") == long.MaxValue
                 || Number(next, "commit_index") != Number(expected, "commit_index") + 1
                 || Text(next, "head_sha256") == Text(expected, "head_sha256")
                 || Number(lease, "gpu_lease_epoch") <= 0
