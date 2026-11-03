@@ -17,6 +17,12 @@ internal static class HostQ6SourceInteropNativeTests {
         catch (FormatException) { rejected = true; }
         Require(rejected, label);
     }
+    static void RejectWire(string value, string label) {
+        bool rejected = false;
+        try { UniqueJsonMemberGuard.RequireUniqueKeys(value); }
+        catch (FormatException) { rejected = true; }
+        Require(rejected, label);
+    }
     static Dictionary<string, object> Obj(object v) {
         return (Dictionary<string, object>)v;
     }
@@ -46,6 +52,28 @@ internal static class HostQ6SourceInteropNativeTests {
             "Python Q6 CAS digest parity");
         Require(!HostQ6CanonicalSourceInterop.AssessFixtureForNativeTestOnly(raw).AuthorizesTraining,
             "repeated source fixture never proves anti-replay");
+
+        // Duplicate key semantics must be rejected BEFORE deserialization to
+        // Dictionary can collapse conflicting/wire-ambiguous authority fields.
+        Reject(raw.Replace("\"authority\": {", "\"authority\": {}, \"authority\": {"),
+            "duplicate top-level authority object");
+        Reject(raw.Replace("\"authority\": {", "\"auth\\u006frity\": {}, \"authority\": {"),
+            "escaped spelling aliases authority object");
+        Reject(raw.Replace("\"expected_witness_epoch\": 12,",
+            "\"expected_witness_epoch\": 12, \"expected_witness_epoch\": 13,"),
+            "duplicate host lease witness epoch");
+        Reject(raw.Replace("\"expected\": {\"commit_index\": 12,",
+            "\"expected\": {\"commit_index\": 12, \"commit_index\": 12,"),
+            "nested duplicate Q6 expected CAS key");
+        RejectWire("{\"a\":[{\"k\":1,\"k\":2}]}",
+            "duplicate nested in array rejected");
+        RejectWire("{\"x\":1,\"\\u0078\":1}",
+            "escaped and literal duplicate key rejected");
+        UniqueJsonMemberGuard.RequireUniqueKeys("{\"expected\": {\"commit_index\": 12},"
+            + "\"new\": {\"commit_index\": 13}}");
+        Require(true, "same key in distinct objects remains valid");
+        RejectWire("{\"safe\":1,\"safe\":2}", "plain duplicate stand-alone rejected");
+        RejectWire("{\"a\":1} trailing", "trailing JSON text rejected");
 
         Reject(raw.Replace("HOLD_CLAIM", "ALLOW"), "caller rights claim mutation");
         Reject(raw.Replace("851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
