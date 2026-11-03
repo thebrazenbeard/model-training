@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import sys
 
 from trainingday import qwen35_full32_trl_integrated_cpu as integrated
@@ -22,6 +23,19 @@ RECEIPT = "cross-job-expected-v1.json"
 _HEX = set("0123456789abcdef")
 
 
+def _cpu_signature() -> dict[str, str]:
+    """Diagnostic only: runtime fingerprint alone does not bind CPU ISA."""
+    cpuinfo = Path("/proc/cpuinfo")
+    first = cpuinfo.read_text(encoding="utf-8", errors="replace").split("\n\n", 1)[0] if cpuinfo.exists() else ""
+    fields = {}
+    for line in first.splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            fields[k.strip()] = v.strip()
+    return {"model": fields.get("model name", platform.machine()),
+            "flags_sha256": hashlib.sha256(fields.get("flags", "").encode("utf-8")).hexdigest()}
+
+
 def _is_sha(value):
     return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX
 
@@ -31,7 +45,7 @@ def _read_receipt(path: Path) -> dict:
     if len(raw.encode("utf-8")) > 4096:
         raise ValueError("cross-job receipt oversized")
     receipt = json.loads(raw)
-    expected = {"schema", "writer_run_id", "writer_job", "writer_pid", "checkpoint_manifest_sha256",
+    expected = {"schema", "writer_run_id", "writer_job", "writer_pid", "writer_cpu", "checkpoint_manifest_sha256",
                 "direct_adapter_sha256", "direct_optimizer_sha256", "direct_logits_sha256",
                 "first_step_loss", "second_step_loss", "training_authorized"}
     if not isinstance(receipt, dict) or set(receipt) != expected or receipt["schema"] != SCHEMA:
@@ -43,6 +57,11 @@ def _read_receipt(path: Path) -> dict:
             not receipt["writer_run_id"].isdigit() or
             type(receipt["writer_pid"]) is not int or receipt["writer_pid"] <= 0):
         raise ValueError("cross-job writer identity invalid")
+    if (not isinstance(receipt["writer_cpu"], dict) or
+            set(receipt["writer_cpu"]) != {"model", "flags_sha256"} or
+            not isinstance(receipt["writer_cpu"]["model"], str) or
+            not _is_sha(receipt["writer_cpu"]["flags_sha256"])):
+        raise ValueError("cross-job writer CPU diagnostic malformed")
     for key in ("checkpoint_manifest_sha256", "direct_adapter_sha256",
                 "direct_optimizer_sha256", "direct_logits_sha256"):
         if not _is_sha(receipt[key]):
@@ -63,6 +82,8 @@ def write(path: Path) -> dict:
 
     torch.set_num_threads(2)
     torch.set_num_interop_threads(2)
+    torch.backends.mkldnn.enabled = False
+    torch.use_deterministic_algorithms(True)
     path.mkdir(parents=True, exist_ok=False)
     model, trainable, batches, frozen_sha = witness._context(torch)
     optimizer = torch.optim.AdamW([param for _, param in trainable], lr=witness.LR)
@@ -73,7 +94,7 @@ def write(path: Path) -> dict:
     ids = torch.tensor([integrated._synthetic_rows(integrated._load_tokenizer(
         Path(os.environ["TRAININGDAY_QWEN_TOKENIZER_JSON"])))[0]["input_ids"]], dtype=torch.long)
     receipt = {"schema": SCHEMA, "writer_run_id": os.environ["GITHUB_RUN_ID"],
-               "writer_job": "writer",
+               "writer_job": "writer", "writer_cpu": _cpu_signature(),
                "writer_pid": os.getpid(),
                "checkpoint_manifest_sha256": witness._sha(path / witness.MANIFEST),
                "direct_adapter_sha256": witness._trainable_digest(model),
@@ -98,12 +119,24 @@ def read(path: Path) -> dict:
     # must not silently claim cross-hardware numerical portability.
     import torch
     torch.set_num_interop_threads(2)
+    torch.backends.mkldnn.enabled = False
+    torch.use_deterministic_algorithms(True)
     result = witness._resume(path)
+    print(json.dumps({"diagnostic": "CROSS_JOB_NUMERICAL_COMPARISON_ONLY",
+                      "writer_cpu": receipt["writer_cpu"], "reader_cpu": _cpu_signature(),
+                      "writer_digests": {k: receipt[k] for k in (
+                          "direct_adapter_sha256", "direct_optimizer_sha256", "direct_logits_sha256")},
+                      "reader_digests": {k: result[k] for k in (
+                          "adapter_sha256", "optimizer_state_sha256", "logits_sha256")},
+                      "writer_second_step_loss": receipt["second_step_loss"],
+                      "reader_second_step_loss": result["second_step_loss"]}, sort_keys=True), file=sys.stderr)
     for key, source in (("adapter_sha256", "direct_adapter_sha256"),
                         ("optimizer_state_sha256", "direct_optimizer_sha256"),
                         ("logits_sha256", "direct_logits_sha256")):
         if result[key] != receipt[source]:
-            raise AssertionError(f"cross-job {key} not equivalent to writer direct step")
+            raise AssertionError(f"cross-job {key} differs: writer={receipt[source]} "
+                                 f"reader={result[key]} writer_cpu={receipt['writer_cpu']} "
+                                 f"reader_cpu={_cpu_signature()}")
     if (result["after_resume_optimizer_steps"] != [2] or
             result["cuda_initialized"] or
             abs(result["second_step_loss"] - receipt["second_step_loss"]) > 1e-7):

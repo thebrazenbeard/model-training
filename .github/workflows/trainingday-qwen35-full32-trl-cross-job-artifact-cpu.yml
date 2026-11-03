@@ -24,6 +24,8 @@ jobs:
       ATEN_CPU_CAPABILITY: default
       OMP_NUM_THREADS: '2'
       MKL_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+      MKL_CBWR: COMPATIBLE
       TRAININGDAY_QWEN_TOKENIZER_JSON: /tmp/trainingday-qwen35-official-tokenizer.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,6 +73,8 @@ jobs:
       ATEN_CPU_CAPABILITY: default
       OMP_NUM_THREADS: '2'
       MKL_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+      MKL_CBWR: COMPATIBLE
       TRAININGDAY_QWEN_TOKENIZER_JSON: /tmp/trainingday-qwen35-official-tokenizer.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

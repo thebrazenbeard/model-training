@@ -21,6 +21,7 @@ class CrossJobArtifactReceiptTest(unittest.TestCase):
         digest = hashlib.sha256(b"source-manifest").hexdigest()
         self.receipt = {"schema": custody.SCHEMA, "writer_run_id": "123456",
                         "writer_job": "writer", "writer_pid": 333,
+                        "writer_cpu": {"model": "synthetic-test", "flags_sha256": "d" * 64},
                         "checkpoint_manifest_sha256": digest,
                         "direct_adapter_sha256": "a" * 64,
                         "direct_optimizer_sha256": "b" * 64,
