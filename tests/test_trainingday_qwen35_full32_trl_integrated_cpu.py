@@ -5,11 +5,50 @@ from __future__ import annotations
 import ast
 import inspect
 import unittest
+from unittest.mock import patch
 
 from trainingday import qwen35_full32_trl_integrated_cpu as integrated
 
 
 class TinyIntegratedTrlTests(unittest.TestCase):
+    def test_broken_torch_import_must_not_be_skipped(self):
+        import builtins
+
+        original_import = builtins.__import__
+
+        def broken_torch(name, *args, **kwargs):
+            if name == "torch":
+                raise ImportError("simulated broken installed Torch")
+            return original_import(name, *args, **kwargs)
+
+        case = type(self)(
+            "test_integer_batch_fingerprint_detects_label_and_order_mutations"
+        )
+        with patch("builtins.__import__", side_effect=broken_torch):
+            result = unittest.TestResult()
+            case.run(result)
+        self.assertEqual(len(result.skipped), 0, result.skipped)
+        self.assertEqual(len(result.errors), 1, result.errors)
+
+    def test_absent_torch_is_explicitly_skipped(self):
+        import builtins
+
+        original_import = builtins.__import__
+
+        def absent_torch(name, *args, **kwargs):
+            if name == "torch":
+                raise ModuleNotFoundError("No module named 'torch'", name="torch")
+            return original_import(name, *args, **kwargs)
+
+        case = type(self)(
+            "test_integer_batch_fingerprint_detects_label_and_order_mutations"
+        )
+        with patch("builtins.__import__", side_effect=absent_torch):
+            result = unittest.TestResult()
+            case.run(result)
+        self.assertEqual(len(result.skipped), 1, result.skipped)
+        self.assertFalse(result.errors, result.errors)
+
     def test_each_trl_target_gradient_and_delta_has_negative_controls(self):
         # Exercise both production fail-closed helpers without heavy Torch
         # dependencies; the hosted dynamic run supplies the 152 real tensors.
@@ -108,7 +147,9 @@ class TinyIntegratedTrlTests(unittest.TestCase):
         # dedicated full32 CPU workflow installs it and exercises this control.
         try:
             import torch
-        except ImportError:
+        except ModuleNotFoundError as exc:
+            if exc.name != "torch":
+                raise
             self.skipTest("Torch is exercised by the dedicated full32 CPU workflow")
 
         original_ids = torch.tensor([[10, 11], [20, 21]], dtype=torch.long)
