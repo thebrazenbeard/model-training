@@ -29,6 +29,16 @@ from trainingday.r201_owner_claim_candidate import (
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _UTC = re.compile(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
+_NON_AUTHORITY_FLAGS = (
+    "owner_key_enrollment_authenticated",
+    "owner_source_rights_independently_reviewed",
+    "protected_evaluator_custody_authenticated",
+    "host_epoch_and_clock_authenticated",
+    "corpus_rights_admitted",
+    "gpu_lease_granted",
+    "physical_training_authorized",
+    "protected_evaluation_authorized",
+)
 
 
 def _require(condition: bool, reason: str) -> None:
@@ -110,10 +120,8 @@ def sign_owner_claim_offline(
         expected_protected_exclusion_receipt_sha256=exclusion_sha256,
         minimum_owner_key_epoch=epoch, now_utc=now_utc,
     )
-    _require(evidence["signature_valid_for_supplied_key"] is True
-             and evidence["owner_key_enrollment_authenticated"] is False
-             and evidence["corpus_rights_admitted"] is False
-             and evidence["physical_training_authorized"] is False,
+    _require(evidence.get("signature_valid_for_supplied_key") is True
+             and all(evidence.get(flag) is False for flag in _NON_AUTHORITY_FLAGS),
              "source-only denial contract changed; refuse export")
     return {
         "claim_bytes": wire,

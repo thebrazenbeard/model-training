@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from trainingday.r201_owner_claim_candidate import (
     DOMAIN, ClaimEvidenceError, inspect_r201_owner_claim_candidate,
@@ -59,11 +60,49 @@ class OwnerOfflineSignTest(unittest.TestCase):
             minimum_owner_key_epoch=4, now_utc=self.now,
         )
         self.assertTrue(evidence["signature_valid_for_supplied_key"])
-        for field in ("owner_key_enrollment_authenticated", "corpus_rights_admitted",
-                      "protected_evaluator_custody_authenticated", "gpu_lease_granted",
-                      "physical_training_authorized", "protected_evaluation_authorized"):
+        for field in (
+            "owner_key_enrollment_authenticated",
+            "owner_source_rights_independently_reviewed",
+            "protected_evaluator_custody_authenticated",
+            "host_epoch_and_clock_authenticated", "corpus_rights_admitted",
+            "gpu_lease_granted", "physical_training_authorized",
+            "protected_evaluation_authorized",
+        ):
             with self.subTest(field=field):
                 self.assertFalse(evidence[field])
+
+    def test_source_verifier_authority_drift_always_refuses_export(self):
+        """One accidental true or missing flag means no signed receipt."""
+        package = sign_owner_claim_offline(**self.fields)
+        canonical = inspect_r201_owner_claim_candidate(
+            claim_bytes=package["claim_bytes"],
+            detached_signature_hex=package["detached_signature_hex"],
+            supplied_owner_public_key=bytes.fromhex(package["public_key_hex"]),
+            expected_owner_identity="synthetic-owner",
+            expected_private_dev_commitment_sha256=self.dev,
+            expected_protected_exclusion_receipt_sha256=self.exclusion,
+            minimum_owner_key_epoch=4, now_utc=self.now,
+        )
+        for flag in (
+            "owner_key_enrollment_authenticated",
+            "owner_source_rights_independently_reviewed",
+            "protected_evaluator_custody_authenticated",
+            "host_epoch_and_clock_authenticated", "corpus_rights_admitted",
+            "gpu_lease_granted", "physical_training_authorized",
+            "protected_evaluation_authorized",
+        ):
+            with self.subTest(field=flag):
+                escalated = dict(canonical, **{flag: True})
+                with patch("trainingday.r201_owner_offline_sign.inspect_r201_owner_claim_candidate",
+                           return_value=escalated):
+                    with self.assertRaisesRegex(ClaimEvidenceError, "denial contract changed"):
+                        sign_owner_claim_offline(**self.fields)
+                omitted = dict(canonical)
+                del omitted[flag]
+                with patch("trainingday.r201_owner_offline_sign.inspect_r201_owner_claim_candidate",
+                           return_value=omitted):
+                    with self.assertRaisesRegex(ClaimEvidenceError, "denial contract changed"):
+                        sign_owner_claim_offline(**self.fields)
 
     def test_withhold_stays_hold(self):
         package = sign_owner_claim_offline(**dict(self.fields, decision="WITHHOLD"))
