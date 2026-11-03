@@ -19,6 +19,10 @@ from trainingday.admission import AdmissionError, admit, _hash_file
 from trainingday.labyrinth_intake import SCHEMA as LABYRINTH_SCHEMA, admit_labyrinth
 from trainingday.numeric_prompt import NUMERIC_QUESTION_CONTRACT, numeric_question
 from trainingday.checkpoint_custody import canonical_sha, create_custody, validate_custody
+from trainingday.checkpoint_stop import (
+    build_checkpoint_stop_callback, make_paused_phase_receipt,
+    validate_checkpoint_stop_request,
+)
 
 
 BASE_ID = "Qwen/Qwen3.5-4B"
@@ -167,6 +171,7 @@ def _parameter_digest(model, torch) -> tuple[str, int]:
 
 
 def validate_run(args) -> tuple[dict, list[dict], dict, Path]:
+    validate_checkpoint_stop_request(args)
     step_cap = 32 if _r16(args) else 8
     if not (args.mode == "zero" and args.steps == 0
             or args.mode in {"correct", "corrupt"} and 1 <= args.steps <= step_cap):
@@ -293,6 +298,14 @@ def train(args) -> dict:
     else:
         if output != r16_output:
             raise RuntimeError("R16 output contract path changed")
+    checkpoint_stopper = None
+    if validate_checkpoint_stop_request(args):
+        checkpoint_stopper = build_checkpoint_stop_callback(
+            stack["transformers"].TrainerCallback,
+            trainer_work=output / "trainer-work",
+            contract_sha256=r16_contract_sha,
+            stop_step=args.stop_after_checkpoint_step,
+        )
     try:
         cfg = stack["SFTConfig"](
             output_dir=str(output / "trainer-work"),
@@ -307,6 +320,7 @@ def train(args) -> dict:
             logging_steps=1,
             save_strategy="steps" if _r16(args) else "no",
             save_steps=8 if _r16(args) else 500,
+            save_only_model=False,
             eval_strategy="no",
             report_to=[], seed=args.seed, data_seed=args.seed,
         )
@@ -314,6 +328,7 @@ def train(args) -> dict:
             model=model, args=cfg,
             train_dataset=stack["Dataset"].from_list(prepared),
             processing_class=tokenizer, peft_config=lora,
+            callbacks=[checkpoint_stopper] if checkpoint_stopper else None,
         )
         # TRL's constructor may recast trainables to BF16, so the fix belongs
         # after it and before the optimizer captures trainable references.
@@ -338,12 +353,45 @@ def train(args) -> dict:
                 if _r16(args) and resume_checkpoint else None
             )
         observed_steps = int(trainer.state.global_step)
-        if observed_steps != args.steps:
-            raise RuntimeError(f"optimizer step count mismatch:{observed_steps}!={args.steps}")
+        expected_steps = (checkpoint_stopper and 8) or args.steps
+        if (observed_steps != expected_steps
+                or checkpoint_stopper is not None and not checkpoint_stopper.triggered):
+            raise RuntimeError(f"Trainer global step mismatch:{observed_steps}!={expected_steps}"
+                               f" (planned total={args.steps}, pause requested={checkpoint_stopper is not None})")
         after, count_after = _parameter_digest(trainer.model, torch)
         if count_after != count or ((before == after) != (args.mode == "zero")):
             raise RuntimeError("invalid LoRA tensor-change outcome")
         precision_after = verify_trainable(trainer.model, torch, permit_cast=False)
+        if checkpoint_stopper is not None:
+            # The callback ran only *after* Trainer's completed checkpoint-8
+            # save. Repeat the opaque-byte inventory after train() returned;
+            # this is still NOT post-process-exit durability or external custody.
+            checkpoint_path = output / "trainer-work" / "checkpoint-8"
+            custody = create_custody(checkpoint_path, contract_sha256=r16_contract_sha)
+            if custody != checkpoint_stopper.custody:
+                raise RuntimeError("R16 paused checkpoint bytes changed after on_save")
+            custody_path = output / "latest-checkpoint-custody.json"
+            custody_path.write_text(json.dumps(custody, sort_keys=True, indent=2) + "\n",
+                                    encoding="utf-8")
+            receipt = make_paused_phase_receipt(
+                preflight, custody=custody, contract_sha256=r16_contract_sha,
+                custody_file_sha256=_hash_file(custody_path),
+            )
+            receipt.update({
+                "seed": args.seed, "trainable_parameter_count": count,
+                "trainable_digest_before": before, "trainable_digest_after": after,
+                "base_binding_sha256": _hash_file(args.base_binding),
+                "token_budget": tokens, "target_coverage": coverage,
+                "fp32_before": precision, "fp32_after": precision_after,
+                "training_loss": float(training_result.training_loss),
+                "optimizer_identity": optimizer_identity,
+                "runtime": {"torch": torch.__version__,
+                            "transformers": stack["transformers"].__version__},
+            })
+            (output / "training_receipt.json").write_text(
+                json.dumps(receipt, indent=2, default=str) + "\n", encoding="utf-8"
+            )
+            return receipt
         adapter_dir = output / "adapter"
         trainer.model.save_pretrained(adapter_dir, safe_serialization=True)
         saved_model = adapter_dir / "adapter_model.safetensors"
@@ -407,6 +455,8 @@ def main() -> None:
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--r16-checkpointable", action="store_true",
                         help="Bounded R16 experiment: 8–32 steps with optimizer/RNG checkpoint custody")
+    parser.add_argument("--stop-after-checkpoint-step", type=int,
+                        help="Fresh R16 16-step arm: gracefully pause only after verified checkpoint-8 save")
     parser.add_argument("--resume-checkpoint", type=Path,
                         help="Exact externally inventoried R16 Trainer checkpoint")
     parser.add_argument("--resume-custody", type=Path,

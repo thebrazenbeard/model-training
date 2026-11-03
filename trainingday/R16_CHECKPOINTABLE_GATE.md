@@ -38,6 +38,36 @@ establish that longer R16 training improves generated reasoning.
 
 ## Resume after interruption
 
+### Deliberate checkpoint-eight pause for an equivalence experiment
+
+For a controlled uninterrupted-16 versus paused-8-plus-resumed-8 comparison,
+start the *paused* arm with **`--steps 16` from the beginning**. Add
+`--stop-after-checkpoint-step 8` only to the fresh trained R16 invocation.
+Keep the complete input selection, seed, output run ID, optimizer and other
+arguments unchanged on the eventual resume; the stop option is **phase-local**
+and deliberately is not included in the immutable training contract.
+
+The dedicated Transformers `TrainerCallback.on_save` callback inventories
+`trainer-work/checkpoint-8` after the framework's checkpoint save returns.
+It verifies the adapter, optimizer, scheduler, RNG, state step and file hashes
+before requesting graceful training termination. The runner must observe
+global step 8 after `train()` returns and must inventory the same unchanged
+checkpoint bytes again. Its receipt is explicitly
+`R16_STEP8_CHECKPOINT_PAUSED_NOT_COMPLETE`, with planned steps 16, observed
+Trainer step 8, no final adapter saved, no promotion and optimizer resume
+equivalence unverified. Missing/changed bytes fail closed; no partial receipt
+may be upgraded to a successful 16-step run.
+
+This post-save inventory is **not** a durable fsync, signed owner custody or
+independent proof of eight effective optimizer updates. Allow the process to
+exit, rehash from a separate trusted verifier and externally pin custody
+before reloading any `optimizer.pt` or `rng_state.pth` pickle-serialized files.
+The installed GPU/host authority and separately admitted data are still
+mandatory for any physical use. This option is source-only until a tiny
+CPU Trainer callback-lifecycle test and an owner-authorized physical run pass.
+
+### General resume contract
+
 1. Confirm the last `trainer-work/checkpoint-N` write finished. Checkpoint
    files are treated as executable/serialized inputs; never accept a downloaded
    or untrusted checkpoint even if an attacker provides a matching digest.
