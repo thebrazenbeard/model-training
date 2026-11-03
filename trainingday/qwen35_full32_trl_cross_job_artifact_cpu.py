@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -20,7 +21,78 @@ from trainingday import qwen35_full32_trl_optimizer_resume_cpu as witness
 
 SCHEMA = "TRAININGDAY_QWEN35_TINY_PUBLIC_CROSS_JOB_ARTIFACT_V1"
 RECEIPT = "cross-job-expected-v1.json"
+DIAGNOSTIC = "direct-step000002.safetensors"
+# Predeclared diagnostic envelope, not an acceptance replacement for strict SHA.
+DRIFT_ABS_LIMIT = 1e-5
+DRIFT_REL_LIMIT = 1e-4
+LOGIT_SAMPLES = 4096
 _HEX = set("0123456789abcdef")
+
+
+
+def _snapshot_map(model, ids, torch):
+    """Read-only final synthetic trainable tensors plus sampled probe logits."""
+    values = {"param/" + n: p.detach().cpu().contiguous().clone()
+              for n, p in model.named_parameters() if p.requires_grad}
+    if len(values) != 304:
+        raise AssertionError("diagnostic expected 304 LoRA trainables")
+    logits = integrated._probe_logits(model, ids, torch).detach().cpu().flatten()
+    stride = max(1, logits.numel() // LOGIT_SAMPLES)
+    values["logits_sample"] = logits[::stride][:LOGIT_SAMPLES].contiguous().clone()
+    return values
+
+
+def _scalar_drift(reference, observed, *, abs_limit=DRIFT_ABS_LIMIT,
+                  rel_limit=DRIFT_REL_LIMIT) -> dict:
+    """Symmetric deterministic scalar envelope; does not change strict SHA gate."""
+    if len(reference) != len(observed) or not reference:
+        raise ValueError("diagnostic shape or empty tensor mismatch")
+    if abs_limit < 0 or rel_limit < 0:
+        raise ValueError("negative diagnostic tolerance")
+    max_abs = max_rel = sum_abs = 0.0
+    outside = differing = 0
+    for expected, actual in zip(reference, observed):
+        a, b = float(expected), float(actual)
+        if not math.isfinite(a) or not math.isfinite(b):
+            raise ValueError("nonfinite diagnostic tensor value")
+        delta = abs(a - b)
+        scale = max(abs(a), abs(b))
+        max_abs = max(max_abs, delta)
+        max_rel = max(max_rel, delta / max(scale, 1e-12))
+        sum_abs += delta
+        differing += int(delta != 0.0)
+        outside += int(delta > abs_limit + rel_limit * scale)
+    return {"elements": len(reference), "changed_elements": differing,
+            "outside_predeclared_envelope": outside,
+            "max_abs": max_abs, "max_relative": max_rel,
+            "mean_abs": sum_abs / len(reference),
+            "abs_limit": abs_limit, "rel_limit": rel_limit}
+
+
+def _tensor_drift(expected: dict, actual: dict) -> dict:
+    if set(expected) != set(actual):
+        raise ValueError("diagnostic tensor names differ")
+    if "logits_sample" not in expected:
+        raise ValueError("sampled logits missing from diagnostic")
+    params_expected, params_actual = [], []
+    for name in sorted(expected):
+        if tuple(expected[name].shape) != tuple(actual[name].shape):
+            raise ValueError("diagnostic tensor shape differs: " + name)
+        if name == "logits_sample":
+            continue
+        if not name.startswith("param/"):
+            raise ValueError("unexpected diagnostic tensor identity")
+        params_expected.extend(expected[name].flatten().tolist())
+        params_actual.extend(actual[name].flatten().tolist())
+    if len(expected) != 305:
+        raise ValueError("diagnostic expected 304 parameters plus logits sample")
+    return {"trainable_tensors": len(expected) - 1,
+            "trainable": _scalar_drift(params_expected, params_actual),
+            "sampled_logits": _scalar_drift(
+                expected["logits_sample"].flatten().tolist(),
+                actual["logits_sample"].flatten().tolist()),
+            "logit_sampling": "even_stride_at_most_4096_not_full_logits",
+            "strict_sha_acceptance_unchanged": True}
 
 
 def _cpu_signature() -> dict[str, str]:
@@ -47,7 +119,7 @@ def _read_receipt(path: Path) -> dict:
     receipt = json.loads(raw)
     expected = {"schema", "writer_run_id", "writer_job", "writer_pid", "writer_cpu", "checkpoint_manifest_sha256",
                 "direct_adapter_sha256", "direct_optimizer_sha256", "direct_logits_sha256",
-                "first_step_loss", "second_step_loss", "training_authorized"}
+                "diagnostic_snapshot_sha256", "first_step_loss", "second_step_loss", "training_authorized"}
     if not isinstance(receipt, dict) or set(receipt) != expected or receipt["schema"] != SCHEMA:
         raise ValueError("cross-job receipt schema changed")
     if receipt["training_authorized"] is not False:
@@ -63,13 +135,15 @@ def _read_receipt(path: Path) -> dict:
             not _is_sha(receipt["writer_cpu"]["flags_sha256"])):
         raise ValueError("cross-job writer CPU diagnostic malformed")
     for key in ("checkpoint_manifest_sha256", "direct_adapter_sha256",
-                "direct_optimizer_sha256", "direct_logits_sha256"):
+                "direct_optimizer_sha256", "direct_logits_sha256", "diagnostic_snapshot_sha256"):
         if not _is_sha(receipt[key]):
             raise ValueError("cross-job digest malformed")
     if not all(type(receipt[k]) is float for k in ("first_step_loss", "second_step_loss")):
         raise ValueError("cross-job loss receipt malformed")
     if witness._sha(path / witness.MANIFEST) != receipt["checkpoint_manifest_sha256"]:
         raise ValueError("cross-job checkpoint manifest corrupted")
+    if witness._sha(path / DIAGNOSTIC) != receipt["diagnostic_snapshot_sha256"]:
+        raise ValueError("cross-job diagnostic snapshot corrupted")
     witness._validate_checkpoint(path)
     return receipt
 
@@ -93,10 +167,13 @@ def write(path: Path) -> dict:
     second_loss = witness._step(torch, model, optimizer, batches[1])
     ids = torch.tensor([integrated._synthetic_rows(integrated._load_tokenizer(
         Path(os.environ["TRAININGDAY_QWEN_TOKENIZER_JSON"])))[0]["input_ids"]], dtype=torch.long)
+    from safetensors.torch import save_file
+    save_file(_snapshot_map(model, ids, torch), str(path / DIAGNOSTIC))
     receipt = {"schema": SCHEMA, "writer_run_id": os.environ["GITHUB_RUN_ID"],
                "writer_job": "writer", "writer_cpu": _cpu_signature(),
                "writer_pid": os.getpid(),
                "checkpoint_manifest_sha256": witness._sha(path / witness.MANIFEST),
+               "diagnostic_snapshot_sha256": witness._sha(path / DIAGNOSTIC),
                "direct_adapter_sha256": witness._trainable_digest(model),
                "direct_optimizer_sha256": witness._optimizer_digest(optimizer),
                "direct_logits_sha256": integrated._sha_tensor(integrated._probe_logits(model, ids, torch)),
@@ -121,8 +198,16 @@ def read(path: Path) -> dict:
     torch.set_num_interop_threads(2)
     torch.backends.mkldnn.enabled = False
     torch.use_deterministic_algorithms(True)
-    result = witness._resume(path)
+    from safetensors.torch import load_file
+    numeric = {}
+
+    def observe(model, ids, torch):
+        numeric.update(_tensor_drift(load_file(str(path / DIAGNOSTIC), device="cpu"),
+                                     _snapshot_map(model, ids, torch)))
+
+    result = witness._resume(path, _after_step_diagnostic=observe)
     print(json.dumps({"diagnostic": "CROSS_JOB_NUMERICAL_COMPARISON_ONLY",
+                      "predeclared_tensor_drift": numeric,
                       "writer_cpu": receipt["writer_cpu"], "reader_cpu": _cpu_signature(),
                       "writer_digests": {k: receipt[k] for k in (
                           "direct_adapter_sha256", "direct_optimizer_sha256", "direct_logits_sha256")},
