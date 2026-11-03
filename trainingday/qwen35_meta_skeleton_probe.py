@@ -59,6 +59,36 @@ def verified_config(path: Path) -> dict:
     return payload["text_config"]
 
 
+def bound_text_meta_memory(*, text_parameter_elements: int,
+                           tied_embedding_elements: int) -> dict:
+    """Idealized weight-storage arithmetic, not measured GPU residency.
+
+    The bound presumes BF16 tied embeddings and optimistically 4-bit packing
+    for every remaining parameter, with zero quantization metadata overhead.
+    Adapter state, gradients, activations, CUDA, and host staging are excluded.
+    """
+    if (type(text_parameter_elements) is not int
+            or type(tied_embedding_elements) is not int
+            or tied_embedding_elements <= 0
+            or text_parameter_elements <= tied_embedding_elements):
+        raise MetaSkeletonProbeError("invalid text meta-parameter inventory")
+    other = text_parameter_elements - tied_embedding_elements
+    bf16_bytes = 2 * text_parameter_elements
+    return {
+        "text_parameter_elements": text_parameter_elements,
+        "tied_embedding_parameter_elements": tied_embedding_elements,
+        "bf16_full_resident_weight_bytes": bf16_bytes,
+        "optimistic_nf4_with_bf16_embedding_bytes": 2 * tied_embedding_elements
+                                                     + (other + 1) // 2,
+        "four_gib_capacity_bytes": 4 * 1024 ** 3,
+        "full_resident_bf16_weights_exceed_four_gib": bf16_bytes > 4 * 1024 ** 3,
+        "weight_count_scope": "TEXT_TOWER_META_ONLY_NOT_MULTIMODAL",
+        "memory_fit": "UNKNOWN",
+        "optimizer_steps_observed": 0,
+        "training_authorized": False,
+    }
+
+
 def run_meta_probe(config_path: Path) -> dict:
     """Instantiate *empty* official text skeleton plus minimal PEFT adapter."""
     text = verified_config(config_path)  # Fail before importing heavy dependencies.
@@ -75,6 +105,13 @@ def run_meta_probe(config_path: Path) -> dict:
         raise MetaSkeletonProbeError("text config changed during Transformers parsing")
     with init_empty_weights(include_buffers=True):
         skeleton = Qwen3_5ForCausalLM(config)
+        skeleton.tie_weights()
+        if skeleton.get_output_embeddings().weight is not skeleton.get_input_embeddings().weight:
+            raise MetaSkeletonProbeError("official tied text embeddings not shared")
+        text_memory = bound_text_meta_memory(
+            text_parameter_elements=sum(p.numel() for p in skeleton.parameters()),
+            tied_embedding_elements=skeleton.get_input_embeddings().weight.numel(),
+        )
         model = get_peft_model(
             skeleton,
             LoraConfig(r=4, lora_alpha=8, lora_dropout=0, bias="none",
@@ -101,6 +138,7 @@ def run_meta_probe(config_path: Path) -> dict:
         },
         "model_class": type(skeleton).__name__,
         "meta_parameters_inspected": len(parameters),
+        "base_text_meta_memory": text_memory,
         "meta_only": True,
         "adapter_name_coverage": coverage,
         "pretrained_weights_loaded": False,
