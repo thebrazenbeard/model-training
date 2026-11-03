@@ -1053,7 +1053,12 @@ def _default_stage0_gpu_lock_path():
 def exclusive_stage0_gpu_lock(lock_path=None):
     from contextlib import contextmanager
     from pathlib import Path
-    import msvcrt
+    import os
+
+    if os.name == "nt":
+        import msvcrt
+    else:
+        import fcntl
 
     @contextmanager
     def _scope():
@@ -1071,7 +1076,10 @@ def exclusive_stage0_gpu_lock(lock_path=None):
                 handle.flush()
             handle.seek(0)
             try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                if os.name == "nt":
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
                 raise Stage0Hold(
                     "exclusive Stage-0 GPU lock is already held"
@@ -1084,7 +1092,10 @@ def exclusive_stage0_gpu_lock(lock_path=None):
                 _ACTIVE_STAGE0_GPU_LOCKS.discard(key)
                 handle.seek(0)
                 try:
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    if os.name == "nt":
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 except OSError:
                     pass
         finally:
