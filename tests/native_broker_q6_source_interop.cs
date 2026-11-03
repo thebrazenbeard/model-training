@@ -117,6 +117,24 @@ internal static class HostQ6SourceInteropNativeTests {
         next["commit_index"] = 14;
         Reject(Rehash(casRoot), "Q6 noncontiguous CAS despite fresh digest");
 
+        // The Q6 index is a monotonic nonnegative counter, never a wrapping int64.
+        // Both subjects are rehashed to isolate arithmetic from checksum failure.
+        var overflowRoot = Parse(raw);
+        var overflowLease = Obj(Obj(overflowRoot["host_launch"])["lease"]);
+        var overflowCas = Obj(overflowRoot["q6_cas_request"]);
+        Obj(overflowCas["expected"])["commit_index"] = long.MaxValue;
+        Obj(overflowCas["new"])["commit_index"] = long.MinValue;
+        overflowLease["expected_witness_epoch"] = long.MaxValue;
+        Reject(Rehash(overflowRoot), "Q6 int64 overflow from MAX to MIN rejected");
+
+        var negativeRoot = Parse(raw);
+        var negativeLease = Obj(Obj(negativeRoot["host_launch"])["lease"]);
+        var negativeCas = Obj(negativeRoot["q6_cas_request"]);
+        Obj(negativeCas["expected"])["commit_index"] = -2;
+        Obj(negativeCas["new"])["commit_index"] = -1;
+        negativeLease["expected_witness_epoch"] = -2;
+        Reject(Rehash(negativeRoot), "Q6 negative commit index cannot advance");
+
         var signerRoot = Parse(raw);
         Obj(signerRoot["host_launch"])["caller_public_key"] = "attacker-supplied";
         Reject(Rehash(signerRoot), "extra caller-provided key rejected");
