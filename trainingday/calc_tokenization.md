@@ -16,12 +16,16 @@ A caller cannot create arbitrary new rows and self-hash a manifest to pass this
 consumer. This is still a source pin, not an authenticated identity grant.
 
 The tokenizer is a caller-provided object exposing `encode`, `decode` and an
-integer `eos_token_id`. With `add_special_tokens=False`, each row uses
-`Q: <prompt>\nA: <answer><EOS>`. Only the answer and EOS have non-`-100`
-labels; the prompt is masked. The concatenated separately encoded tokens must
-decode to the exact original text. Lengths above 64 **raise**, never truncate
-the answer. The output is Python lists; PyTorch, Transformers, GPU state,
-model weights and private DEV data are not accessed by this module.
+integer `eos_token_id`. With `add_special_tokens=False`, each row's displayed
+text remains `Q: <prompt>\nA: <answer><EOS>`. The **V2** label boundary is
+immediately after `A:`: the leading separator space belongs to the supervised
+completion (`" " + answer`), along with the digits/sign and EOS. The question
+and `A:` are masked. This prevents Qwen BPE's `" -"` token from straddling the
+masked/supervised boundary for negative answers. The complete encoding must
+exactly equal the concatenated prefix/completion token IDs, and must decode
+to the intended original text. Lengths above 64 **raise**, never truncate the
+answer. The output is Python lists; PyTorch, Transformers, GPU state, model
+weights and private DEV data are not accessed by this module.
 
 The *model target* is bound separately from the model-agnostic Calc manifest.
 Only `Qwen/Qwen3.5-4B` at R18's exact revision
@@ -36,8 +40,17 @@ using the host-owned pinned-base boundary before any protected operation.
   rights, source custody, independent mathematical verification or a GPU lease.
 - No hidden DEV rows, answers or nonce enter the tokenizer. The module refuses
   non-TRAIN IDs and positive rights/GPU/evaluator/training flags.
-- We have not exercised this seam with the real Qwen tokenizer or full Calc
-  corpus on Lappy. Tokenizer-specific merges may trigger a safe rejection.
+- A bounded source-side check of all 1,024 TRAIN rows using the official
+  `Qwen/Qwen3.5-4B` tokenizer at revision
+  `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a` found 520 canonical
+  mismatches under V1's split before the separator space and zero under V2.
+  The checked `tokenizer.json` SHA-256 was
+  `5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42`.
+  This is a reproducible source/tokenizer experiment, **not** independent
+  host custody, authenticated installed weights or physical training proof.
+  Future tokenizer revisions and other model variants may still fail closed.
+- Generation and evaluation must supply the matching prompt prefix ending
+  in `A:` and allow the completion to begin with its supervised space.
 - The source-only output cannot launch training and reports zero optimizer
   steps. The physical TRAININGDAY broker remains an unconditional HARD HOLD.
 - This exact-integer polynomial family says nothing about Calc's approximate
