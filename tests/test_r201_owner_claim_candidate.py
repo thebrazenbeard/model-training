@@ -139,6 +139,31 @@ class R201OwnerClaimCandidateTest(unittest.TestCase):
                 with self.assertRaises(AdmissionError):
                     self.inspect(forged, expected_owner_identity=bad)
 
+    def test_escaped_lone_surrogates_reject_with_declared_error(self):
+        original = canonical(self.claim)
+        for key, original_value in (
+            ("owner_identity", "synthetic-test-owner"),
+            ("rights_basis", RIGHTS_BASIS),
+        ):
+            for malformed in (b"\\ud800", b"\\udfff"):
+                with self.subTest(key=key, escaped=malformed):
+                    needle = (f'"{key}":"{original_value}"').encode("ascii")
+                    replacement = b'"' + key.encode("ascii") + b'":"' + malformed + b'"'
+                    raw = original.replace(needle, replacement)
+                    self.assertNotEqual(raw, original)
+                    with self.assertRaisesRegex(AdmissionError, "invalid Unicode"):
+                        self.inspect(raw=raw)
+
+    def test_valid_surrogate_pair_remains_canonicality_rejection(self):
+        original = canonical(self.claim)
+        raw = original.replace(b'"owner_identity":"synthetic-test-owner"',
+                               b'"owner_identity":"\\ud83d\\ude00"')
+        # Valid escape sequence decodes to a Unicode scalar value. Its
+        # canonical wire spelling must still be unescaped UTF-8, so rejection
+        # here is not the invalid-Unicode exception path.
+        with self.assertRaisesRegex(AdmissionError, "canonical JSON"):
+            self.inspect(raw=raw)
+
     def test_replay_epoch_expiry_and_boolean_epoch_refuse(self):
         with self.assertRaises(AdmissionError):
             self.inspect(minimum_owner_key_epoch=6)
