@@ -188,7 +188,7 @@ def _save(path, model, optimizer, batch, frozen_sha, names, torch):
     assert _validate_checkpoint(path) == manifest
 
 
-def _resume(path: Path):
+def _resume(path: Path, *, _after_step_diagnostic=None):
     # Run the integrity gate before importing the model framework or unpickling.
     manifest = _validate_checkpoint(path)
     integrated._offline_cpu()
@@ -221,6 +221,9 @@ def _resume(path: Path):
     loss = _step(torch, model, optimizer, batches[1])
     ids = torch.tensor([integrated._synthetic_rows(integrated._load_tokenizer(
         Path(os.environ["TRAININGDAY_QWEN_TOKENIZER_JSON"])))[0]["input_ids"]], dtype=torch.long)
+    if _after_step_diagnostic is not None:
+        # Read-only, opt-in synthetic cross-job diagnostics; normal resume is unchanged.
+        _after_step_diagnostic(model, ids, torch)
     return {"status": "RESUMED_ADAMW_REAL_SECOND_STEP_PASS", "pid": os.getpid(),
             "second_step_loss": loss, "adapter_sha256": _trainable_digest(model),
             "logits_sha256": integrated._sha_tensor(integrated._probe_logits(model, ids, torch)),
