@@ -3,8 +3,9 @@
 The two-layer tiny pilot passed hosted CI; this expands the same random,
 miniature-width architecture to all 24 Gated DeltaNet and eight full-attention
 layers. It does NOT use official Qwen weights, GPU, protected data or a lease.
-Its success would prove only CPU PEFT injection, gradient flow and an optimizer
-step for this miniature configuration, not 4 GiB fit or model quality.
+Its success would prove only CPU PEFT injection, per-target LoRA-B gradient
+flow and per-target optimizer changes for this miniature configuration, not
+4 GiB fit or model quality.
 """
 
 from __future__ import annotations
@@ -125,6 +126,18 @@ def run() -> dict:
     b_params = {name: p for name, p in trainable.items() if "lora_B" in name}
     if len(b_params) != TARGET_COUNT:
         raise AssertionError("LoRA-B tensor count does not match all 152 projections")
+    # Map each explicit source target to the *actual* injected PEFT weight.
+    # Global hashes and per-layer sums cannot witness silent individual targets.
+    peft_modules = dict(model.named_modules())
+    b_by_target = {
+        target: peft_modules[module_name].lora_B["default"].weight
+        for target, module_name in injected.items()
+    }
+    if (set(b_by_target) != set(targets)
+            or len({id(p) for p in b_by_target.values()}) != TARGET_COUNT
+            or {id(p) for p in b_by_target.values()} != {id(p) for p in b_params.values()}):
+        raise AssertionError("152 explicit targets do not map bijectively to LoRA-B parameters")
+    before_by_target = {name: p.detach().clone() for name, p in b_by_target.items()}
     before = _hash_tensors(b_params)
     optimizer = torch.optim.AdamW(list(trainable.values()), lr=5e-3)
     ids = torch.tensor([[5, 6, 7, 8, 9, 10]], dtype=torch.long, device="cpu")
@@ -148,10 +161,33 @@ def run() -> dict:
             raise AssertionError(f"layer {layer} received zero adapter gradient")
         gradient_sum_by_layer.append(total)
 
+    # A layer aggregate can hide a dead LoRA projection. Count and identify
+    # every target separately, then inspect each tensor after the optimizer.
+    per_target_gradient_sums: dict[str, float] = {}
+    absent_target_gradients: list[str] = []
+    for target, param in b_by_target.items():
+        grad = param.grad
+        if grad is None or not torch.isfinite(grad).all():
+            absent_target_gradients.append(target)
+        else:
+            per_target_gradient_sums[target] = float(grad.abs().sum())
+    if absent_target_gradients:
+        raise AssertionError(f"absent/nonfinite per-target LoRA-B gradients: {sorted(absent_target_gradients)}")
+    zero_gradient_targets = sorted(
+        name for name, magnitude in per_target_gradient_sums.items() if magnitude <= 0.0)
+
     optimizer.step()
+    unchanged_targets = sorted(
+        name for name, param in b_by_target.items()
+        if torch.equal(before_by_target[name], param.detach()))
     after = _hash_tensors(b_params)
     if before == after:
         raise AssertionError("full32 AdamW step changed no adapter bytes")
+    if zero_gradient_targets or unchanged_targets:
+        raise AssertionError(
+            "individual LoRA-B target witness failed: "
+            f"zero_gradient_targets={zero_gradient_targets}; "
+            f"unchanged_targets={unchanged_targets}")
     if not torch.equal(frozen_embed, model.base_model.model.model.embed_tokens.weight):
         raise AssertionError("frozen embedding changed")
     qkv_after = model.base_model.model.model.layers[0].linear_attn.in_proj_qkv.base_layer.weight
@@ -179,6 +215,10 @@ def run() -> dict:
         "lora_projections_injected": len(injected),
         "layers_with_nonzero_lora_b_gradients": len(gradient_sum_by_layer),
         "smallest_layer_gradient_sum": min(gradient_sum_by_layer),
+        "lora_b_targets_with_nonzero_gradients": sum(
+            magnitude > 0 for magnitude in per_target_gradient_sums.values()),
+        "smallest_target_gradient_sum": min(per_target_gradient_sums.values()),
+        "lora_b_targets_changed_after_step": TARGET_COUNT - len(unchanged_targets),
         "trainable_lora_parameters": sum(int(p.numel()) for p in trainable.values()),
         "loss": float(loss.item()),
         "lora_b_sha256_before": before,

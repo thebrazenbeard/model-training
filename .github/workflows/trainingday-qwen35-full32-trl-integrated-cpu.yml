@@ -1,0 +1,51 @@
+name: TRAININGDAY Qwen3.5 tiny full32 real TRL-to-PEFT CPU and reload
+
+on:
+  push:
+    branches: ["fix/**", "test/**", "feat/**"]
+  pull_request:
+    branches: [main, "fix/**", "test/**", "feat/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  qwen35-full32-real-trl-peft-reload-cpu:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      WANDB_DISABLED: "true"
+      TRAININGDAY_QWEN_TOKENIZER_JSON: /tmp/trainingday-qwen35-official-tokenizer.json
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned public CPU-only TRL and PEFT libraries
+        run: |
+          python -m pip install --disable-pip-version-check \
+            --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.14.0+cpu'
+          python -m pip install --disable-pip-version-check \
+            'transformers==5.22.1' 'peft==0.21.2' 'trl==1.17.1' \
+            'datasets==4.7.0' 'tokenizers==0.23.3'
+      - name: Fetch and checksum only pinned official tokenizer JSON
+        env:
+          HF_HUB_OFFLINE: "0"
+        run: |
+          curl --fail --location --retry 2 --silent --show-error \
+            'https://huggingface.co/Qwen/Qwen3.5-4B/resolve/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/tokenizer.json' \
+            --output "$TRAININGDAY_QWEN_TOKENIZER_JSON"
+          python -c 'import hashlib,os,pathlib; p=pathlib.Path(os.environ["TRAININGDAY_QWEN_TOKENIZER_JSON"]); assert hashlib.sha256(p.read_bytes()).hexdigest()=="5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42"'
+      - name: Verify source and controls
+        run: python -m unittest discover -s tests -p 'test_trainingday_qwen35_full32_trl_integrated_cpu.py' -v
+      - name: Require real TRL mask to full32 Qwen PEFT optimizer and fresh-process reload
+        run: python -m trainingday.qwen35_full32_trl_integrated_cpu
