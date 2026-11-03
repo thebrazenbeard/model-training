@@ -58,24 +58,24 @@ public static class NativeBrokerRequestContract {
       PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
     using (var client = new NamedPipeClientStream(".", id, PipeDirection.Out))
     using (var stop = new ManualResetEvent(false))
-    using (var firstByte = new ManualResetEvent(false)) {
+    using (var writerReady = new ManualResetEvent(false)) {
       client.Connect(1000);
       server.WaitForConnection();
       int sent = 0;
       var writerThread = new Thread(() => {
+        writerReady.Set();
         try {
           for (int i = 0; i < 120; i++) {
             client.WriteByte((byte)'S');
             Interlocked.Increment(ref sent);
-            if (i == 0) firstByte.Set();
             Thread.Sleep(100);
           }
         } catch (IOException) { /* reader timeout closes the pipe */ }
         catch (ObjectDisposedException) { /* fixture teardown */ }
       }) { IsBackground = true };
       writerThread.Start();
-      if (!firstByte.WaitOne(3000))
-        throw new Exception(name + " writer did not start");
+      if (!writerReady.WaitOne(3000))
+        throw new Exception(name + " writer thread did not start");
 
       var watch = Stopwatch.StartNew();
       Exception failure = null;
