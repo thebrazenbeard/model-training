@@ -108,7 +108,7 @@ def _validate_checkpoint(path: Path) -> dict:
     return manifest
 
 
-def _context(torch, *, from_adapter: Path | None = None):
+def _context(torch, *, from_adapter: Path | None = None, lora_dropout: float = 0.0):
     from datasets import Dataset
     from peft import LoraConfig, PeftModel, get_peft_model
     from transformers import PreTrainedTokenizerFast
@@ -124,7 +124,7 @@ def _context(torch, *, from_adapter: Path | None = None):
     frozen_sha = integrated._sha_tensor(base.model.embed_tokens.weight)
     if from_adapter is None:
         model = get_peft_model(base, LoraConfig(
-            r=4, lora_alpha=8, lora_dropout=0.0, bias="none",
+            r=4, lora_alpha=8, lora_dropout=lora_dropout, bias="none",
             task_type="CAUSAL_LM", target_modules=smoke.expected_target_modules()))
     else:
         model = PeftModel.from_pretrained(base, str(from_adapter), is_trainable=True)
