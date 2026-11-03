@@ -9,8 +9,7 @@ This module generates public TRAIN rows only. Protected evaluation is separate.
 from __future__ import annotations
 
 import hashlib
-import importlib
-from importlib.machinery import PathFinder, SourceFileLoader
+from importlib.machinery import ModuleSpec, PathFinder, SourceFileLoader
 import json
 import math
 from pathlib import Path
@@ -76,46 +75,50 @@ def _jsonl(rows: list[dict]) -> bytes:
 
 
 def _load_verified_symbolic():
-    """Use only the known Calc symbolic source, never silently fall back.
+    """Execute only SHA-pinned Calc source bytes, without its Python .pyc cache.
 
-    Import is a normal Python dependency operation, *not* a secure sandbox.
-    Verify both package initializer and module before execution as well as
-    after import.  A mutable filesystem or interpreter is not authenticated.
+    This deliberately does not import the external ``calc`` package: normal
+    Python import can execute timestamp-valid but forged .pyc files despite
+    matching .py hashes. A verified source module is loaded under an isolated
+    private name so dataclasses can find their defining module in sys.modules.
+    The interpreter and imported standard-library modules remain trusted;
+    this is provenance checking, not sandboxing.
     """
-    _init_path, preflight_path = _preflight_calc_files()
+    init_path, path = _preflight_calc_files()
+    if init_path.name != "__init__.py" or path.name != "symbolic.py":
+        raise CalcCurriculumError("Calc source filename changed after preflight")
     try:
-        symbolic = importlib.import_module("calc.symbolic")
-    except ImportError as exc:
-        raise CalcCurriculumError(
-            "Calc symbolic source unavailable; install the pinned local Calc checkout"
-        ) from exc
-    if type(symbolic) is not ModuleType:
-        raise CalcCurriculumError("Calc symbolic import is not a Python module")
-    spec = getattr(symbolic, "__spec__", None)
-    if (spec is None or getattr(spec, "name", None) != "calc.symbolic"
-            or type(getattr(spec, "origin", None)) is not str
-            or not isinstance(getattr(spec, "loader", None), SourceFileLoader)
-            or sys.modules.get("calc.symbolic") is not symbolic):
-        raise CalcCurriculumError("Calc symbolic imported module identity is unverified")
-    origin = getattr(symbolic, "__file__", None)
-    if type(origin) is not str:
-        raise CalcCurriculumError("Calc symbolic source path unavailable")
-    path = Path(origin).resolve(strict=True)
-    if Path(spec.origin).resolve(strict=True) != path or path != preflight_path:
-        raise CalcCurriculumError("Calc symbolic module spec/source path mismatch")
-    parent = sys.modules.get("calc")
-    if (type(parent) is not ModuleType
-            or type(getattr(parent, "__file__", None)) is not str
-            or Path(parent.__file__).resolve(strict=True) != _init_path
-            or hashlib.sha256(_init_path.read_bytes()).hexdigest() != CALC_INIT_SHA256):
-        raise CalcCurriculumError("Calc package changed or was substituted during import")
-    if path.name != "symbolic.py":
-        raise CalcCurriculumError("unexpected Calc symbolic module filename")
-    if hashlib.sha256(path.read_bytes()).hexdigest() != CALC_SYMBOLIC_SHA256:
-        raise CalcCurriculumError("Calc symbolic module SHA256 differs from pinned source")
-    for name in ("Const", "Var"):
-        if not hasattr(symbolic, name):
-            raise CalcCurriculumError(f"Calc symbolic oracle missing {name}")
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise CalcCurriculumError("Calc symbolic source disappeared") from exc
+    if hashlib.sha256(raw).hexdigest() != CALC_SYMBOLIC_SHA256:
+        raise CalcCurriculumError("Calc symbolic source changed before execution")
+
+    name = "trainingday._verified_calc_symbolic"
+    symbolic = ModuleType(name)
+    symbolic.__file__ = str(path)
+    symbolic.__package__ = "trainingday"
+    symbolic.__loader__ = SourceFileLoader(name, str(path))
+    symbolic.__spec__ = ModuleSpec(name, symbolic.__loader__, origin=str(path))
+    previous = sys.modules.get(name)
+    sys.modules[name] = symbolic
+    try:
+        # Compile the exact checked bytes, rather than loading a .pyc that may
+        # have a valid timestamp and size but entirely different instructions.
+        exec(compile(raw, str(path), "exec", dont_inherit=True), symbolic.__dict__)
+    except Exception as exc:
+        if previous is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+        raise CalcCurriculumError("verified Calc symbolic execution failed") from exc
+
+    if (hashlib.sha256(path.read_bytes()).hexdigest() != CALC_SYMBOLIC_SHA256
+            or hashlib.sha256(init_path.read_bytes()).hexdigest() != CALC_INIT_SHA256):
+        raise CalcCurriculumError("Calc source changed during execution")
+    for required in ("Const", "Var"):
+        if not hasattr(symbolic, required):
+            raise CalcCurriculumError(f"Calc symbolic oracle missing {required}")
     return symbolic
 
 

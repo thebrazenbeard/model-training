@@ -14,11 +14,14 @@ or model-quality result follows from this generator.
   `4bb35910f0f5897476911d7846498915e8a7150f7993d79a12360570c5199cf4`
 - Dependency: `calc.symbolic` (`Var`, `Const`, `Expr.diff`, `Expr.eval`).
   The package initializer and oracle source are checked against these pinned
-  hashes **before** normal Python import; the real module type, import spec,
-  loader/source path, `sys.modules` identity and oracle file hash are then
-  checked again after import. A concurrent source replacement, import-hook
-  attack, compromised interpreter or filesystem can still subvert this static
-  check; it is not a sandbox, host-trust attestation or package-signing grant.
+  hashes **before** execution. The oracle is then compiled from those exact
+  verified source bytes and executed under a private module name rather than
+  importing `calc` or consulting its bytecode cache. This prevents a forged,
+  timestamp-valid `.pyc` from silently substituting code while the source
+  hash matches. Source paths and hashes are checked again afterward. A
+  compromised interpreter, hostile Python runtime/import environment, or
+  concurrently mutable filesystem is still outside this static provenance
+  contract; it is not a sandbox or a package-signing/training grant.
 - No Calc source is vendored into `model-training`. The live Calc repository
   does not yet have a verified root `LICENSE` file in this integration review;
   an independent third-party redistribution license is **not inferred**.
