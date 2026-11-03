@@ -47,6 +47,57 @@ public static class NativeBrokerRequestContract {
       Console.WriteLine("PASS " + name + " elapsed_ms=" + watch.ElapsedMilliseconds);
     }
   }
+  // Keep a byte arriving every 100 ms, well inside the per-read idle window.
+  // A reader that incorrectly restarts its 1,500 ms deadline per byte must
+  // hit the outer watchdog, not pass merely because the client went idle.
+  static void CheckPacedSlowDrip() {
+    const string name = "slow_drip_total_deadline";
+    Console.WriteLine("BEGIN " + name);
+    string id = "VERA-TRAININGDAY-CONTRACT-" + Guid.NewGuid().ToString("N");
+    using (var server = new NamedPipeServerStream(id, PipeDirection.InOut, 1,
+      PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
+    using (var client = new NamedPipeClientStream(".", id, PipeDirection.Out))
+    using (var stop = new ManualResetEvent(false))
+    using (var firstByte = new ManualResetEvent(false)) {
+      client.Connect(1000);
+      server.WaitForConnection();
+      int sent = 0;
+      var writerThread = new Thread(() => {
+        try {
+          for (int i = 0; i < 120; i++) {
+            client.WriteByte((byte)'S');
+            Interlocked.Increment(ref sent);
+            if (i == 0) firstByte.Set();
+            Thread.Sleep(100);
+          }
+        } catch (IOException) { /* reader timeout closes the pipe */ }
+        catch (ObjectDisposedException) { /* fixture teardown */ }
+      }) { IsBackground = true };
+      writerThread.Start();
+      if (!firstByte.WaitOne(3000))
+        throw new Exception(name + " writer did not start");
+
+      var watch = Stopwatch.StartNew();
+      Exception failure = null;
+      int watchdogFired = 0;
+      using (var watchdog = new Timer(_ => {
+        Interlocked.Exchange(ref watchdogFired, 1);
+        try { stop.Set(); } catch (ObjectDisposedException) { }
+      }, null, 7000, Timeout.Infinite)) {
+        try { BoundedPipeRequest.Read(server, stop); }
+        catch (Exception ex) { failure = ex; }
+      }
+      int sentBeforeRejection = Interlocked.CompareExchange(ref sent, 0, 0);
+      if (failure == null || failure.GetType() != typeof(TimeoutException) ||
+          Interlocked.CompareExchange(ref watchdogFired, 0, 0) != 0)
+        throw new Exception(name + " expected total-deadline TimeoutException before watchdog; got " +
+          (failure == null ? "success" : failure.GetType().Name));
+      if (sentBeforeRejection < 4)
+        throw new Exception(name + " fixture did not actually deliver paced bytes");
+      Console.WriteLine("PASS " + name + " elapsed_ms=" + watch.ElapsedMilliseconds +
+        " paced_bytes=" + sentBeforeRejection);
+    }
+  }
   public static int Main(string[] args) {
     Check("valid_LF", "STATUS_V1\n", null, "STATUS_V1");
     Check("valid_CRLF", "PREPARE_V1\r\n", null, "PREPARE_V1");
@@ -55,7 +106,7 @@ public static class NativeBrokerRequestContract {
     Check("reject_embedded_NUL", "STATUS\0V1\n", typeof(InvalidDataException));
     Check("reject_unterminated_CR", "STATUS\rX\n", typeof(InvalidDataException));
     Check("idle_timeout", null, typeof(TimeoutException));
-    Check("slow_drip_timeout", "S", typeof(TimeoutException));
+    CheckPacedSlowDrip();
     Check("stop_cancels", null, typeof(OperationCanceledException), stopFirst:true);
     Check("usable_after_timeout", "STATUS_V1\n", null, "STATUS_V1");
     Console.WriteLine("PASS ALL 10 request/cancellation contracts");
