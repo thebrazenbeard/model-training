@@ -9,12 +9,41 @@ class SampleWitnessContractTests(unittest.TestCase):
     def test_synthetic_examples_are_distinct_and_completion_masked(self):
         rows = [lifecycle._synthetic_example(i) for i in range(32)]
         self.assertEqual(len({tuple(row["input_ids"]) for row in rows}), 32)
+        self.assertEqual(len({tuple(row["labels"]) for row in rows}), 32)
         for index, row in enumerate(rows):
             with self.subTest(index=index):
                 self.assertEqual(row["input_ids"][1], index + 4)
                 self.assertEqual(row["attention_mask"], [1] * 8)
                 self.assertEqual(row["completion_mask"], [0] * 4 + [1] * 4)
                 self.assertEqual(row["labels"][:4], [-100] * 4)
+                self.assertEqual(row["labels"][4:], row["input_ids"][4:])
+
+    def test_full_effective_batch_is_bound_to_independent_source_row(self):
+        row = lifecycle._synthetic_example(7)
+        digest = lifecycle._effective_batch_sha256(
+            7, row["input_ids"], row["attention_mask"], row["labels"])
+        self.assertEqual(len(digest), 64)
+        for field in ("input_ids", "attention_mask", "labels"):
+            changed = {k: v.copy() for k, v in row.items()}
+            changed[field][5] += 1
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(AssertionError, "EFFECTIVE_BATCH_MISMATCH"):
+                    lifecycle._effective_batch_sha256(
+                        7, changed["input_ids"], changed["attention_mask"],
+                        changed["labels"])
+
+    def test_full_batch_sequence_rejects_resume_only_label_corruption(self):
+        original = [lifecycle._synthetic_example(i) for i in range(16)]
+        hashes = [lifecycle._effective_batch_sha256(
+            i, row["input_ids"], row["attention_mask"], row["labels"])
+            for i, row in enumerate(original)]
+        self.assertEqual(lifecycle._verify_effective_batch_continuity(
+            hashes[:8], hashes[8:], hashes), hashes)
+        altered = hashes[8:].copy()
+        altered[0] = "0" * 64 if altered[0] != "0" * 64 else "1" * 64
+        with self.assertRaisesRegex(AssertionError, "effective batch sequence"):
+            lifecycle._verify_effective_batch_continuity(
+                hashes[:8], altered, hashes)
 
     def test_bad_synthetic_row_identity_is_rejected(self):
         for invalid in (True, -1, 32, 3.5, "0", None):
