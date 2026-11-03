@@ -47,9 +47,12 @@ This is a *potentially useful but weaker, owner-approval-required alternative*:
 - Absence of a detected foreign process still carries **residual competition
   risk** because WDDM/WSL telemetry is incomplete. This risk must be accepted
   explicitly, not hidden under the word “exclusive.”
-- Independently authenticated rights admission, protected evaluator custody,
-  NAS Q6 monotonic antirollback witness, official base hashes, and low-memory
-  optimizer qualification are **unchanged prerequisites**.
+- For **protected R201 training**, independently authenticated corpus rights,
+  protected evaluator custody, NAS Q6 monotonic antirollback witness, official
+  base hashes, and low-memory optimizer qualification are **unchanged prerequisites**.
+  A separately proposed public-only Tier 1 fit probe is described in
+  [TRAININGDAY_TIER1_PUBLIC_FIT_PROPOSAL_20261103.md](TRAININGDAY_TIER1_PUBLIC_FIT_PROPOSAL_20261103.md):
+  it is not protected training and has no power to grant Tier 2 authority.
 
 **Disposition: PROPOSED, NOT APPROVED.** An owner may choose to change the
 GPU-specific acceptance policy from A to B. Until then, current Contract A
