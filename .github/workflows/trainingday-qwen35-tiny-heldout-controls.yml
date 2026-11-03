@@ -1,0 +1,42 @@
+name: TRAININGDAY random tiny Qwen3.5 withheld-task controls CPU
+
+on:
+  push:
+    branches: ["test/trainingday-qwen35-tiny-heldout-eval-20261103"]
+  pull_request:
+    branches: ["test/**", "fix/**", main]
+
+permissions:
+  contents: read
+
+jobs:
+  tiny-qwen35-withheld-controls:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      WANDB_DISABLED: "true"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned public CPU-only dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.14.0+cpu'
+          python -m pip install --disable-pip-version-check \
+            'transformers==5.22.1' 'peft==0.21.2'
+      - name: Verify heldout source and answer-only loss controls
+        run: python -m unittest -v tests.test_trainingday_qwen35_tiny_heldout_eval
+      - name: Record actual multi-seed frozen vs correct vs shuffled results
+        run: python -m trainingday.qwen35_tiny_heldout_eval
