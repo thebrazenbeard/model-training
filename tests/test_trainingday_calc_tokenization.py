@@ -154,6 +154,41 @@ class CalcTokenizerSourceTests(unittest.TestCase):
                     CalcTokenizationError):
                 _tokenize_one(self.source[0], tokenizer, 64)
 
+    def test_context_merge_must_match_canonical_whole_sequence_encoding(self):
+        # A BPE-style boundary merge can leave concatenated tokens decodable
+        # to exactly the original text while still changing the canonical
+        # token IDs and the answer-only label boundary.
+        class ContextMergeTokenizer(CharTokenizer):
+            MERGED = 10000
+
+            def encode(self, value, *, add_special_tokens):
+                pieces = super().encode(value, add_special_tokens=add_special_tokens)
+                suffix = "\nA: 2"
+                if value.endswith(suffix):
+                    return pieces[:-len(suffix)] + [self.MERGED]
+                return pieces
+
+            def decode(self, ids, *, skip_special_tokens, clean_up_tokenization_spaces):
+                return "".join(
+                    "\nA: 2" if token == self.MERGED else chr(token - 10)
+                    for token in ids
+                )
+
+        tokenizer = ContextMergeTokenizer()
+        row = self.source[0]
+        prefix = f"Q: {row['prompt']}\nA: "
+        combined = prefix + row["answer"]
+        separate_ids = tokenizer.encode(prefix, add_special_tokens=False) + \
+            tokenizer.encode(row["answer"], add_special_tokens=False)
+        canonical_ids = tokenizer.encode(combined, add_special_tokens=False)
+        self.assertNotEqual(canonical_ids, separate_ids)
+        self.assertEqual(tokenizer.decode(canonical_ids, skip_special_tokens=False,
+                                          clean_up_tokenization_spaces=False), combined)
+        self.assertEqual(tokenizer.decode(separate_ids, skip_special_tokens=False,
+                                          clean_up_tokenization_spaces=False), combined)
+        with self.assertRaises(CalcTokenizationError):
+            _tokenize_one(row, tokenizer, 64)
+
     def test_import_does_not_load_heavy_ml_stack(self):
         result = subprocess.run([
             sys.executable, "-c",
