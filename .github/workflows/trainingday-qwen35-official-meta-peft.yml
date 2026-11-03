@@ -78,6 +78,10 @@ jobs:
           budget = result.get("base_text_meta_memory", {})
           n = budget.get("text_parameter_elements")
           emb = budget.get("tied_embedding_parameter_elements")
+          # Locked after the first real meta-skeleton hosted baseline on the
+          # pinned official config and pinned Transformers/PEFT versions.
+          if n != 4_205_751_296 or emb != 635_699_200:
+              raise SystemExit("official text tower meta parameter count drift")
           if (type(n) is not int or type(emb) is not int or not 0 < emb < n
                   or budget.get("bf16_full_resident_weight_bytes") != 2 * n
                   or budget.get("optimistic_nf4_with_bf16_embedding_bytes")
