@@ -1,0 +1,41 @@
+name: TRAININGDAY R16 checkpoint source-only tests
+
+on:
+  push:
+    branches: ["fix/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  r16-checkpoint-source:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Verify R16 checkpoint and post-save stop contracts (CPU, stdlib)
+        run: |
+          python - <<'PY'
+          import unittest
+
+          modules = (
+              "tests.test_trainingday_r16_checkpoint_stop",
+              "tests.test_trainingday_r16_checkpoint",
+          )
+          suite = unittest.defaultTestLoader.loadTestsFromNames(modules)
+          if suite.countTestCases() != 21:
+              raise SystemExit("R16 source gate must discover exactly 21 tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or result.skipped or result.testsRun != 21:
+              raise SystemExit("R16 source gate failed or skipped tests")
+          PY
