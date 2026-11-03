@@ -19,7 +19,7 @@ jobs:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       WANDB_DISABLED: "true"
-      TRAININGDAY_QWEN_TOKENIZER_JSON: ${{ runner.temp }}/qwen35-official-tokenizer.json
+      TRAININGDAY_QWEN_TOKENIZER_JSON: /tmp/trainingday-qwen35-official-tokenizer.json
     steps:
       - name: Check out exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
