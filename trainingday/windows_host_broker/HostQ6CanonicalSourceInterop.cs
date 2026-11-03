@@ -128,6 +128,10 @@ internal static class HostQ6CanonicalSourceInterop {
     internal static HostQ6SourceDisposition AssessFixtureForNativeTestOnly(string json) {
         if (json == null || json.Length > 65536)
             throw new FormatException("source fixture length invalid");
+        // JavaScriptSerializer materializes an object as a Dictionary; it can
+        // erase duplicate wire keys before the schema/subject checks run.
+        // Reject duplicates (including escaped spellings) on the raw wire.
+        UniqueJsonMemberGuard.RequireUniqueKeys(json);
         var serializer = new JavaScriptSerializer();
         serializer.MaxJsonLength = 65536;
         var root = Object(serializer.DeserializeObject(json), "schema", "source",
@@ -186,6 +190,148 @@ internal static class HostQ6CanonicalSourceInterop {
                 || casSha != Text(golden, "q6_cas_sha256"))
             throw new FormatException("Python/native canonical source digest mismatch");
         return new HostQ6SourceDisposition(hostSha, casSha);
+    }
+}
+
+// Bounded lexical JSON member validator for the SOURCE-ONLY test fixture.
+// It never authenticates a signer, grants a lease, or makes CAS durable.
+// Structural JSON and SHA checks remain in HostQ6CanonicalSourceInterop.
+internal sealed class UniqueJsonMemberGuard {
+    readonly string wire;
+    int offset;
+    readonly JavaScriptSerializer decoder = new JavaScriptSerializer();
+    UniqueJsonMemberGuard(string input) { wire = input; }
+
+    internal static void RequireUniqueKeys(string input) {
+        if (input == null || input.Length > 65536)
+            throw new FormatException("source wire length invalid");
+        var scan = new UniqueJsonMemberGuard(input);
+        scan.Value(0);
+        scan.Space();
+        if (scan.offset != input.Length)
+            throw new FormatException("source trailing JSON text");
+    }
+
+    void Space() {
+        while (offset < wire.Length) {
+            char c = wire[offset];
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') break;
+            offset++;
+        }
+    }
+
+    bool Eat(char c) {
+        Space();
+        if (offset >= wire.Length || wire[offset] != c) return false;
+        offset++;
+        return true;
+    }
+
+    void Need(char c) {
+        if (!Eat(c)) throw new FormatException("source JSON punctuation invalid");
+    }
+
+    string Quoted() {
+        Space();
+        if (offset >= wire.Length || wire[offset++] != '"')
+            throw new FormatException("source JSON key/string invalid");
+        int begin = offset - 1;
+        while (offset < wire.Length) {
+            char c = wire[offset++];
+            if (c == '"') {
+                string raw = wire.Substring(begin, offset - begin);
+                string decoded;
+                try { decoded = decoder.DeserializeObject(raw) as string; }
+                catch (ArgumentException) { throw new FormatException("source JSON string decode invalid"); }
+                catch (InvalidOperationException) { throw new FormatException("source JSON string decode invalid"); }
+                if (decoded == null) throw new FormatException("source JSON key decoding invalid");
+                return decoded;
+            }
+            if (c < 0x20) throw new FormatException("source JSON control in string");
+            if (c != '\\') continue;
+            if (offset >= wire.Length) throw new FormatException("source JSON escape truncated");
+            char escape = wire[offset++];
+            if (escape == 'u') {
+                if (offset + 4 > wire.Length)
+                    throw new FormatException("source JSON unicode escape truncated");
+                for (int i = 0; i < 4; i++) {
+                    char h = wire[offset++];
+                    if (!((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f')
+                        || (h >= 'A' && h <= 'F')))
+                        throw new FormatException("source JSON unicode escape invalid");
+                }
+            } else if (escape != '"' && escape != '\\' && escape != '/'
+                       && escape != 'b' && escape != 'f' && escape != 'n'
+                       && escape != 'r' && escape != 't') {
+                throw new FormatException("source JSON escape invalid");
+            }
+        }
+        throw new FormatException("source JSON unterminated string");
+    }
+
+    void Literal(string literal) {
+        if (offset + literal.Length > wire.Length
+            || String.CompareOrdinal(wire, offset, literal, 0, literal.Length) != 0)
+            throw new FormatException("source JSON literal invalid");
+        offset += literal.Length;
+    }
+
+    void Number() {
+        if (wire[offset] == '-') offset++;
+        if (offset >= wire.Length) throw new FormatException("source JSON number invalid");
+        if (wire[offset] == '0') offset++;
+        else if (wire[offset] >= '1' && wire[offset] <= '9') {
+            while (offset < wire.Length && wire[offset] >= '0' && wire[offset] <= '9')
+                offset++;
+        } else throw new FormatException("source JSON number invalid");
+        if (offset < wire.Length && wire[offset] == '.') {
+            offset++;
+            int start = offset;
+            while (offset < wire.Length && wire[offset] >= '0' && wire[offset] <= '9')
+                offset++;
+            if (offset == start) throw new FormatException("source JSON fraction invalid");
+        }
+        if (offset < wire.Length && (wire[offset] == 'e' || wire[offset] == 'E')) {
+            offset++;
+            if (offset < wire.Length && (wire[offset] == '+' || wire[offset] == '-'))
+                offset++;
+            int start = offset;
+            while (offset < wire.Length && wire[offset] >= '0' && wire[offset] <= '9')
+                offset++;
+            if (offset == start) throw new FormatException("source JSON exponent invalid");
+        }
+    }
+
+    void Value(int depth) {
+        if (depth > 48) throw new FormatException("source JSON nesting too deep");
+        Space();
+        if (offset >= wire.Length) throw new FormatException("source JSON value missing");
+        if (Eat('{')) {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            if (Eat('}')) return;
+            do {
+                string key = Quoted();
+                if (!seen.Add(key))
+                    throw new FormatException("source JSON duplicate member: " + key);
+                Need(':');
+                Value(depth + 1);
+                if (Eat('}')) return;
+                Need(',');
+            } while (true);
+        }
+        if (Eat('[')) {
+            if (Eat(']')) return;
+            do {
+                Value(depth + 1);
+                if (Eat(']')) return;
+                Need(',');
+            } while (true);
+        }
+        if (wire[offset] == '"') { Quoted(); return; }
+        if (wire[offset] == 't') { Literal("true"); return; }
+        if (wire[offset] == 'f') { Literal("false"); return; }
+        if (wire[offset] == 'n') { Literal("null"); return; }
+        Number();
     }
 }
 }
