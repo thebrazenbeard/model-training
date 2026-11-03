@@ -213,6 +213,9 @@ def one_step_kernel(base_binding_path):
     from trainingday.qwen_text_checkpoint import (
         index_binding_pin, prepare_text_loader, verify_text_load,
     )
+    from trainingday.lowmem_budget_telemetry import (
+        capture_memory_phase, summarize_memory_timeline,
+    )
 
     base, snapshot = require_official_base(base_binding_path)
     validate_declaration(base)
@@ -226,6 +229,7 @@ def one_step_kernel(base_binding_path):
     # A later step-only reset must not erase its potentially larger peak.
     torch.cuda.synchronize()
     torch.cuda.reset_peak_memory_stats()
+    before_load_telemetry = capture_memory_phase(torch, phase="before_load")
     quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                               bnb_4bit_use_double_quant=True,
                               bnb_4bit_compute_dtype=torch.bfloat16)
@@ -253,6 +257,7 @@ def one_step_kernel(base_binding_path):
     torch.cuda.synchronize()
     load_peak_cuda_allocated_bytes = int(torch.cuda.max_memory_allocated())
     load_peak_cuda_reserved_bytes = int(torch.cuda.max_memory_reserved())
+    after_load_telemetry = capture_memory_phase(torch, phase="after_load")
     # Reset only after persisting the load + adapter-preparation high-water mark.
     torch.cuda.reset_peak_memory_stats()
     ids = torch.randint(10, 10_000, (1, 64), device="cuda")
@@ -269,6 +274,7 @@ def one_step_kernel(base_binding_path):
     after = _snapshot_lora_b(model)
     step_peak_cuda_allocated_bytes = int(torch.cuda.max_memory_allocated())
     step_peak_cuda_reserved_bytes = int(torch.cuda.max_memory_reserved())
+    after_step_telemetry = capture_memory_phase(torch, phase="after_step")
     witness = evaluate_optimizer_witness(
         before=before, after=after, loss=float(loss.item()),
         gradient_norm=float(gradient_norm.item()), optimizer_step_returned=True)
@@ -277,6 +283,8 @@ def one_step_kernel(base_binding_path):
         load_reserved=load_peak_cuda_reserved_bytes,
         step_allocated=step_peak_cuda_allocated_bytes,
         step_reserved=step_peak_cuda_reserved_bytes))
+    witness["device_host_memory"] = summarize_memory_timeline([
+        before_load_telemetry, after_load_telemetry, after_step_telemetry])
     witness.update(actual_cpu_offload_used=False, checkpoint_written=False,
                    eval_access=False)
     return witness
