@@ -30,6 +30,8 @@ jobs:
             'torch==2.14.0+cpu'
           python -m pip install --disable-pip-version-check \
             'transformers==5.22.1' 'peft==0.21.2'
+      - name: Verify exact 152-target witness source regressions
+        run: python -m unittest discover -s tests -p 'test_trainingday_qwen35_full32_hybrid_peft_cpu_smoke.py' -v
       - name: Require dynamic full32 hybrid LoRA injection and gradient proof
         env:
           CUDA_VISIBLE_DEVICES: ""
