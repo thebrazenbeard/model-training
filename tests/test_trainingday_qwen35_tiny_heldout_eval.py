@@ -8,6 +8,9 @@ from trainingday import qwen35_tiny_heldout_eval as trial
 
 
 class HeldoutControlSourceTests(unittest.TestCase):
+    def test_predeclared_replication_seeds_include_original_five(self):
+        self.assertEqual(trial.SEEDS, tuple(range(35032, 35052)))
+
     def test_exactly_disjoint_canonical_pair_generators(self):
         for seed in trial.SEEDS:
             train, withheld = trial._pairs(seed)
