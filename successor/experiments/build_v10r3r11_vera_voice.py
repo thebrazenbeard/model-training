@@ -18,6 +18,9 @@ from successor.experiments.build_v10r3r10_vera_voice import (
 R10_CORPUS_SHA = "4df8bc7a89d201dff12250399ed0bc79c78d1237ee99ae9b0ad5f3238263fdba"
 R10_ADAPTER_SHA = "c69ed0e4bd78e09752b5cbb4dfaf19ebea8a4174735bf88d2676947ef04b2739"
 R10_SPEC_SHA = "8098a6f8c7102cacb956815e083f144d481cbc5bd718447b622138508076f2f6"
+# The checked-in Git blob uses LF; the historical R10 signed source used CRLF.
+# Verify BOTH exact byte representations instead of accepting arbitrary JSON.
+R10_SPEC_GIT_LF_SHA = "1d099d6329e0b051cc8a70043594036dfcc8795a407a22f79f1c69d739ab73eb"
 R10_RECEIPT_SELF_SHA = "c9ec359be2913e63effa05038cb04b65a742c61522de6973a20b1a676dd6a934"
 R10_START = 224
 R11_START = 288
@@ -35,6 +38,27 @@ R11_OUTPUT = Path(r"D:\VERA\models\adapters\v10r3r11-vera-voice-qwen35-r10-resum
 
 def read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf8").splitlines() if line.strip()]
+
+
+def r10_spec_transport_sha256(path: Path) -> str:
+    """Verify the exact R10 spec hash across Git LF/Windows CRLF transports.
+
+    The historical R10 digest binds the original Windows CRLF bytes. Git
+    checkouts on Linux may normalize the identical JSON source to LF. Reject
+    mixed/unsupported newlines rather than accepting arbitrary rewrites.
+    """
+    payload = path.read_bytes()
+    outside_crlf = payload.replace(b"\r\n", b"")
+    require(b"\r" not in outside_crlf,
+            "unsupported R10 spec carriage-return transport")
+    if b"\r" in payload:
+        require(b"\n" not in outside_crlf,
+                "mixed R10 spec newline transport")
+    git_lf_bytes = payload.replace(b"\r\n", b"\n")
+    require(hashlib.sha256(git_lf_bytes).hexdigest() == R10_SPEC_GIT_LF_SHA,
+            "R10 checked-in Git source hash mismatch")
+    historical_bytes = git_lf_bytes.replace(b"\n", b"\r\n")
+    return hashlib.sha256(historical_bytes).hexdigest()
 
 
 def select_unused_voices(voice: list[dict], heldout: list[dict]) -> list[dict]:
@@ -125,7 +149,8 @@ def transform(rows: list[dict], voice: list[dict],
 
 def build_spec(repo: Path, corpus_sha: str) -> dict:
     spec_path = repo/R10_SPEC_REL
-    require(sha256(spec_path) == R10_SPEC_SHA, "R10 spec hash mismatch")
+    require(r10_spec_transport_sha256(spec_path) == R10_SPEC_SHA,
+            "R10 spec hash mismatch")
     receipt = json.loads(R10_RECEIPT.read_text(encoding="utf8"))
     unsigned = dict(receipt)
     signature = unsigned.pop("receipt_sha256", None)
