@@ -1,0 +1,40 @@
+name: TRAININGDAY tiny TRL SFT CPU checkpoint lifecycle
+
+on:
+  push:
+    branches: ["fix/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tiny-trl-sft-cpu-lifecycle:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned public CPU-only SFT dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.14.0+cpu'
+          python -m pip install --disable-pip-version-check \
+            'transformers==5.22.1' 'trl==1.17.1' 'peft==0.21.2' \
+            'datasets==4.7.0' 'tokenizers==0.23.3'
+      - name: Require real TRL on_save pause and fresh-process 8+8 match
+        env:
+          CUDA_VISIBLE_DEVICES: ""
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          WANDB_DISABLED: "true"
+        run: python -m trainingday.r16_trl_cpu_sft_lifecycle
