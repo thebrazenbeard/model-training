@@ -104,7 +104,12 @@ class TinyIntegratedTrlTests(unittest.TestCase):
             self.assertIn(required, source)
 
     def test_integer_batch_fingerprint_detects_label_and_order_mutations(self):
-        import torch
+        # The broad source suite intentionally omits heavyweight Torch. The
+        # dedicated full32 CPU workflow installs it and exercises this control.
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("Torch is exercised by the dedicated full32 CPU workflow")
 
         original_ids = torch.tensor([[10, 11], [20, 21]], dtype=torch.long)
         original_labels = torch.tensor([[-100, 11], [-100, 21]], dtype=torch.long)
