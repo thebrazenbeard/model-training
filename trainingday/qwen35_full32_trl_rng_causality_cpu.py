@@ -46,6 +46,10 @@ def assert_causal_resume(*, initial: str, first: str, direct: dict,
     if (restored.get("after_resume_optimizer_steps") != [2] or
             rng_omitted.get("after_resume_optimizer_steps") != [2]):
         raise AssertionError("the child did not take a real second AdamW step")
+    if (restored.get("checkpoint_rng_setter_calls") != 1 or
+            rng_omitted.get("checkpoint_rng_setter_calls") != 1 or
+            rng_omitted.get("checkpoint_rng_suppressed_calls") != 1):
+        raise AssertionError("checkpoint RNG control was not confined to one call")
 
 
 def _child(path: Path, *, omit_rng: bool) -> dict:
@@ -53,13 +57,20 @@ def _child(path: Path, *, omit_rng: bool) -> dict:
     import torch
     torch.set_num_threads(2)
     if omit_rng:
-        # A deliberate NEGATIVE control: the original resume code still checks
-        # checkpoint hashes, loads adapter and AdamW moments, and trains, but
-        # we suppress *only* applying the saved Torch RNG bytes. This code is
-        # separate from the production-shaped resume entrypoint.
-        from unittest.mock import patch
-        with patch.object(torch, "set_rng_state", return_value=None):
-            result = resume._resume(path)
+        # Negative intervention only at the *saved-checkpoint restoration*
+        # seam, AFTER model, TRL batch and optimizer reconstruction. Unlike
+        # monkeypatching torch.set_rng_state globally, it cannot suppress
+        # unrelated RNG setters invoked while the model is being constructed.
+        suppressed = []
+
+        def skip_saved_rng_only(state):
+            suppressed.append(state)
+
+        result = resume._resume(
+            path, _test_only_checkpoint_rng_setter=skip_saved_rng_only)
+        result["checkpoint_rng_suppressed_calls"] = len(suppressed)
+        if len(suppressed) != 1:
+            raise AssertionError("checkpoint RNG restore override was not called exactly once")
         result["control"] = "RNG_RESTORE_OMITTED_NEGATIVE"
     else:
         result = resume._resume(path)
