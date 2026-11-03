@@ -24,6 +24,7 @@ jobs:
         run: |
           pip install --disable-pip-version-check -r requirements.txt
           pip install --disable-pip-version-check --index-url https://download.pytorch.org/whl/cpu torch==2.14.0+cpu
+          pip install --disable-pip-version-check --no-deps --only-binary=:all: torchao==0.18.0
       - name: Compile and test
         run: |
           python -m py_compile bootcamp.py fast_bootcamp.py quality_gate.py
