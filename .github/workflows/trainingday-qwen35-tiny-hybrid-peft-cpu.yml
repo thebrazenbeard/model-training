@@ -2,9 +2,9 @@ name: TRAININGDAY tiny Qwen3.5 hybrid PEFT CPU proof
 
 on:
   push:
-    branches: ["feat/**", "fix/**"]
+    branches: ["feat/**", "fix/**", "test/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "feat/**", "fix/**", "test/**"]
 
 permissions:
   contents: read
