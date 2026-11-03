@@ -34,8 +34,12 @@ future authorized broker exposes *any* such capability:
    shape-compatible substitute, an altered tokenizer or opaque base download.
 3. Broker-controlled immutable plan and retained kernel PID+creation-time
    process HANDLE in a kill-on-close JobObject; exclusive lease against *other
-   authorized Vera workers*. An OS file lock is **not** exclusivity against
-   Blender, Edge, desktop and other nonparticipating WDDM clients.
+   authorized Vera workers*. The broker additionally owns a durable **host-local
+   Tier 1** monotonic replay epoch/journal, rejecting stale/replayed requests
+   and failing closed after ambiguous crash state. This is **not** the independent
+   NAS Q6 monotonic witness or a mutation of the protected Tier 2 epoch. An OS
+   file lock is **not** exclusivity against Blender, Edge, desktop and other
+   nonparticipating WDDM clients.
 4. Preflight real device memory/host RAM and foreign process telemetry, then
    bounded launch, sustained telemetry, controlled CUDA OOM/timeout cleanup,
    retained artifact hashes and explicit unpromoted status. Report unknown
@@ -50,7 +54,7 @@ future authorized broker exposes *any* such capability:
 | --- | --- |
 | Current strict physical-exclusivity policy, no Patrick tier decision | **HOLD** even if GPU utilization reports 0%. |
 | Missing/forged/expired/wrong-host/wrong-plan/wrong-tier owner grant | **HOLD**; never turn a client receipt into host authority. |
-| Concurrent or replayed Vera request, stale epoch, broker restart | At most one owned Vera Tier 1 process; fail closed on ambiguous state. |
+| Concurrent or replayed Vera request, stale **host-local Tier 1** journal epoch, broker restart | At most one owned Vera Tier 1 process; fail closed on ambiguous state; do not write the **Tier 2 NAS Q6** epoch. |
 | Foreign WDDM client / VRAM unavailable or telemetry insufficient | Explicit fail/unknown under chosen policy, never claim physical exclusivity. |
 | Official public model/tokenizer hash mismatch, R201 mount or evaluator handle requested | Refuse launch; no protected data access. |
 | GPU OOM, timeout, worker crash, broker crash, process PID reuse | No orphaned owned worker; durable terminal status; no Tier 2 mutation. |

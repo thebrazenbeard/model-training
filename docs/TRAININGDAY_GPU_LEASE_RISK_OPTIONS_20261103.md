@@ -34,13 +34,18 @@ an untrusted JSON receipt, or a passed hosted Windows unit test.
 
 This is a *potentially useful but weaker, owner-approval-required alternative*:
 
-- The installed Windows service owns an OS-exclusive reservation and strictly
-  increasing host/NAS epoch **among all authorized Vera training workers**.
+- The installed Windows service owns an OS-exclusive reservation across
+  authorized Vera workers. A proposed **Tier 1 public-only** fit probe requires
+  its own durable **host-local** monotonic replay epoch/journal, with ambiguous
+  crash recovery failing closed; this is **not** a NAS Q6 witness or Tier 2
+  training epoch. Protected **Tier 2** additionally requires its separately
+  authenticated NAS Q6 monotonic compare-and-append witness.
 - The service verifies the requester's Windows access token and retained
   process `HANDLE` identity (kernel PID **and creation time**); the client cannot
   choose the executable, training path, or lease token.
-- It owns an immutable run plan, protected data/model handles, a Windows Job,
-  and kill-on-owner-loss custody. It records terminal completion before release.
+- It owns an immutable run plan, only the data/model handles authorized for
+  that tier, a Windows Job, and kill-on-owner-loss custody. It durably records
+  terminal completion before releasing the tier-specific reservation.
 - It measures GPU/host availability immediately before dispatch, refuses a
   detected foreign GPU process or inadequate VRAM, and aborts safely on CUDA
   OOM or failed health checks. It does not kill unrelated applications.
@@ -70,7 +75,8 @@ reserve CUDA hardware, reconcile foreign processes, or make Contract B live.
 
 **Next protected effect, if B is deliberately selected:** independently
 reviewed implementation/installation of a host-owned broker, one owner-approved
-maintenance window, a native Windows+WSL2 process/lease crash matrix, witnessed
-NAS compare-and-append, an actual GPU memory/OOM qualification with bounded
-cleanup, and host readback of the resulting running binary and state. No source
-file or hosted CI result substitutes for that installed qualification.
+maintenance window, a native Windows+WSL2 process/lease crash matrix including
+the Tier 1 host-local journal, actual GPU memory/OOM qualification with bounded
+cleanup, and host readback of the resulting running binary and state. Protected
+Tier 2 separately requires its independently witnessed NAS Q6 compare-and-append.
+No source file or hosted CI result substitutes for installed qualification.
