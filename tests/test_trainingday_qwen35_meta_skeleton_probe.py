@@ -107,5 +107,28 @@ class MetaSkeletonSourceTests(unittest.TestCase):
         self.assertIn("audit_loaded_minimal_lora_model(model", source)
 
 
+    def test_text_tower_packed_bound_is_not_a_gpu_fit_claim(self):
+        report = probe.bound_text_meta_memory(
+            text_parameter_elements=2_400_000_000,
+            tied_embedding_elements=635_699_200,
+        )
+        self.assertEqual(report["bf16_full_resident_weight_bytes"], 4_800_000_000)
+        self.assertEqual(report["optimistic_nf4_with_bf16_embedding_bytes"],
+                         2_153_548_800)
+        self.assertTrue(report["full_resident_bf16_weights_exceed_four_gib"])
+        self.assertEqual(report["weight_count_scope"], "TEXT_TOWER_META_ONLY_NOT_MULTIMODAL")
+        self.assertEqual(report["memory_fit"], "UNKNOWN")
+        self.assertEqual(report["optimizer_steps_observed"], 0)
+        self.assertFalse(report["training_authorized"])
+        for total, tied in ((True, 1), (10, True), (0, 0), (10, 0),
+                            (10, 10), (10, 11), (-1, 1)):
+            with self.subTest(total=total, tied=tied):
+                with self.assertRaises(probe.MetaSkeletonProbeError):
+                    probe.bound_text_meta_memory(
+                        text_parameter_elements=total,
+                        tied_embedding_elements=tied,
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()
