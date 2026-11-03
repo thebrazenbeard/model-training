@@ -227,9 +227,9 @@ def one_step_kernel(base_binding_path):
     torch.manual_seed(73504)
     # Begin the load-phase high-water mark before the quantized weight load.
     # A later step-only reset must not erase its potentially larger peak.
-    torch.cuda.synchronize()
-    torch.cuda.reset_peak_memory_stats()
-    before_load_telemetry = capture_memory_phase(torch, phase="before_load")
+    torch.cuda.synchronize(0)
+    torch.cuda.reset_peak_memory_stats(0)
+    before_load_telemetry = capture_memory_phase(torch, phase="before_load", device_index=0)
     quant = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
                               bnb_4bit_use_double_quant=True,
                               bnb_4bit_compute_dtype=torch.bfloat16)
@@ -243,8 +243,9 @@ def one_step_kernel(base_binding_path):
     model = get_peft_model(model, LoraConfig(
         r=4, lora_alpha=8, lora_dropout=0, bias="none", task_type="CAUSAL_LM",
         target_modules=["q_proj", "v_proj"]))
-    if any(p.device.type != "cuda" for p in model.parameters()):
-        raise LowMemoryExperimentError("unqualified CPU/disk device placement")
+    if any(p.device.type != "cuda" or p.device.index != 0
+           for p in model.parameters()):
+        raise LowMemoryExperimentError("unqualified CPU/disk/other-GPU device placement")
     placement = getattr(model, "hf_device_map", None) or {}
     if any(str(value).lower() in {"cpu", "disk"} for value in placement.values()):
         raise LowMemoryExperimentError("inference offload is not a training fallback")
@@ -254,13 +255,13 @@ def one_step_kernel(base_binding_path):
     model.train()
     before = _snapshot_lora_b(model)
     optimizer = torch.optim.AdamW(trainable, lr=1e-3)
-    torch.cuda.synchronize()
-    load_peak_cuda_allocated_bytes = int(torch.cuda.max_memory_allocated())
-    load_peak_cuda_reserved_bytes = int(torch.cuda.max_memory_reserved())
-    after_load_telemetry = capture_memory_phase(torch, phase="after_load")
+    torch.cuda.synchronize(0)
+    load_peak_cuda_allocated_bytes = int(torch.cuda.max_memory_allocated(0))
+    load_peak_cuda_reserved_bytes = int(torch.cuda.max_memory_reserved(0))
+    after_load_telemetry = capture_memory_phase(torch, phase="after_load", device_index=0)
     # Reset only after persisting the load + adapter-preparation high-water mark.
-    torch.cuda.reset_peak_memory_stats()
-    ids = torch.randint(10, 10_000, (1, 64), device="cuda")
+    torch.cuda.reset_peak_memory_stats(0)
+    ids = torch.randint(10, 10_000, (1, 64), device="cuda:0")
     optimizer.zero_grad(set_to_none=True)
     loss = model(input_ids=ids, labels=ids, attention_mask=torch.ones_like(ids)).loss
     if loss is None or not torch.isfinite(loss):
@@ -270,11 +271,11 @@ def one_step_kernel(base_binding_path):
     if not torch.isfinite(gradient_norm):
         raise LowMemoryExperimentError("nonfinite synthetic gradient norm")
     optimizer.step()
-    torch.cuda.synchronize()
+    torch.cuda.synchronize(0)
     after = _snapshot_lora_b(model)
-    step_peak_cuda_allocated_bytes = int(torch.cuda.max_memory_allocated())
-    step_peak_cuda_reserved_bytes = int(torch.cuda.max_memory_reserved())
-    after_step_telemetry = capture_memory_phase(torch, phase="after_step")
+    step_peak_cuda_allocated_bytes = int(torch.cuda.max_memory_allocated(0))
+    step_peak_cuda_reserved_bytes = int(torch.cuda.max_memory_reserved(0))
+    after_step_telemetry = capture_memory_phase(torch, phase="after_step", device_index=0)
     witness = evaluate_optimizer_witness(
         before=before, after=after, loss=float(loss.item()),
         gradient_norm=float(gradient_norm.item()), optimizer_step_returned=True)

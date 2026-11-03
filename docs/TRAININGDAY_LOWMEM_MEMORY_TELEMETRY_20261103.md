@@ -14,6 +14,17 @@ captures three synchronized observations on the *same CUDA device*:
    step-only peak reset;
 3. After forward/backward and AdamW update.
 
+Each observation explicitly targets CUDA device ordinal **0**, matching the
+kernel's `device_map=0` and `cuda:0` input placement. All synchronization,
+allocator counters, peak resets, and snapshots pass that index rather than
+implicitly following `current_device()`. The `device_index` field is required
+on each record, and a timeline rejects a changed index even when both GPUs
+report identical total VRAM. This is a stable identity **within the one
+process and its CUDA-visible device mapping**, not a persistent PCI/UUID or
+cross-process physical-device identity claim. If the physical device map
+changes across process launches, a separate host-owned binding must prove
+continuity; this telemetry cannot certify it.
+
 Each observation records `cuda.mem_get_info()` free/total (device-wide at
 sample time), PyTorch allocated/reserved and high-water counters
 (process-local), `/proc/meminfo:MemAvailable` (Linux/WSL2 currently available
