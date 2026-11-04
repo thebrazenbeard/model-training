@@ -13,6 +13,11 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or
 }
 
 $purposeOid = '2.25.281124513629607016020108740092472226515'
+# A 128-bit 2.25 arc cannot be passed safely through CertEnroll's {text}
+# OID parser: native Windows CI observed truncation to 2.25.9223372036854775807.
+# This independently DER-encoded SEQUENCE OF OID preserves all 128 bits.
+# SEQUENCE(0x16) / OID(0x14) / first arcs 2.25 => 0x69 / base128 arc.
+$purposeEkuDerHex = '301606146983A6FECEA99ABA92BCAF8AA4B9BB9BEBD9E553'
 $id = [guid]::NewGuid().ToString('N')
 $subject = 'CN=VERA-TrainingDay-Tier1B-EPHEMERAL-CI-' + $id
 $certStore = 'Cert:\CurrentUser\My'
@@ -25,14 +30,14 @@ $testSucceeded = $false
 
 try {
     # Microsoft PKIClient supports {critical} immediately after OID=, before
-    # {text}; 2.5.29.19={text} is the documented end-entity/non-CA form.
+    # {hex}; 2.5.29.19={text} is the documented end-entity/non-CA form.
     # This software KSP key is explicitly NonExportable and user-scoped.
     $created = New-SelfSignedCertificate -Type Custom -Subject $subject `
         -CertStoreLocation $certStore -Provider 'Microsoft Software Key Storage Provider' `
         -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 `
-        -KeyExportPolicy NonExportable -KeyUsage DigitalSignature `
+        -KeyExportPolicy NonExportable -KeyUsage DigitalSignature -KeyUsageProperty Sign `
         -TextExtension @(
-            ('2.5.29.37={critical}{text}' + $purposeOid),
+            ('2.5.29.37={critical}{hex}' + $purposeEkuDerHex),
             '2.5.29.19={text}'
         ) -NotBefore $notBefore -NotAfter $notAfter -ErrorAction Stop
 
@@ -52,6 +57,9 @@ try {
         if ([int]$privateRsa.Key.ExportPolicy -ne 0) {
             throw 'Owner signing key unexpectedly carries export permission'
         }
+        if ([int]$privateRsa.Key.Usage -ne [int][Security.Cryptography.CngKeyUsages]::Signing) {
+            throw 'Owner signing key CNG usage not limited to signing'
+        }
     } finally { if ($privateRsa) { $privateRsa.Dispose() } }
 
     $matches = @((Get-ChildItem -Path $certStore | Where-Object { $_.Subject -eq $subject }))
@@ -69,6 +77,9 @@ try {
     $null = Export-Certificate -Cert $created -FilePath $publicDerPath -Type CERT -Force
     $raw = [IO.File]::ReadAllBytes($publicDerPath)
     if ($raw.Length -lt 500 -or $raw.Length -gt 8192) { throw 'Unexpected DER size' }
+    if (-not [Collections.StructuralComparisons]::StructuralEqualityComparer.Equals($raw, $created.RawData)) {
+        throw 'Exported DER differs from the created owner certificate public RawData'
+    }
     $public = [Security.Cryptography.X509Certificates.X509Certificate2]::new($raw)
     try {
         if ($public.HasPrivateKey) { throw 'Public-only DER unexpectedly carries a private key' }
@@ -113,13 +124,12 @@ try {
         $rawAgain = [IO.File]::ReadAllBytes($publicDerPath)
         $sha = [Security.Cryptography.SHA256]::Create()
         try {
-            $digest = [Convert]::ToHexString($sha.ComputeHash($raw))
-            $digestAgain = [Convert]::ToHexString($sha.ComputeHash($rawAgain))
+            $digest = [BitConverter]::ToString($sha.ComputeHash($raw)).Replace('-', '')
+            $digestAgain = [BitConverter]::ToString($sha.ComputeHash($rawAgain)).Replace('-', '')
         } finally { $sha.Dispose() }
         if ($digest -cne $digestAgain) { throw 'Public DER readback digest changed' }
         $testSucceeded = $true
         Write-Output "EPHEMERAL_TIER1_B_PUBLIC_DER_SHA256=$digest"
-        Write-Output 'EPHEMERAL_TIER1_B_CERTIFICATE_SHAPE_PASS critical_eku=true rsa_bits=3072 public_has_private_key=false'
     } finally { $public.Dispose() }
 } finally {
     # Never delete anything but this run's uniquely named test certificate.
@@ -137,4 +147,7 @@ try {
         Remove-Item -LiteralPath $publicDerPath -Force
     }
 }
+$remaining = @(Get-ChildItem -Path $certStore | Where-Object { $_.Subject -eq $subject })
+if ($remaining.Count -ne 0) { throw 'Uniquely created CI certificate remained after cleanup' }
 if (-not $testSucceeded) { throw 'Ephemeral test did not complete' }
+Write-Output 'EPHEMERAL_TIER1_B_CERTIFICATE_SHAPE_PASS critical_eku=true rsa_bits=3072 public_has_private_key=false cleanup=true'
