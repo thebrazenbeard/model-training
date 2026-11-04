@@ -215,10 +215,10 @@ def _publish_exclusive(output_dir: Path, payloads: dict[str, bytes]) -> None:
                 _verify_directory(output_dir, dir_fd)
                 # Ensure earlier final names still hold their original bytes
                 # before the last manifest link can mark completion.
-                for prior_name, _, prior_fd, prior_data in staged[:len(published)]:
+                for _, prior_name, prior_fd, prior_data in staged[:len(published)]:
                     _verify_published(dir_fd, prior_name, prior_fd, prior_data)
             os.fsync(dir_fd)
-            for name, _, file_fd, data in staged:
+            for _, name, file_fd, data in staged:
                 _verify_published(dir_fd, name, file_fd, data)
             _verify_directory(output_dir, dir_fd)
         except BaseException as exc:
