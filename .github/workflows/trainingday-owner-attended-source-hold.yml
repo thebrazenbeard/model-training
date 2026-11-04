@@ -14,10 +14,6 @@ jobs:
   negative-owner-preflight:
     runs-on: windows-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        shell: [pwsh, powershell]
     steps:
       - name: Refuse private repository / unexpected context
         shell: pwsh
@@ -36,16 +32,12 @@ jobs:
           persist-credentials: false
 
       - name: Verify parse and wrong-host refusal with zero key creation
-        shell: ${{ matrix.shell }}
+        shell: pwsh
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          SHELL_EXPECTED: ${{ matrix.shell }}
         run: |
           $head = (git rev-parse --verify HEAD).Trim()
           if ($head -ne $env:EXPECTED_SHA) { throw 'Source HEAD mismatch' }
-          if ($env:SHELL_EXPECTED -eq 'powershell' -and $PSVersionTable.PSVersion.Major -ne 5) {
-            throw 'Windows PowerShell compatibility job did not use PS 5.x'
-          }
           $path = Join-Path $PWD 'trainingday/owner_signer/New-Tier1BOwnerPublicCertificateVN1.ps1'
           $tokens = $null
           $errors = $null
@@ -98,3 +90,47 @@ jobs:
             throw 'SECURITY FAILURE: wrong-host refusal generated a key or exported DER'
           }
           Write-Output "OWNER_SIGNER_SOURCE_HOLD_PASS head=$head wrong_host_refused=true private_key_generated=false"
+
+      - name: Verify Windows PowerShell 5.1 syntax and fail-closed owner gate
+        shell: powershell
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Expected Windows PowerShell 5.1' }
+          $head = (git rev-parse --verify HEAD).Trim()
+          if ($head -ne $env:EXPECTED_SHA) { throw 'Source HEAD mismatch' }
+          $path = Join-Path $PWD 'trainingday/owner_signer/New-Tier1BOwnerPublicCertificateVN1.ps1'
+          $tokens = $null
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) {
+            throw ('Windows PowerShell 5.1 parser rejected owner script: ' +
+              (($errors | ForEach-Object Message) -join '; '))
+          }
+          # Compile WTS native code using the .NET Framework C# compiler,
+          # without executing the positive owner branch or creating keys.
+          $source = Get-Content -LiteralPath $path -Raw
+          $native = [regex]::Match($source, "(?s)Add-Type -TypeDefinition @'\r?\n(.*?)\r?\n'@ -ErrorAction Stop")
+          if (-not $native.Success) { throw 'Missing native WTS code in PowerShell 5.1' }
+          Add-Type -TypeDefinition $native.Groups[1].Value -ErrorAction Stop
+          $subject = 'CN=VERA TrainingDay Tier1 B Owner Patrick v1'
+          $before = @(Get-ChildItem -Path 'Cert:\CurrentUser\My' |
+            Where-Object { $_.Subject -ceq $subject })
+          if ($before.Count -ne 0) { throw 'Unexpected CI owner subject before refusal' }
+          $out = Join-Path $env:LOCALAPPDATA 'Vera\TrainingDay\Tier1B-Patrick-Owner-PUBLIC.cer'
+          if (Test-Path -LiteralPath $out) { throw 'Unexpected CI owner public DER before refusal' }
+          $refused = $false
+          try {
+            & $path
+          } catch {
+            if ($_.Exception.Message -match 'HOLD: owner-attended VN1 local console required') {
+              $refused = $true
+            } else { throw }
+          }
+          if (-not $refused) { throw 'Windows PowerShell 5.1 failed to HOLD wrong owner context' }
+          $after = @(Get-ChildItem -Path 'Cert:\CurrentUser\My' |
+            Where-Object { $_.Subject -ceq $subject })
+          if ($after.Count -ne 0 -or (Test-Path -LiteralPath $out)) {
+            throw 'Windows PowerShell 5.1 wrong-host path mutated owner cert/DER'
+          }
+          Write-Output "OWNER_SIGNER_PS51_HOLD_PASS head=$head native_wts_compiled=true no_key_generation=true"
