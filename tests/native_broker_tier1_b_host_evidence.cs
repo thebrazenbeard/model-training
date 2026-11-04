@@ -65,6 +65,10 @@ internal static class Tier1BHostEvidenceNativeTests {
             Reject<ArgumentException>(() => {
                 using(var bad=Tier1BHostEvidenceHold.OpenForNativeTestOnly("relative")) {}
             },"caller-relative root");
+            Reject<ArgumentException>(() => {
+                using(var bad=Tier1BHostEvidenceHold.OpenForNativeTestOnly(
+                    @"\\example.invalid\never-an-actual-share")) {}
+            },"UNC/network fixture root");
             string nonce1;
             using(var evidence=Tier1BHostEvidenceHold.OpenForNativeTestOnly(root)) {
                 Need(evidence.State=="HOLD" && !evidence.LaunchAuthorized

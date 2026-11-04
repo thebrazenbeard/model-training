@@ -22,6 +22,12 @@ for the actual Lappy service.
 - Reject relative fixture roots, missing/reparse or oversized fixture files,
   and concurrent writes to held inputs. A change after release is detected
   when the host opens and hashes the new bytes.
+- A red-first Windows regression demonstrated that a final-directory reparse
+  check misses a junction in an **ancestor**. The candidate now rejects an
+  ancestor junction, UNC/device roots, nonfixed drives, and oversized plans.
+  This remains **pre-open checking, not post-open kernel file-ID or ACL
+  attestation**: a malicious administrator could race path resolution, swap
+  content using privileged filesystem access, or roll back the journal.
 - Prove the remaining rollback counterexample in an isolated fixture: deleting
   the journal and allowing `OpenOrCreate` resets its epoch to zero and lets an
   old nonce be reserved again. A live Tier1 journal must require an

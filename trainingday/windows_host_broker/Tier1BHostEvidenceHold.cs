@@ -32,8 +32,24 @@ internal sealed class Tier1BHostEvidenceHold : IDisposable {
                 || !Path.IsPathRooted(fixtureRoot)
                 || Path.GetFullPath(fixtureRoot) != fixtureRoot)
             throw new ArgumentException("native fixture root must be absolute and normalized");
-        if ((File.GetAttributes(fixtureRoot) & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidDataException("reparse fixture root rejected");
+        // This is a bounded Windows test fixture, not a supported network or
+        // volume-GUID path resolver. Reject UNC/device roots early; do not
+        // accidentally ask a remote SMB provider to serve trust-anchor bytes.
+        string volumeRoot=Path.GetPathRoot(fixtureRoot);
+        if (String.IsNullOrEmpty(volumeRoot) || volumeRoot.Length!=3
+                || volumeRoot[1]!=':' || volumeRoot[2]!='\\'
+                || !Char.IsLetter(volumeRoot[0]))
+            throw new ArgumentException("native fixture root must use local drive syntax");
+        if (new DriveInfo(volumeRoot).DriveType!=DriveType.Fixed)
+            throw new InvalidDataException("fixture drive is not a fixed local drive");
+        // A final `File.GetAttributes(root)` check alone missed an ancestor
+        // NTFS junction: root\junction\child resolves through junction even
+        // though child itself is not a reparse point. Walk every ancestor.
+        for(DirectoryInfo part=new DirectoryInfo(fixtureRoot); part!=null;
+            part=part.Parent) {
+            if((part.Attributes & FileAttributes.ReparsePoint)!=0)
+                throw new InvalidDataException("reparse ancestor rejected");
+        }
         FileStream p = null, m = null, e = null;
         try {
             p = OpenReadExclusive(Path.Combine(fixtureRoot, "plan.json"), MaxPlanBytes);
