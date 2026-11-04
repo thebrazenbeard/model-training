@@ -13,11 +13,16 @@ is not the signed Contract B broker; its currently observed file is unsigned.
 2. The read-only script checks candidate hash and Authenticode signer pin,
    service identity and exact installed ImagePath, installed SHA against a
    separately observed baseline, installation-directory and file write ACLs,
+   untrusted implicit owner control and ancestor directory mutation risks,
    a signed NVIDIA observer at a known system path, available GPU memory, and a conservative
    inventory of processes whose disruption could affect other work.
 3. It returns `maintenance_state: HOLD`, even when no individual blocker is
    detected. No result is installation approval, a signed owner grant, an
    enforceable WDDM memory cap, or WSL child-custody qualification.
+   The script explicitly records `FILE_OBSERVATIONS_NOT_HANDLE_STABLE` because
+   candidate hash, signature and ACL inspection are separate path opens, not
+   immutable broker-held kernel handles; a post-check file replacement remains
+   possible. It also rejects an ImagePath with any trailing arguments.
 4. The signing **private** key must stay owner-controlled, outside the
    LocalSystem broker's machine certificate store. An owner-signed PFX must
    not be imported into `LocalMachine\My`; a broker may ultimately hold only
