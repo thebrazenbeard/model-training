@@ -1,0 +1,89 @@
+name: TRAININGDAY official Qwen3.5 metadata source gate
+
+on:
+  push:
+    branches: [main, "fix/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qwen35-source-metadata:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Require all ten metadata admission regressions with no skips
+        run: |
+          python - <<'PY'
+          import unittest
+          suite = unittest.defaultTestLoader.loadTestsFromNames(
+              ["tests.test_trainingday_qwen35_memory_source_admission"])
+          if suite.countTestCases() != 10:
+              raise SystemExit("official metadata gate must discover exactly 10 tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or result.skipped or result.testsRun != 10:
+              raise SystemExit("official metadata source regressions failed or skipped")
+          PY
+      - name: Download only pinned official config and index; verify raw SHA256
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error --retry 2 --max-time 90 \
+            --max-filesize 1048576 \
+            --proto '=https' --proto-redir '=https' \
+            'https://huggingface.co/Qwen/Qwen3.5-4B/resolve/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/config.json' \
+            --output "$RUNNER_TEMP/qwen35-config.json"
+          curl --fail --location --silent --show-error --retry 2 --max-time 90 \
+            --max-filesize 1048576 \
+            --proto '=https' --proto-redir '=https' \
+            'https://huggingface.co/Qwen/Qwen3.5-4B/resolve/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/model.safetensors.index.json' \
+            --output "$RUNNER_TEMP/qwen35-index.json"
+          printf '%s  %s\n' \
+            'ddc63e1c717afa86c865bb5e01313d89d72bb53b97ad4a8a03ba8510c0621670' \
+            "$RUNNER_TEMP/qwen35-config.json" | sha256sum --check --status
+          printf '%s  %s\n' \
+            'cf3f798ee02ba45f9622aa8892a47369ab667d0afbf154ee7c2212de42e6302d' \
+            "$RUNNER_TEMP/qwen35-index.json" | sha256sum --check --status
+      - name: Execute production source gate and reject forged training authority
+        shell: bash
+        run: |
+          python -m trainingday.qwen35_memory_source_admission \
+            --config "$RUNNER_TEMP/qwen35-config.json" \
+            --index "$RUNNER_TEMP/qwen35-index.json" \
+            | tee "$RUNNER_TEMP/qwen35-source-evidence.json"
+          python - "$RUNNER_TEMP/qwen35-source-evidence.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected = {
+              "schema": "TRAININGDAY_QWEN35_METADATA_MEMORY_ADMISSION_V1",
+              "status": "PINNED_OFFICIAL_METADATA_BYTES_VERIFIED_HARDWARE_FIT_UNKNOWN",
+              "architecture_shape_checked": True,
+              "pinned_official_metadata_bytes_verified": True,
+              "checkpoint_namespaces": {"text": 426, "vision": 297, "mtp": 15},
+              "decoder_layers": 32,
+              "gated_deltanet_layers": 24,
+              "full_attention_layers": 8,
+              "vision_layers": 24,
+              "minimal_lora_gdn_layers": 0,
+              "hardware_fit": "UNKNOWN",
+              "training_authorized": False,
+              "official_origin_authenticated": False,
+              "official_weight_shards_authenticated": False,
+              "optimizer_steps_observed": 0,
+          }
+          if any(result.get(key) != value for key, value in expected.items()):
+              raise SystemExit("real Qwen metadata source gate omitted or forged evidence")
+          PY
