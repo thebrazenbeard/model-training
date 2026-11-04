@@ -32,7 +32,7 @@ internal static class Tier1BGrantCandidateTests {
         "schema", "tier", "host", "policy", "model_id", "model_revision",
         "shard1_sha256", "shard2_sha256", "plan_sha256", "manifest_sha256",
         "executable_sha256", "nonce_sha256", "epoch", "not_before_unix",
-        "not_after_unix", "max_seconds", "max_vram_mib", "protected_access",
+        "not_after_unix", "max_seconds", "vram_target_mib", "protected_access",
         "outputs", "wsl_cleanup"
     };
     static byte[] Payload(string[] values) {
