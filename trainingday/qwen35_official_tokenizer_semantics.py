@@ -51,7 +51,9 @@ def guard_untrusted_chatml_text(tokenizer, text: str) -> tuple[int, ...]:
     separate step. This does not make concatenated ChatML strings safe, nor
     authorize a training corpus, evaluation, or serving deployment.
     """
-    _require(isinstance(text, str), "untrusted text must be a Unicode string")
+    # A str subclass can override encode() to forge its byte length while the
+    # tokenizer still processes its unbounded underlying Unicode payload.
+    _require(type(text) is str, "untrusted text must be a built-in Unicode string")
     try:
         encoded = text.encode("utf-8", errors="strict")
     except UnicodeError as exc:

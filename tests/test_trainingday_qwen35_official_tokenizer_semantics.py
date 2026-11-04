@@ -84,6 +84,22 @@ class BoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(candidate.TokenizerSemanticsError, "untrusted text"):
             candidate.guard_untrusted_chatml_text(CharTokenizer(), "a" * (1024 * 1024 + 1))
 
+    def test_untrusted_guard_rejects_str_subclass_with_forged_encoded_size(self):
+        class ForgedSize(str):
+            def encode(self, *args, **kwargs):
+                return b"x"
+
+        # The raw tokenizer still sees >1 MiB of characters. An overridable
+        # str.encode() can forge the byte length unless the guard fails closed.
+        oversized = ForgedSize("a" * (candidate.MAX_UNTRUSTED_TEXT_BYTES + 1))
+        with self.assertRaisesRegex(candidate.TokenizerSemanticsError, "untrusted text"):
+            candidate.guard_untrusted_chatml_text(CharTokenizer(), oversized)
+
+        with self.assertRaisesRegex(candidate.TokenizerSemanticsError, "untrusted text"):
+            candidate.guard_untrusted_chatml_text(
+                CharTokenizer(), ForgedSize("ordinary text"),
+            )
+
     def test_wrong_end_id_fails(self):
         class WrongEnd(CharTokenizer):
             def token_to_id(self, text):
