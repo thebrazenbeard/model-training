@@ -21,7 +21,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: pip install --disable-pip-version-check -r requirements.txt
+        run: |
+          pip install --disable-pip-version-check -r requirements.txt
+          # Source-only GGUF comparator tests run here, even without HF runtimes.
+          pip install --disable-pip-version-check 'numpy==2.3.4'
       - name: Compile and test
         run: |
           python -m py_compile bootcamp.py fast_bootcamp.py quality_gate.py
