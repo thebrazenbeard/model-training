@@ -404,12 +404,18 @@ def benchmark_plan(host: str, gguf: Path, binary: Path, engine: str,
 
 
 _FINITE_DECIMAL = r"(?:\d+(?:\.\d+)?|\.\d+)"
+# Match the *entire* timing parenthesis. An arbitrary `[^)]*?` prefix lets
+# malformed `1e309` silently become a spurious `309.0` TPS suffix match.
+_TIMING_PARENTHESIS = (
+    rf"\s*\(\s*(?:{_FINITE_DECIMAL}\s+ms per token\s*,\s*)?"
+    rf"({_FINITE_DECIMAL})\s+tokens? per second\s*\)"
+)
 _EVAL_PATTERN = re.compile(
     rf"(?<!prompt )eval time\s*=\s*{_FINITE_DECIMAL}\s*ms\s*/\s*(\d+)\s+tokens?"
-    rf"\s*\([^)]*?({_FINITE_DECIMAL})\s+tokens? per second\)", re.IGNORECASE)
+    + _TIMING_PARENTHESIS, re.IGNORECASE)
 _PROMPT_EVAL_PATTERN = re.compile(
     rf"prompt eval time\s*=\s*{_FINITE_DECIMAL}\s*ms\s*/\s*(\d+)\s+tokens?"
-    rf"\s*\([^)]*?({_FINITE_DECIMAL})\s+tokens? per second\)", re.IGNORECASE)
+    + _TIMING_PARENTHESIS, re.IGNORECASE)
 
 
 def _timing_from_match(match) -> tuple[int | None, float | None]:

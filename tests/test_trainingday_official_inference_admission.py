@@ -246,11 +246,29 @@ class OfficialInferenceAdmissionTests(unittest.TestCase):
                 self.assertEqual(3, impl.main(["verify", "--snapshot", str(self.root)]))
 
     def test_malformed_timing_is_null_not_exception_or_nan(self):
-        malformed = "eval time = 1 ms / 1 tokens (.. tokens per second)"
-        result = impl.parse_operator_logs(malformed, "", returncode=0,
-                                          wall_ms=1, gguf_sha256="0" * 64)
-        self.assertIsNone(result["generation_tokens_per_second"])
-        self.assertIsNone(result["generated_tokens_timing"])
+        for prefix, fields in (
+            ("eval time", ("generation_tokens_per_second", "generated_tokens_timing")),
+            ("prompt eval time", ("prompt_tokens_per_second", "prompt_tokens_timing")),
+        ):
+            for malformed in ("1e309", "1.2.3", "NaN", ".."):
+                with self.subTest(prefix=prefix, malformed=malformed):
+                    line = f"{prefix} = 1 ms / 1 tokens ({malformed} tokens per second)"
+                    result = impl.parse_operator_logs(
+                        line, "", returncode=0, wall_ms=1, gguf_sha256="0" * 64)
+                    for field in fields:
+                        self.assertIsNone(result[field])
+
+    def test_complete_parenthetical_timing_accepts_valid_llama_format(self):
+        output = ("eval time = 66.0 ms / 6 tokens "
+                  "(11.0 ms per token, 90.91 tokens per second)\n"
+                  "prompt eval time = 24.0 ms / 5 tokens "
+                  "(4.8 ms per token, 208.33 tokens per second)")
+        record = impl.parse_operator_logs(output, "", returncode=0,
+                                          wall_ms=90, gguf_sha256="0" * 64)
+        self.assertEqual(record["generation_tokens_per_second"], 90.91)
+        self.assertEqual(record["generated_tokens_timing"], 6)
+        self.assertEqual(record["prompt_tokens_per_second"], 208.33)
+        self.assertEqual(record["prompt_tokens_timing"], 5)
 
     def test_windows_without_safe_handle_opener_fails_closed(self):
         file = self.root / "tiny.bin"
