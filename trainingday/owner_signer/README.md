@@ -9,16 +9,23 @@ public-only Lappy verifier boundary in
 
 ## Boundary
 
-- Log in **locally and interactively** to VN1 as `VERA-NODE-1\Patrick`. An
-  Executor session running `VERA-NODE-1\Vera`, an administrative session,
-  WinRM, an unattended task, and GitHub Actions are not qualified owner sessions.
+- Log in at the **physical VN1 console** as `VERA-NODE-1\Patrick`, whose
+  previously verified local SID is pinned in the candidate. An Executor
+  session running `VERA-NODE-1\Vera`, RDP, WinRM, an unattended task, and
+  GitHub Actions are not qualified owner sessions. The script checks the
+  active physical console session and Windows WTS protocol, not a spoofable
+  `SESSIONNAME` environment variable. The console probe is evidence of
+  session attachment, **not proof of human presence**.
 - Only after exact live status/owner review, run
   `trainingday/owner_signer/New-Tier1BOwnerPublicCertificateVN1.ps1` from
   an independently reviewed source tree in that *Patrick* session. The script
   requires typed owner consent before creating a permanent, nonexportable CNG
   signing key. Do not send an account password or protection UI PIN to Executor.
 - It refuses an existing owner certificate subject or public output path rather
-  than silently replacing/reusing the owner identity.
+  than silently replacing/reusing the owner identity. It also rejects matching
+  owner CNs in both user/machine stores, any named owner CNG key container
+  (including an orphan without a certificate), and concurrent invocations
+  through a single-instance kernel mutex. Other writers remain out of scope.
 - It requests **Microsoft Software Key Storage Provider**, RSA3072,
   SHA256-RSA, CNG signing-only, **NonExportable**, **ProtectHigh**, 120-day
   validity, `DigitalSignature` only, `CA=false`, and a single **critical**
@@ -30,15 +37,17 @@ public-only Lappy verifier boundary in
   textual EKU syntax without a new native proof.
 - It validates exact certificate shape, provider/export/UI policy, and a
   local random sign/verify challenge. It writes only a public DER `.cer`
-  under Patrick's `%LOCALAPPDATA%\Vera\TrainingDay`, with no clobber.
+  under Patrick's Windows-known-folder `LocalApplicationData\Vera\TrainingDay`,
+  refusing preexisting directory reparse points, with no clobber.
 - The private key is not exported and must stay under Patrick's
   `Cert:\CurrentUser\My`. The public DER fingerprint must be independently
   recorded/verified before **any future separately authorized** Lappy
   machine-store public import or verifier pin. Importing a PFX or any private
   key to Lappy is forbidden.
 - If creation succeeds but later checks fail, the script leaves the newly
-  nonexportable key/cert for manual owner inspection. It does not automatically
-  destroy unique signer material or attempt a replacement.
+  nonexportable key/cert **or orphan CNG container** for manual owner
+  inspection. It does not automatically destroy unique signer material or
+  attempt a replacement.
 
 ## Evidence and limits
 
@@ -48,8 +57,11 @@ the DER EKU/algorithm/public-only export shape on an ephemeral Windows runner;
 it does **not** prove `ProtectHigh` UI behavior or the owner profile on VN1.
 
 Before Patrick runs anything, verify Windows version, PowerShell PKIClient,
-console interactivity and original owner identity on VN1; `ProtectHigh` support
-and UI prompts there remain **UNKNOWN**. Stop if an expected prompt fails.
+console interactivity and original owner identity/SID on VN1;
+`ProtectHigh` support and UI prompts there remain **UNKNOWN**. Stop if an
+expected prompt fails. A forced prompt and signed challenge cannot prove
+physical human presence or defend a software KSP against a compromised
+local administrator.
 There is no automatic trust enrollment, HostBroker install/restart, signed
 launch grant, Qwen optimizer step, GPU lease or NAS scope in this artifact.
 
