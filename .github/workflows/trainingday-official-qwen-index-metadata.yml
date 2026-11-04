@@ -1,0 +1,69 @@
+name: TRAININGDAY pinned official Qwen3.5 weight-index metadata only
+
+on:
+  push:
+    branches: ["feat/trainingday-official-weight-index-readiness-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-public-index-metadata:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CUDA_VISIBLE_DEVICES: "-1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Verify index negative controls (no model libraries)
+        run: >-
+          python -m unittest -v
+          tests.test_trainingday_qwen35_official_index_metadata
+      - name: Download only 76 KiB official index at immutable revision
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error --retry 2 --max-time 60 \
+            --max-filesize 131072 --proto '=https' --proto-redir '=https' \
+            'https://huggingface.co/Qwen/Qwen3.5-4B/resolve/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/model.safetensors.index.json' \
+            --output "$RUNNER_TEMP/official-model.safetensors.index.json"
+          test "$(wc -c < "$RUNNER_TEMP/official-model.safetensors.index.json")" -eq 76196
+      - name: Validate raw official index pin and truthful metadata-only report
+        shell: bash
+        run: |
+          python -m trainingday.qwen35_official_index_metadata \
+            --index "$RUNNER_TEMP/official-model.safetensors.index.json" \
+            | tee "$RUNNER_TEMP/official-qwen-index-evidence.json"
+          python - "$RUNNER_TEMP/official-qwen-index-evidence.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected = {
+              "status": "OFFICIAL_QWEN35_WEIGHT_INDEX_METADATA_ONLY_HOLD",
+              "official_revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+              "index_sha256": "cf3f798ee02ba45f9622aa8892a47369ab667d0afbf154ee7c2212de42e6302d",
+              "index_bytes_verified": 76196,
+              "indexed_tensor_count": 738,
+              "indexed_namespace_counts": {"language": 426, "vision": 297, "mtp": 15},
+              "published_tensor_payload_bytes": 9319737856,
+              "safetensors_shard_bytes_authenticated": False,
+              "safetensors_shards_downloaded": False,
+              "pretrained_weights_loaded": False,
+              "physical_training_authorized": False,
+              "gpu_fit": "UNKNOWN",
+              "host_memory_fit": "UNKNOWN",
+          }
+          if any(report.get(k) != v for k, v in expected.items()):
+              raise SystemExit("metadata-only index evidence drift or inflated authority")
+          PY
