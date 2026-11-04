@@ -99,10 +99,14 @@ class SourceBridgeTest(unittest.TestCase):
         profile.start()
         self.addCleanup(profile.stop)
         s = bridge.build_w31_public_scaffold(*src)
+        def attach(scaffold, predictions):
+            return bridge.attach_independent_predictions(
+                scaffold, predictions, train_jsonl=src[0], dev_jsonl=src[1], manifest_json=src[2]
+            )
         ids = [x["case_id"] for x in s["fixture"]["cases"]]
         arms = {a: [{"case_id": i, "semantic_answer": "externally generated"} for i in ids]
                 for a in bridge.ARMS}
-        b = bridge.attach_independent_predictions(s, arms)
+        b = attach(s, arms)
         self.assertEqual(set(b["predictions"]), set(bridge.ARMS))
         self.assertEqual(b["provenance"]["evaluation_bank_id"], "UNKNOWN")
         self.assertNotIn("prediction_status", b)
@@ -113,9 +117,11 @@ class SourceBridgeTest(unittest.TestCase):
             bad = copy.deepcopy(arms)
             mutate(bad)
             with self.assertRaises(bridge.BridgeError):
-                bridge.attach_independent_predictions(s, bad)
+                attach(s, bad)
         with self.assertRaises(bridge.BridgeError):
-            bridge.attach_independent_predictions(s, None)
+            attach(s, None)
+        with self.assertRaisesRegex(bridge.BridgeError, "source bytes required"):
+            bridge.attach_independent_predictions(s, arms)
 
         for mutate in (lambda x: x["fixture"].update({"visibility": "protected"}),
                        lambda x: x["fixture"].update({"sealed": True}),
@@ -125,7 +131,35 @@ class SourceBridgeTest(unittest.TestCase):
             bad = copy.deepcopy(s)
             mutate(bad)
             with self.assertRaises(bridge.BridgeError):
-                bridge.attach_independent_predictions(bad, arms)
+                attach(bad, arms)
+
+    def test_rehashed_forged_gold_and_training_case_rejected(self):
+        src = payloads()
+        with fake_profile(src):
+            scaffold = bridge.build_w31_public_scaffold(*src)
+            ids = [row["case_id"] for row in scaffold["fixture"]["cases"]]
+            def forged_digest(obj):
+                obj["scaffold_sha256"] = bridge._content_digest(
+                    {key: value for key, value in obj.items() if key != "scaffold_sha256"}
+                )
+                return obj
+            for mutate in (
+                lambda s: s["fixture"]["cases"][0].update({"expected_semantic": "FORGED-GOLD-ALL"}),
+                lambda s: s["fixture"]["cases"][0].update({"stratum": "forged-stratum"}),
+                lambda s: s["fixture"]["cases"].pop(),
+                lambda s: s["train_rows"][0].update({"prompt": "attacker-wrote-train-row"}),
+                lambda s: s["train_rows"][0].update({"source_group_id": "attacker-source"}),
+                lambda s: s["train_rows"].pop(),
+            ):
+                forged = copy.deepcopy(scaffold)
+                mutate(forged)
+                forged_digest(forged)
+                five_arms = {arm: [{"case_id": case_id, "semantic_answer": "FORGED-GOLD-ALL"}
+                                   for case_id in ids] for arm in bridge.ARMS}
+                with self.assertRaisesRegex(bridge.BridgeError, "freshly revalidated pinned source"):
+                    bridge.attach_independent_predictions(
+                        forged, five_arms, train_jsonl=src[0], dev_jsonl=src[1], manifest_json=src[2]
+                    )
 
     def test_leakage_rejected_even_if_caller_rehashes_source_files(self):
         original = payloads()

@@ -177,13 +177,31 @@ def build_w31_public_scaffold(train_jsonl: bytes, dev_jsonl: bytes, manifest_jso
     return scaffold
 
 
-def attach_independent_predictions(scaffold: Mapping, predictions: Mapping) -> dict:
-    """Assemble the #329 input only after independent caller supplies five arms.
+def attach_independent_predictions(
+    scaffold: Mapping,
+    predictions: Mapping,
+    *,
+    train_jsonl: bytes | None = None,
+    dev_jsonl: bytes | None = None,
+    manifest_json: bytes | None = None,
+) -> dict:
+    """Assemble #329 input only against a newly verified canonical source.
 
-    Does not run a model, assert real model provenance or raise Q6 status.
+    A scaffold digest is unkeyed and therefore not proof of source origin:
+    callers must supply the original pinned bytes again. Any forged gold,
+    case/stratum mapping or train row is rejected even if its digest is updated.
+    Independently generated model predictions themselves remain UNVERIFIED.
     """
     if not isinstance(scaffold, Mapping) or scaffold.get("bridge_version") != "public-dev-original-curriculum-v1":
         raise BridgeError("bridge scaffold required")
+    if any(value is None for value in (train_jsonl, dev_jsonl, manifest_json)):
+        raise BridgeError("pinned train/dev/manifest source bytes required at attachment")
+    canonical_scaffold = build_w31_public_scaffold(train_jsonl, dev_jsonl, manifest_json)
+    if scaffold != canonical_scaffold:
+        raise BridgeError("scaffold differs from freshly revalidated pinned source")
+    # All subsequent fields come from a fresh canonical reconstruction, not
+    # from a caller's potentially mutated dictionary.
+    scaffold = canonical_scaffold
     if scaffold.get("actual_evaluation_scope") != "SAME_ARCHETYPE_DIAGNOSTIC_ONLY" or scaffold.get("ready_for_training") is not False:
         raise BridgeError("candidate authority/scope changed")
     fixture = scaffold.get("fixture")

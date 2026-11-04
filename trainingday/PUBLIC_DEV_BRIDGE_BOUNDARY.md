@@ -22,10 +22,15 @@ generation and prediction attachment; it is **not** a cryptographic signature
 or independent attestation of a caller's submitted predictions.
 
 After an independent operator provides all five matched per-case predictions,
-`attach_independent_predictions(scaffold, five_arm_predictions)` produces the
-shape accepted by `evaluate_public_fixture` in draft #329. Prediction rows must
-have exactly `case_id` and `semantic_answer`. No predictions are synthesized or
-inferred from the public gold.
+`attach_independent_predictions(scaffold, five_arm_predictions,
+train_jsonl=..., dev_jsonl=..., manifest_json=...)` produces the shape accepted
+by `evaluate_public_fixture` in draft #329. The original three byte payloads
+are **required again** at attachment, and the entire canonical scaffold is
+rebuilt from their pinned SHA-256 digests. Merely recomputing a forged unkeyed
+scaffold digest can no longer smuggle altered gold, strata, or TRAIN examples.
+Prediction rows must have exactly `case_id` and `semantic_answer`. No
+predictions are synthesized or inferred from the public gold. The source-byte
+check does **not** independently verify predictions or model execution.
 
 **Hard qualification limit:** #329 uses literal `fixture.split="transfer"`
 as a fixed parser token. The producer's six DEV domains all share their rule
