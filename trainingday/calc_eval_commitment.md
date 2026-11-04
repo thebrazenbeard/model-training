@@ -32,6 +32,24 @@ generalization from format and difficulty effects. Protected evaluation should
 also contain matched-distribution unseen cases held by a separately
 authenticated evaluator.
 
+`matched_commitment(private_nonce, public_train_prompts=...)` is a **second,
+distinct source-only candidate**: 64 cubics with the same coefficient ranges,
+small evaluation-point range and exact prompt form as R201 TRAIN. Its secret
+HMAC draws have a dedicated `R201_MATCHED_CUBIC_V1` domain and independent
+example IDs, so they are distinct from the shifted DEV candidate even when
+the same secret fixture is used locally. A real evaluator should hold its
+own fresh secret and should not publish it, examples or answers. The function
+returns only an aggregate SHA-256 and explicit FALSE authority flags.
+
+The matched candidate requires a caller-provided list of **exactly 1,024
+unique TRAIN prompts** and rejects exact-string overlap with private matched
+DEV. This list is not authenticated as the frozen TRAIN corpus: a malicious
+caller can supply 1,024 different prompts, and mathematically equivalent
+problems may have different text. Therefore the status is still **HARD HOLD**
+and `semantic_disjointness_independently_verified` remains false. Matched
+distribution here describes a matched task *family/range*, not statistical
+identity of finite samples or protected evaluator custody.
+
 An optional public TRAIN prompt list rejects duplicate public prompts and
 exact-string TRAIN/DEV overlaps. The result labels this **surface check**, not
 semantic disjointness. Equivalent polynomials can be formatted differently,
@@ -46,8 +64,10 @@ evaluator independence, or nonce entropy.
    public GitHub and the training process.
 2. Authenticate evaluator identity and commitment with a protected signing key
    and physical readback of enrollment/revocation on the intended NAS/host.
-3. Prove TRAIN/DEV semantic exclusions and test independent matched- and
-   shifted-distribution performance across multiple unseen seeds.
+3. Independently verify complete TRAIN and both DEV semantic exclusions;
+   test protected matched- and shifted-distribution performance across
+   independently selected unseen seeds, with identical answer-frequency
+   controls per optimizer prefix.
 4. Obtain the separate rights grant, physical host process/GPU reservation,
    model hash and protected evaluation release. A passing unit test does not
    create these grants.
