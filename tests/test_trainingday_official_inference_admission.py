@@ -64,6 +64,102 @@ class OfficialInferenceAdmissionTests(unittest.TestCase):
         self.assertFalse(report["inference_executed"])
         self.assertEqual(len(report["files"]), 9)
 
+    def test_late_first_shard_path_replacement_holds_entire_hash_audit(self):
+        """W29: first FD hashes correctly, then its pathname is replaced."""
+        first_name, second_name = (name for name, _, _ in impl.SHARDS)
+        first = self.root / first_name
+        first.write_bytes(b"A")
+        (self.root / second_name).write_bytes(b"B")
+        for name in impl.METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS:
+            (self.root / name).write_bytes(b"metadata")
+        tiny_pins = ((first_name, 1, hashlib.sha256(b"A").hexdigest()),
+                     (second_name, 1, hashlib.sha256(b"B").hexdigest()))
+        actual_measure = impl._measure_fd
+        calls = [0]
+
+        def swap_after_hash(fd, **kwargs):
+            measured = actual_measure(fd, **kwargs)
+            calls[0] += 1
+            if calls[0] == 1:
+                first.rename(self.root / "first-shard-old-inode")
+                first.write_bytes(b"X")
+            return measured
+
+        with (patch.object(impl, "SHARDS", tiny_pins),
+              patch.object(impl, "_measure_fd", side_effect=swap_after_hash),
+              contextlib.redirect_stdout(io.StringIO()),
+              contextlib.redirect_stderr(io.StringIO()) as stderr):
+            exit_code = impl.main(["hash-audit", "--snapshot", str(self.root)])
+        self.assertGreaterEqual(calls[0], 1)
+        self.assertEqual(exit_code, 2, stderr.getvalue())
+        self.assertIn('"status": "HOLD"', stderr.getvalue())
+
+    def test_late_metadata_path_replacement_holds_entire_hash_audit(self):
+        """Metadata names are revalidated too, not merely the two shards."""
+        tiny = []
+        for letter, (name, _, _) in zip((b"A", b"B"), impl.SHARDS):
+            (self.root / name).write_bytes(letter)
+            tiny.append((name, 1, hashlib.sha256(letter).hexdigest()))
+        for name in impl.METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS:
+            (self.root / name).write_bytes(b"metadata")
+        first_metadata = self.root / impl.METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS[0]
+        actual_measure = impl._measure_fd
+        count = [0]
+
+        def swap_after_last_hash(fd, **kwargs):
+            result = actual_measure(fd, **kwargs)
+            count[0] += 1
+            if count[0] == len(impl.MODEL_FILENAMES):
+                first_metadata.rename(self.root / "previous-metadata-inode")
+                first_metadata.write_bytes(b"malicious")
+            return result
+
+        with (patch.object(impl, "SHARDS", tuple(tiny)),
+              patch.object(impl, "_measure_fd", side_effect=swap_after_last_hash)):
+            with self.assertRaisesRegex(impl.AdmissionError, "changed after read|pathname replaced"):
+                impl.verify_snapshot(self.root)
+        self.assertEqual(count[0], len(impl.MODEL_FILENAMES))
+
+    def test_shard_write_between_hash_return_and_final_audit_holds(self):
+        first_name, second_name = (name for name, _, _ in impl.SHARDS)
+        first = self.root / first_name
+        first.write_bytes(b"A")
+        (self.root / second_name).write_bytes(b"B")
+        for name in impl.METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS:
+            (self.root / name).write_bytes(b"metadata")
+        tiny = ((first_name, 1, hashlib.sha256(b"A").hexdigest()),
+                (second_name, 1, hashlib.sha256(b"B").hexdigest()))
+        actual_measure = impl._measure_fd
+        calls = [0]
+
+        def mutate_after_first_hash(fd, **kwargs):
+            result = actual_measure(fd, **kwargs)
+            calls[0] += 1
+            if calls[0] == 1:
+                before = first.stat()
+                first.write_bytes(b"X")  # Same inode, changed contents.
+                os.utime(first, ns=(before.st_atime_ns, before.st_mtime_ns))
+            return result
+
+        with (patch.object(impl, "SHARDS", tiny),
+              patch.object(impl, "_measure_fd", side_effect=mutate_after_first_hash)):
+            with self.assertRaisesRegex(impl.AdmissionError, "changed during shard audit"):
+                impl.verify_snapshot(self.root)
+
+    def test_successful_synthetic_hash_audit_marks_nonatomic_revalidation(self):
+        tiny = []
+        for letter, (name, _, _) in zip((b"A", b"B"), impl.SHARDS):
+            (self.root / name).write_bytes(letter)
+            tiny.append((name, 1, hashlib.sha256(letter).hexdigest()))
+        for name in impl.METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS:
+            (self.root / name).write_bytes(b"metadata")
+        with patch.object(impl, "SHARDS", tuple(tiny)):
+            receipt = impl.verify_snapshot(self.root)
+        self.assertTrue(receipt["shards_verified"])
+        self.assertTrue(receipt["all_snapshot_entries_revalidated"])
+        self.assertFalse(receipt["official_checkpoint_admitted"])
+        self.assertIn("non-atomic", receipt["file_identity_limit"])
+
     def test_symlinks_and_relative_paths_are_rejected(self):
         source = self.root / "source"
         source.write_bytes(b"synthetic")

@@ -119,6 +119,18 @@ staging directory, snapshot lock/ownership, SHA bound to the process-opened
 file descriptor and independently authenticated execution receipt are still
 required for physical custody proof. No CLI flag supplies that authority.
 
+**W30 pathname-replacement repair:** The first shard's original file descriptor
+could previously close before the second shard was hashed, leaving a passing
+SHA receipt even when its name had already been replaced. `hash-audit` now
+retains all nine original file descriptors through the scan, rechecks their
+post-hash inode/time stamps, then opens **every current filename again** under
+the same anchored directory FD with `O_NOFOLLOW` and compares identity/signature.
+Any mismatch is `HOLD` (CLI exit 2), not `shards_verified: true`. This detects
+the reproduced post-hash first-shard and metadata path swaps, but the final
+per-name checks are sequential, **not atomic**, and do not prevent a later
+rename after the last check. Physical use still requires host-owned immutable
+custody and a process-bound independent receipt.
+
 ### Exact physical VN1 authority request
 
 Patrick or his authorized VN1 host steward must explicitly approve **one

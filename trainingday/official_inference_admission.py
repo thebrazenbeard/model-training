@@ -8,7 +8,7 @@ approve and execute the emitted argv, and capture its output for `record`.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import csv
 import hashlib
 import json
@@ -154,19 +154,48 @@ def measure_file(path: Path, *, expected_bytes: int | None = None,
 
 
 def verify_snapshot(snapshot: Path) -> dict:
-    """Full two-shard byte check; metadata recorded as untrusted local digests."""
+    """Hash pinned bytes, then revalidate ALL names against retained FDs.
+
+    Not an atomic/immutable multi-file snapshot. An external writer can still
+    alter paths after the final check; host-owned custody remains mandatory.
+    """
     snapshot = safe_absolute(snapshot)
     inspected = {}
     with _open_anchored(snapshot, directory=True) as snapshot_fd:
-        # Children all resolve under the SAME retained directory handle.
-        # Never re-resolve snapshot path for individual file opens.
-        for name, size, sha in SHARDS:
-            with _open_snapshot_child(snapshot_fd, name) as child_fd:
+        # Keep ALL original inode handles open until the final pathname pass.
+        # Otherwise shard 1's path could be swapped after it hashes but before
+        # shard 2 hashes, falsely yielding `shards_verified: true`.
+        with ExitStack() as opened:
+            original_fds = {}
+            initial_stamps = {}
+            for name, size, sha in SHARDS:
+                child_fd = opened.enter_context(_open_snapshot_child(snapshot_fd, name))
+                original_fds[name] = child_fd
+                original_stamp = _stable_stamp(os.fstat(child_fd))
                 inspected[name] = _measure_fd(child_fd, expected_bytes=size,
                                               expected_sha256=sha)
-        for name in METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS:
-            with _open_snapshot_child(snapshot_fd, name) as child_fd:
+                if _stable_stamp(os.fstat(child_fd)) != original_stamp:
+                    raise AdmissionError("snapshot inode changed during shard audit")
+                initial_stamps[name] = original_stamp
+            for name in METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS:
+                child_fd = opened.enter_context(_open_snapshot_child(snapshot_fd, name))
+                original_fds[name] = child_fd
+                original_stamp = _stable_stamp(os.fstat(child_fd))
                 inspected[name] = _measure_fd(child_fd)
+                if _stable_stamp(os.fstat(child_fd)) != original_stamp:
+                    raise AdmissionError("snapshot inode changed during metadata audit")
+                initial_stamps[name] = original_stamp
+
+            for name, original_fd in original_fds.items():
+                # Re-check the originally hashed FD for in-place changes;
+                # separately reopen its CURRENT pathname O_NOFOLLOW under
+                # the SAME snapshot directory FD, comparing inode + ctime.
+                original = initial_stamps[name]
+                if _stable_stamp(os.fstat(original_fd)) != original:
+                    raise AdmissionError("hashed snapshot inode changed after read")
+                with _open_snapshot_child(snapshot_fd, name) as current_fd:
+                    if _stable_stamp(os.fstat(current_fd)) != original:
+                        raise AdmissionError("hashed snapshot pathname replaced after read")
     shard_verified = all(inspected[name]["verified"] for name, _, _ in SHARDS)
     return {"schema": SCHEMA, "evidence_class": "LOCAL_HASH_WITH_UPSTREAM_LFS_PINS",
             "repository": OFFICIAL_ID, "revision": OFFICIAL_REVISION,
@@ -175,9 +204,10 @@ def verify_snapshot(snapshot: Path) -> dict:
             "metadata_full_byte_pins_admitted": False,
             "official_checkpoint_admitted": False,
             "inference_executed": False,
+            "all_snapshot_entries_revalidated": True,
             "status": ("LOCAL_SHARD_HASH_AUDIT_PASS_NOT_ADMISSION" if shard_verified
                        else "HOLD_SHARD_HASH_OR_SIZE_MISMATCH"),
-            "file_identity_limit": "Retained directory FD and ctime checks, not immutable snapshot",
+            "file_identity_limit": "Final same-inode pathname checks are non-atomic; no immutable snapshot",
             "note": "Metadata hashes are measurements, not independently trusted upstream pins."}
 
 
