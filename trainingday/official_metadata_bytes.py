@@ -12,7 +12,7 @@ Face's /resolve/ endpoint, never the 133-byte /raw/ LFS pointer.
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
+from contextlib import contextmanager, ExitStack
 import hashlib
 import json
 import os
@@ -103,12 +103,31 @@ def _open_snapshot_directory_nofollow(snapshot: Path) -> int:
         raise OfficialMetadataBytesError("snapshot path not securely openable") from exc
     finally:
         if current is not None:
-            os.close(current)
+            try:
+                os.close(current)
+            except (OSError, NotImplementedError, TypeError) as exc:
+                raise OfficialMetadataBytesError(
+                    "cannot close snapshot directory descriptor") from exc
 
 
 def _fd_signature(metadata: os.stat_result) -> tuple[int, ...]:
     return (metadata.st_dev, metadata.st_ino, metadata.st_mode,
             metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+
+@contextmanager
+def _filesystem_failures_as_hold():
+    """Cover directory fstat and ExitStack close errors as well as file reads.
+
+    Narrow inner handlers preserve filename-specific rejection messages.
+    This outer guard also covers syscalls during context cleanup, so the CLI
+    cannot accidentally emit an uncaught OSError instead of structured HOLD.
+    """
+    try:
+        yield
+    except (OSError, NotImplementedError, TypeError) as exc:
+        raise OfficialMetadataBytesError(
+            "metadata snapshot directory or file-descriptor operation failed") from exc
 
 
 def _verify_bytes_against_pins(
@@ -122,7 +141,7 @@ def _verify_bytes_against_pins(
     snapshot = Path(snapshot_dir)
     if not snapshot.is_absolute() or ".." in snapshot.parts:
         raise OfficialMetadataBytesError("snapshot must be a real absolute directory")
-    with ExitStack() as stack:
+    with _filesystem_failures_as_hold(), ExitStack() as stack:
         directory_fd = _open_snapshot_directory_nofollow(snapshot)
         stack.callback(os.close, directory_fd)
         initial_directory = _fd_signature(os.fstat(directory_fd))

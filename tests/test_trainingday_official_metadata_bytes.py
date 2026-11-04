@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -238,6 +239,76 @@ class OfficialMetadataBytesTests(unittest.TestCase):
         receipt = json.loads(output.call_args.args[0])
         self.assertFalse(receipt["physical_launch_allowed"])
         self.assertEqual(receipt["status"], "HOLD")
+
+    def test_cli_directory_fstat_failures_emit_structured_hold(self):
+        # First observation anchors the opened snapshot; second revalidates
+        # it after all file descriptors have been checked. Both are fallible.
+        original_fstat = os.fstat
+        for failing_directory_observation in (1, 2):
+            directory_observations = 0
+
+            def injected_fstat(fd):
+                nonlocal directory_observations
+                info = original_fstat(fd)
+                if stat.S_ISDIR(info.st_mode):
+                    directory_observations += 1
+                    if directory_observations == failing_directory_observation:
+                        raise OSError("injected directory fstat failure")
+                return info
+
+            with self.subTest(failing_directory_observation=failing_directory_observation):
+                with patch.object(metadata_module, "OFFICIAL_METADATA_BYTE_PINS", self.pins):
+                    with patch.object(metadata_module,
+                                      "METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS",
+                                      tuple(self.files)):
+                        with patch("trainingday.official_metadata_bytes.os.fstat",
+                                   side_effect=injected_fstat), patch("builtins.print") as output:
+                            status = main(["--snapshot", str(self.root)])
+                self.assertEqual(directory_observations,
+                                 failing_directory_observation)
+                self.assertEqual(status, 2)
+                receipt = json.loads(output.call_args.args[0])
+                self.assertEqual(receipt["schema"], metadata_module.SCHEMA)
+                self.assertEqual(receipt["status"], "HOLD")
+                self.assertFalse(receipt["physical_launch_allowed"])
+                self.assertIn("directory", receipt["error"].lower())
+
+    def test_cli_exitstack_close_failure_emits_structured_hold(self):
+        original_fstat = os.fstat
+        original_close = os.close
+        directory_observations = 0
+        failed_cleanup = False
+
+        def observe_directory_revalidation(fd):
+            nonlocal directory_observations
+            info = original_fstat(fd)
+            if stat.S_ISDIR(info.st_mode):
+                directory_observations += 1
+            return info
+
+        def close_and_fail_once(fd):
+            nonlocal failed_cleanup
+            original_close(fd)
+            # This only fires in ExitStack after the *second* directory fstat.
+            # Close first to avoid leaking the injected-failure descriptor.
+            if directory_observations == 2 and not failed_cleanup:
+                failed_cleanup = True
+                raise OSError("injected descriptor cleanup failure")
+
+        with patch.object(metadata_module, "OFFICIAL_METADATA_BYTE_PINS", self.pins):
+            with patch.object(metadata_module, "METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS",
+                              tuple(self.files)):
+                with patch("trainingday.official_metadata_bytes.os.fstat",
+                           side_effect=observe_directory_revalidation):
+                    with patch("trainingday.official_metadata_bytes.os.close",
+                               side_effect=close_and_fail_once), patch("builtins.print") as output:
+                        status = main(["--snapshot", str(self.root)])
+        self.assertTrue(failed_cleanup)
+        self.assertEqual(directory_observations, 2)
+        self.assertEqual(status, 2)
+        receipt = json.loads(output.call_args.args[0])
+        self.assertEqual(receipt["status"], "HOLD")
+        self.assertFalse(receipt["physical_launch_allowed"])
 
 
 if __name__ == "__main__":
