@@ -1,0 +1,65 @@
+name: TRAININGDAY Tier1 Contract B signed scope candidate (HOLD only)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/trainingday-tier1-b-grant-native.yml"
+      - "trainingday/windows_host_broker/Tier1BGrantCandidate.cs"
+      - "tests/native_broker_tier1_b_grant_candidate.cs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-source-only-signed-scope:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Refuse nonpublic or unexpected repository context
+        shell: pwsh
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          if ($env:REPO_PRIVATE -ne 'false' -or
+              $env:REPO_NAME -ne 'thebrazenbeard/model-training') {
+            throw 'Source candidate must run in canonical public repository'
+          }
+
+      - name: Checkout exact candidate head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Confirm exact source head
+        shell: pwsh
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = (git rev-parse --verify HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_HEAD) { throw "source mismatch $actual" }
+          Write-Output "TIER1_B_SOURCE_ONLY_HEAD=$actual"
+
+      - name: Compile and execute actual .NET Framework 4.8 signed-grant negative tests
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) {
+            throw 'Framework 4.8 native compiler missing'
+          }
+          $source = Join-Path $PWD 'trainingday/windows_host_broker/Tier1BGrantCandidate.cs'
+          $test = Join-Path $PWD 'tests/native_broker_tier1_b_grant_candidate.cs'
+          $exe = Join-Path $env:RUNNER_TEMP 'Tier1BSourceOnlyGrantTests.exe'
+          & $csc /nologo /target:exe ('/out:' + $exe) /r:System.Core.dll /r:System.Security.dll $source $test
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) {
+            throw 'Tier1B source candidate did not compile'
+          }
+          $output = & $exe
+          Write-Output $output
+          if ($LASTEXITCODE -ne 0 -or
+              ($output | Out-String) -notmatch 'NATIVE_TIER1_B_SIGNED_SCOPE_HOLD_PASS') {
+            throw 'Tier1B signed scope negative test failed'
+          }
+          Write-Output 'SOURCE-ONLY candidate PASS; neither service installation nor GPU launch'
