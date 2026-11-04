@@ -62,7 +62,9 @@ jobs:
           cmake -S llama-cpp -B llama-cpp/build -DGGML_CUDA=OFF \
             -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF \
             -DLLAMA_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
-          cmake --build llama-cpp/build --target llama-cli --parallel 2
+          cmake --build llama-cpp/build --target llama-cli llama-server --parallel 2
+      - name: Run HF/GGUF logprob comparator corruption controls
+        run: python -m unittest discover -s tests -p test_trainingday_qwen35_gguf_logprobs_cpu.py -v
       - name: Run independent numerical parity corruption controls
         run: python -m unittest discover -s tests -p test_trainingday_qwen35_gguf_tensor_parity_cpu.py -v
       - name: Create 32-layer random hybrid LoRA and merged HF checkpoint
@@ -93,3 +95,12 @@ jobs:
           python -m trainingday.qwen35_tiny_gguf_e2e_cpu load \
             "$RUNNER_TEMP/qwen35tiny/merged-f16.gguf" \
             "$GITHUB_WORKSPACE/llama-cpp/build/bin/llama-cli"
+      - name: Compare saved HF next-token logprobs against pinned real llama.cpp CPU server
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m trainingday.qwen35_gguf_logprobs_cpu \
+            "$RUNNER_TEMP/qwen35tiny/merged" \
+            "$RUNNER_TEMP/qwen35tiny/merged-f16.gguf" \
+            "$GITHUB_WORKSPACE/llama-cpp/build/bin/llama-server"
+
