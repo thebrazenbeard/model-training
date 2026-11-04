@@ -5,6 +5,7 @@ import unittest
 from trainingday.qwen35_hybrid_rank4_meta_budget import (
     HybridMetaBudgetError,
     bound_rank4_adapter_memory,
+    bound_observed_meta_fp32_scenario,
     expected_rank4_elements,
     hybrid_projection_targets,
 )
@@ -38,6 +39,29 @@ class HybridMetaBudgetTests(unittest.TestCase):
         self.assertEqual(actual["optimistic_training_state_bytes"], 12000)
         self.assertEqual(actual["physical_fit"], "UNKNOWN")
         self.assertFalse(actual["training_authorized"])
+
+    def test_observed_meta_fp32_dtype_scenario_is_separately_labeled(self):
+        scenario = bound_observed_meta_fp32_scenario(
+            adapter_elements=1000, observed_meta_lora_dtypes=["torch.float32"])
+        self.assertEqual(scenario["observed_dtype_fp32_adapter_weight_bytes"], 4000)
+        self.assertEqual(scenario["observed_dtype_fp32_gradient_bytes"], 4000)
+        self.assertEqual(scenario["observed_dtype_fp32_adamw_moment_bytes"], 8000)
+        self.assertEqual(scenario["observed_dtype_fp32_training_state_bytes"], 16000)
+        self.assertEqual(scenario["scenario_basis"], "OBSERVED_META_LORA_DTYPE_FP32_ONLY")
+        self.assertFalse(scenario["optimizer_allocation_observed"])
+
+    def test_observed_meta_fp32_scenario_rejects_dtype_drift(self):
+        for elements, dtypes in (
+            (True, ["torch.float32"]),
+            (0, ["torch.float32"]),
+            (1000, ["torch.bfloat16"]),
+            (1000, ["torch.float32", "torch.bfloat16"]),
+            (1000, []),
+            (1000, "torch.float32"),
+        ):
+            with self.subTest(inputs=(elements, dtypes)), self.assertRaises(HybridMetaBudgetError):
+                bound_observed_meta_fp32_scenario(
+                    adapter_elements=elements, observed_meta_lora_dtypes=dtypes)
 
     def test_independent_shape_arithmetic_crosscheck(self):
         self.assertEqual(expected_rank4_elements([(2, 3)] * 152), 3040)

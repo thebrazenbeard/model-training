@@ -124,10 +124,17 @@ jobs:
           }
           if any(report.get(k) != v for k, v in expected.items()):
               raise SystemExit("hybrid meta evidence overclaimed protected effects")
-          if (type(n) is not int or n <= 0
+          if (type(n) is not int or n != 3_594_240
                   or rank4.get("target_module_count") != 152
                   or rank4.get("trainable_lora_a_b_tensors") != 304
                   or rank4.get("optimistic_training_state_bytes") != 12 * n
+                  or rank4.get("observed_meta_lora_dtypes") != ["torch.float32"]
+                  or rank4.get("scenario_basis") != "OBSERVED_META_LORA_DTYPE_FP32_ONLY"
+                  or rank4.get("observed_dtype_fp32_adapter_weight_bytes") != 4 * n
+                  or rank4.get("observed_dtype_fp32_gradient_bytes") != 4 * n
+                  or rank4.get("observed_dtype_fp32_adamw_moment_bytes") != 8 * n
+                  or rank4.get("observed_dtype_fp32_training_state_bytes") != 16 * n
+                  or rank4.get("optimizer_allocation_observed") is not False
                   or rank4.get("physical_fit") != "UNKNOWN"
                   or rank4.get("training_authorized") is not False
                   or base.get("text_parameter_elements") != 4_205_751_296):

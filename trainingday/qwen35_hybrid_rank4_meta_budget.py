@@ -88,6 +88,29 @@ def bound_rank4_adapter_memory(*, adapter_elements: int,
     }
 
 
+def bound_observed_meta_fp32_scenario(*, adapter_elements: int,
+                                     observed_meta_lora_dtypes: list[str]) -> dict:
+    """Extrapolate from observed FP32 *meta dtype*, not allocated optimizer state.
+
+    This is a separate conditional FP32 adapter+gradient+two FP32 AdamW
+    moments scenario. Meta tensors establish shape/dtype only; no gradients,
+    optimizer tensors, training step, or GPU allocation have been observed.
+    """
+    if (type(adapter_elements) is not int or adapter_elements <= 0
+            or type(observed_meta_lora_dtypes) is not list
+            or observed_meta_lora_dtypes != ["torch.float32"]):
+        raise HybridMetaBudgetError("observed 100% FP32 meta LoRA dtype is required")
+    return {
+        "scenario_basis": "OBSERVED_META_LORA_DTYPE_FP32_ONLY",
+        "observed_dtype_fp32_adapter_weight_bytes": 4 * adapter_elements,
+        "observed_dtype_fp32_gradient_bytes": 4 * adapter_elements,
+        "observed_dtype_fp32_adamw_moment_bytes": 8 * adapter_elements,
+        "observed_dtype_fp32_training_state_bytes": 16 * adapter_elements,
+        "optimizer_allocation_observed": False,
+        "physical_fit": "UNKNOWN",
+    }
+
+
 def run_hybrid_meta_probe(config_path: Path) -> dict:
     """Inspect real PEFT modules for a 152-projection official meta model."""
     try:
@@ -156,7 +179,12 @@ def run_hybrid_meta_probe(config_path: Path) -> dict:
         adapter_elements=actual_adapter_elements,
         a_b_tensor_count=len(trainable), target_module_count=len(targets),
     )
-    bound["observed_meta_lora_dtypes"] = sorted({str(p.dtype) for p in trainable.values()})
+    observed_meta_dtypes = sorted({str(p.dtype) for p in trainable.values()})
+    bound["observed_meta_lora_dtypes"] = observed_meta_dtypes
+    bound.update(bound_observed_meta_fp32_scenario(
+        adapter_elements=actual_adapter_elements,
+        observed_meta_lora_dtypes=observed_meta_dtypes,
+    ))
     return {
         "status": "OFFICIAL_TEXT_META_HYBRID_RANK4_SOURCE_ONLY_HOLD",
         "official_revision": OFFICIAL_REVISION,
