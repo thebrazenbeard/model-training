@@ -25,6 +25,11 @@ returns `physical_training_authorized=false`,
 `windows_wsl2_crash_qualified=false`, and
 `all_prior_descendants_proven_dead=false`.
 
+Unit tests inject fake `/proc` and cgroup roots. Those results are labelled
+`CALLER_SUPPLIED_TEST_PATHS`; callers cannot promote them to kernel evidence.
+Even the `DEFAULT_LINUX_PATHS` label does not authenticate the caller or
+prove the mount namespace is the owner-controlled one.
+
 ## Remaining host-native work (not accomplished here)
 
 1. The Windows HostBroker must independently authenticate and bind its owner
