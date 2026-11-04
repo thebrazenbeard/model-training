@@ -94,7 +94,8 @@ try {
         $eku = [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]$ekus[0]
         $purposes = @($eku.EnhancedKeyUsages | ForEach-Object { $_.Value })
         if ($purposes.Count -ne 1 -or $purposes[0] -cne $purposeOid) {
-            throw 'EKU includes an unexpected purpose'
+            throw ('EKU includes unexpected public purpose OIDs: count={0} values={1}' -f
+                $purposes.Count, ($purposes -join ','))
         }
         $basics = @($public.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' })
         if ($basics.Count -ne 1 -or $basics[0].CertificateAuthority) {
