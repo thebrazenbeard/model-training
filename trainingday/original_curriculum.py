@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import secrets
 from collections import Counter
 from pathlib import Path
 
@@ -53,33 +55,36 @@ def example(domain: str, family: int, variant: int) -> tuple[str, str]:
     raise ValueError(f"unknown domain: {domain}")
 
 
+def _canonical_row(domain: str, family: int, variant: int) -> dict:
+    prompt, answer = example(domain, family, variant)
+    case = f"oc-v1-{domain}-{family:02d}-{variant}"
+    family_id = f"oc-v1-{domain}-{family:02d}"
+    return {
+        "id": case,
+        "case_id": case,
+        "domain": domain,
+        "family_id": family_id,
+        # Family-scoped IDs separate split members, but rule archetypes overlap.
+        "template_id": family_id,
+        "source_id": f"{GENERATOR}/{domain}/{family:02d}",
+        "archetype_id": f"oc-v1-{domain}",
+        "variant": variant,
+        "split": "train" if family < TRAIN_FAMILIES else "dev",
+        "prompt": prompt,
+        "answer": answer,
+        "rights_status": "NOT_ADMITTED",
+        "training_authorized": False,
+        "provenance": {"kind": "source_authored", "generator": GENERATOR,
+                       "external_corpus": False},
+    }
+
+
 def build_rows() -> list[dict]:
     rows = []
     for domain in DOMAINS:
         for family in range(FAMILIES_PER_DOMAIN):
-            split = "train" if family < TRAIN_FAMILIES else "dev"
             for variant in range(VARIANTS):
-                prompt, answer = example(domain, family, variant)
-                rows.append({
-                    "id": f"oc-v1-{domain}-{family:02d}-{variant}",
-                    "case_id": f"oc-v1-{domain}-{family:02d}-{variant}",
-                    "domain": domain,
-                    "family_id": f"oc-v1-{domain}-{family:02d}",
-                    # Isolation IDs are family-scoped, but all families in a
-                    # domain still share one rule archetype. This is NOT an
-                    # unseen-archetype transfer evaluation.
-                    "template_id": f"oc-v1-{domain}-{family:02d}",
-                    "source_id": f"{GENERATOR}/{domain}/{family:02d}",
-                    "archetype_id": f"oc-v1-{domain}",
-                    "variant": variant,
-                    "split": split,
-                    "prompt": prompt,
-                    "answer": answer,
-                    "rights_status": "NOT_ADMITTED",
-                    "training_authorized": False,
-                    "provenance": {"kind": "source_authored", "generator": GENERATOR,
-                                   "external_corpus": False},
-                })
+                rows.append(_canonical_row(domain, family, variant))
     validate(rows)
     return rows
 
@@ -112,20 +117,92 @@ def validate(rows: list[dict]) -> None:
             raise ValueError(f"invalid dev count for {domain}")
     if len(rows) != len(DOMAINS) * FAMILIES_PER_DOMAIN * VARIANTS:
         raise ValueError("unexpected domain or split")
+    for row in rows:
+        domain, variant = row["domain"], row["variant"]
+        # The family index is encoded in the generated ID, never trusted from
+        # an optional caller field that might be altered independently.
+        if domain not in DOMAINS or type(variant) is not int or not 0 <= variant < VARIANTS:
+            raise ValueError("noncanonical domain or variant")
+        try:
+            family = int(row["family_id"].removeprefix(f"oc-v1-{domain}-"))
+        except (ValueError, TypeError):
+            raise ValueError("noncanonical family identity") from None
+        if not 0 <= family < FAMILIES_PER_DOMAIN:
+            raise ValueError("noncanonical family index")
+        expected = _canonical_row(domain, family, variant)
+        if row != expected:
+            differences = sorted(key for key in row.keys() | expected.keys()
+                                 if row.get(key) != expected.get(key))
+            raise ValueError(f"noncanonical generated row: {', '.join(differences)}")
+
+
+def _publish_exclusive(output_dir: Path, payloads: dict[str, bytes]) -> None:
+    """Stage all bytes; link final names without following or replacing links.
+
+    Files are independently linked, so this is not a filesystem transaction.
+    Manifest is last. Ordinary failures roll back only names created here;
+    after process death, an incomplete directory requires manual inspection.
+    The destination directory and its ancestors must be owner-controlled.
+    """
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise OSError("exclusive curriculum publication requires POSIX no-follow directory support")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dir_fd = os.open(output_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for name in payloads:
+            try:
+                os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            raise FileExistsError(f"candidate output already exists: {name}")
+
+        staged: list[tuple[str, str]] = []
+        published: list[str] = []
+        try:
+            for name, data in payloads.items():
+                tmp_name = f".oc-stage-{secrets.token_hex(16)}"
+                file_fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                  0o600, dir_fd=dir_fd)
+                staged.append((tmp_name, name))
+                with os.fdopen(file_fd, "wb") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            for tmp_name, name in staged:
+                os.link(tmp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd,
+                        follow_symlinks=False)
+                published.append(name)
+            os.fsync(dir_fd)
+        except BaseException as exc:
+            rollback_errors = []
+            for name in reversed(published):
+                try:
+                    os.unlink(name, dir_fd=dir_fd)
+                except OSError as rollback_exc:
+                    rollback_errors.append(f"{name}: {rollback_exc}")
+            if rollback_errors:
+                raise RuntimeError("incomplete publication; manually inspect output directory: "
+                                   + "; ".join(rollback_errors)) from exc
+            raise
+        finally:
+            for tmp_name, _ in staged:
+                try:
+                    os.unlink(tmp_name, dir_fd=dir_fd)
+                except FileNotFoundError:
+                    pass
+    finally:
+        os.close(dir_fd)
 
 
 def write_candidate(output_dir: Path) -> dict:
     rows = build_rows()
-    names = ("train.jsonl", "dev.jsonl", "manifest.json")
-    if any((output_dir / name).exists() for name in names):
-        raise FileExistsError("candidate output already exists; choose a new directory")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    payloads = {}
     files = {}
     for split in ("train", "dev"):
         payload = "".join(json.dumps(row, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
                           + "\n" for row in rows if row["split"] == split).encode("utf-8")
         filename = f"{split}.jsonl"
-        (output_dir / filename).write_bytes(payload)
+        payloads[filename] = payload
         files[filename] = {"rows": sum(r["split"] == split for r in rows),
                            "sha256": hashlib.sha256(payload).hexdigest()}
     manifest = {
@@ -138,10 +215,11 @@ def write_candidate(output_dir: Path) -> dict:
         "source_id_semantics": "generator/family synthetic provenance partition; all rows share one source-authored generator",
         "rights_status": "NOT_ADMITTED", "training_authorized": False,
         "rights_note": "Source-authored synthetic examples; requires independent rights/admission review.",
+        "publication_note": "Manifest linked last; interrupted publication is not transactionally atomic. Verify hashes and manually inspect incomplete directories before retrying.",
         "files": files,
     }
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n",
-                                                 encoding="utf-8")
+    payloads["manifest.json"] = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    _publish_exclusive(output_dir, payloads)
     return manifest
 
 
