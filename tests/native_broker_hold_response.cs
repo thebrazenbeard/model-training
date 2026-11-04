@@ -22,7 +22,8 @@ public static class NativeBrokerHoldResponseTests {
                                   "nas_witness_verified","training_observed"})
       Check(!(bool)document[key],label+" "+key);
     Check(document.Count==11,label+" unexpected extra claims");
-    if (!String.IsNullOrEmpty(request))
+    // STATUS_V1 is legitimately embedded in the fixed schema identifier.
+    if (!String.IsNullOrEmpty(request) && request!="STATUS_V1")
       Check(!response.Contains(request),label+" reflected request");
     Console.WriteLine("PASS "+label);
   }
