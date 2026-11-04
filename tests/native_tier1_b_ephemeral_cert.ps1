@@ -57,7 +57,7 @@ try {
         if ([int]$privateRsa.Key.ExportPolicy -ne 0) {
             throw 'Owner signing key unexpectedly carries export permission'
         }
-        if ([int]$privateRsa.Key.Usage -ne [int][Security.Cryptography.CngKeyUsages]::Signing) {
+        if ([int]$privateRsa.Key.KeyUsage -ne [int][Security.Cryptography.CngKeyUsages]::Signing) {
             throw 'Owner signing key CNG usage not limited to signing'
         }
     } finally { if ($privateRsa) { $privateRsa.Dispose() } }
