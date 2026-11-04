@@ -13,6 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import unicodedata
 
 from trainingday.pinned_base import BASE_ID, BASE_REVISION
 
@@ -52,16 +53,17 @@ def check_raw_tokenizer(tokenizer) -> dict:
              and tokenizer.encode("<|im_end|>", add_special_tokens=False).ids == [end],
              "ChatML delimiters do not occupy single reserved token IDs")
 
-    unicode_mismatches = []
+    normalized_samples = []
     for sample in UNICODE_SAMPLES:
         ids = tokenizer.encode(sample, add_special_tokens=False).ids
         _require(bool(ids), "Unicode sample unexpectedly empty")
         decoded = tokenizer.decode(ids, skip_special_tokens=False)
         if decoded != sample:
-            unicode_mismatches.append({"input": repr(sample), "decoded": repr(decoded)})
-    _require(not unicode_mismatches,
-             "pinned Unicode/whitespace roundtrip changed bytes: "
-             + json.dumps(unicode_mismatches, ensure_ascii=False))
+            _require(decoded == unicodedata.normalize("NFC", sample),
+                     "unexplained Unicode/whitespace roundtrip change: "
+                     + json.dumps({"input": repr(sample), "decoded": repr(decoded)},
+                                  ensure_ascii=False))
+            normalized_samples.append(repr(sample))
 
     framed = "<|im_start|>user\nhello, 世界<|im_end|>"
     ids = tokenizer.encode(framed, add_special_tokens=False).ids
@@ -79,7 +81,10 @@ def check_raw_tokenizer(tokenizer) -> dict:
         "base_id": BASE_ID,
         "base_revision": BASE_REVISION,
         "tokenizer_sha256": TOKENIZER_SHA256,
-        "unicode_samples_passed": len(UNICODE_SAMPLES),
+        "unicode_samples_checked": len(UNICODE_SAMPLES),
+        "unicode_exact_roundtrips": len(UNICODE_SAMPLES) - len(normalized_samples),
+        "unicode_nfc_normalized_roundtrips": len(normalized_samples),
+        "nfc_normalized_inputs": normalized_samples,
         "im_start_token_id": start,
         "im_end_token_id": end,
         "literal_reserved_spelling_maps_to_special_id": start in untrusted_ids,

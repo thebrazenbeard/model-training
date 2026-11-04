@@ -60,6 +60,21 @@ class BoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(candidate.TokenizerSemanticsError, "roundtrip"):
             candidate.check_raw_tokenizer(Corrupt())
 
+    def test_expected_nfc_canonicalization_is_reported(self):
+        import unicodedata
+
+        class NfcTokenizer(CharTokenizer):
+            def decode(self, ids, *, skip_special_tokens):
+                return unicodedata.normalize(
+                    "NFC", super().decode(ids, skip_special_tokens=skip_special_tokens)
+                )
+
+        report = candidate.check_raw_tokenizer(NfcTokenizer())
+        self.assertEqual(report["unicode_samples_checked"], 6)
+        self.assertEqual(report["unicode_exact_roundtrips"], 5)
+        self.assertEqual(report["unicode_nfc_normalized_roundtrips"], 1)
+        self.assertFalse(report["authorizes_training"])
+
     def test_public_source_hash_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "tokenizer.json"
