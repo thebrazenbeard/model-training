@@ -82,6 +82,13 @@ def run_tiny_cpu_nf4_peft() -> dict:
     )
     model = peft.get_peft_model(SyntheticModel(base), configuration)
     model.train()
+    effective_projection = model.base_model.model.proj
+    if (
+        getattr(effective_projection, "base_layer", None) is not base
+        or effective_projection.base_layer.weight is not quant
+        or effective_projection.base_layer.weight.quant_state is not state
+    ):
+        raise RuntimeError("PEFT effective forward base is not the inspected packed NF4 layer")
     trainable = [(name, parameter) for name, parameter in model.named_parameters()
                  if parameter.requires_grad]
     a = [(name, parameter) for name, parameter in trainable if ".lora_A." in name]
@@ -97,6 +104,10 @@ def run_tiny_cpu_nf4_peft() -> dict:
     base_output = base(inputs).detach()
     if not torch.isfinite(base_output).all() or base_output.abs().sum().item() == 0:
         raise RuntimeError("packed NF4 projection produced no finite base contribution")
+    with model.disable_adapter():
+        disabled_output = model(inputs).detach()
+    if not torch.allclose(disabled_output, base_output, rtol=1e-5, atol=1e-5):
+        raise RuntimeError("PEFT forward with adapters disabled did not use the packed NF4 base")
 
     before_adapter = {name: parameter.detach().clone() for name, parameter in trainable}
     output = model(inputs)
