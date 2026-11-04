@@ -22,6 +22,14 @@ class OfficialPublicBaseSourceTests(unittest.TestCase):
         self.assertEqual(OFFICIAL_REVISION, "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a")
         self.assertEqual(PHYSICAL_SHARD_BYTES - INDEX_TENSOR_BYTES, 90240)
 
+    def test_missing_trusted_pins_cover_chat_template_and_bpe(self):
+        required = expected_source_record()["admission"]["missing_trusted_byte_pins"]
+        self.assertEqual(set(required), {
+            "config.json", "tokenizer_config.json", "tokenizer.json",
+            "model.safetensors.index.json", "chat_template.jinja",
+            "merges.txt", "vocab.json",
+        })
+
     def test_rejects_third_party_and_shape_compatible_substitutions(self):
         attempts = (
             ("identity", "repository", "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive"),
