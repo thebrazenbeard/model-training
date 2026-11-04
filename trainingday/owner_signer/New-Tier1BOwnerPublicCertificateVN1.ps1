@@ -18,7 +18,8 @@ $purposeOid = '2.25.281124513629607016020108740092472226515'
 # this 128-bit 2.25 OID to 2.25.9223372036854775807. This is an ASN.1
 # SEQUENCE OF OID, encoded with the entire intended base-128 arc.
 $purposeEkuDerHex = '301606146983A6FECEA99ABA92BCAF8AA4B9BB9BEBD9E553'
-$subject = 'CN=VERA TrainingDay Tier1 B Owner Patrick v1'
+$commonName = 'VERA TrainingDay Tier1 B Owner Patrick v1'
+$subject = 'CN=' + $commonName
 $store = 'Cert:\CurrentUser\My'
 
 # This validation deliberately comes BEFORE any filesystem/cert-store write
@@ -47,10 +48,13 @@ $publicDerPath = Join-Path $directory 'Tier1B-Patrick-Owner-PUBLIC.cer'
 if (Test-Path -LiteralPath $publicDerPath) {
     throw ('HOLD: existing public DER must be independently reconciled; no overwrite: {0}' -f $publicDerPath)
 }
+$nameType = [Security.Cryptography.X509Certificates.X509NameType]::SimpleName
 $before = @(Get-ChildItem -Path $store -ErrorAction Stop |
-    Where-Object { $_.Subject -ceq $subject })
-if ($before.Count -ne 0) {
-    throw 'HOLD: exact owner subject already exists in CurrentUser\My; do not create a second owner key'
+    Where-Object { $_.Subject -ieq $subject -or $_.GetNameInfo($nameType, $false) -ieq $commonName })
+$machineBefore = @(Get-ChildItem -Path 'Cert:\LocalMachine\My' -ErrorAction Stop |
+    Where-Object { $_.Subject -ieq $subject -or $_.GetNameInfo($nameType, $false) -ieq $commonName })
+if ($before.Count -ne 0 -or $machineBefore.Count -ne 0) {
+    throw 'HOLD: owner CN already exists in CurrentUser\My or LocalMachine\My; no duplicate owner key'
 }
 
 Write-Host 'STOP/REVIEW: this is a one-time nonexportable private signing key creation on VN1.'
@@ -90,7 +94,7 @@ try {
         throw 'HOLD: certificate subject/issuer/private key/SHA256-RSA signature mismatch'
     }
     $after = @(Get-ChildItem -Path $store |
-        Where-Object { $_.Subject -ceq $subject })
+        Where-Object { $_.Subject -ieq $subject -or $_.GetNameInfo($nameType, $false) -ieq $commonName })
     if ($after.Count -ne 1 -or $after[0].Thumbprint -ine $issued.Thumbprint) {
         throw 'HOLD: owner certificate store has ambiguous/mismatched subject'
     }
