@@ -21,7 +21,7 @@ local payload hashes**, are:
 Combined 9,319,828,096 bytes, excluding the seven necessary metadata files.
 The metadata (`config.json`, `tokenizer_config.json`, `tokenizer.json`,
 `model.safetensors.index.json`, `chat_template.jinja`, `merges.txt`, `vocab.json`)
-lack independently trusted full-byte SHA256 pins. `verify` records their local
+lack independently trusted full-byte SHA256 pins. `hash-audit` records their local
 hashes; it never implies their upstream custody has been admitted.
 
 ## CLI: no external effects
@@ -39,8 +39,13 @@ python -m trainingday.official_inference_admission plan \
 
 # 2. Only AFTER a separately authorized operator performs the printed
 #    'hf download' argv on VN1, hash all 9 downloaded local files.
-python -m trainingday.official_inference_admission verify \
+#    This is a LOCAL HASH AUDIT, never official admission.
+python -m trainingday.official_inference_admission hash-audit \
   --snapshot /path/approved/isolated/qwen35-official-851bf6e
+
+# An old 'verify' subcommand is retained for compatibility, but its exit code
+# is 3 (ADMISSION HOLD) even if the official shard hash audit passes, because
+# trusted full-byte metadata pins and independent custody are unavailable.
 
 # 3. After externally authorized GGUF conversion and SHA receipt, inspect the
 #    candidate GGUF and runtime. This also ONLY prints a probe command.
@@ -76,7 +81,7 @@ The Hugging Face plan uses the current official `hf download` CLI contract:
 explicit positional filenames, immutable `--revision`, `--local-dir`, no
 wildcards, no `--force-download`, no metered services. Only an empty, isolated
 target can generate a candidate argv. Actual HF transfer must be external to
-this CLI and followed by `verify` on the same physical snapshot. Free space
+this CLI and followed by `hash-audit` on the same physical snapshot. Free space
 reserve requires shard bytes + 24 GiB for staging. The inference candidate
 requires at least 6 GiB *available* RAM and 24 GiB disk free, normalized
 1-minute CPU load no more than 80%, no known existing llama/KoboldCPP process,
@@ -85,7 +90,34 @@ memory or load state is HOLD. These are coarse preliminary bounds, not proof
 that full checkpoint conversion or GGUF inference fits memory. For Windows,
 available RAM and CPU come from system APIs and running-process names from
 `tasklist`; for Linux, from `/proc` and `getloadavg`. Hostnames are not
-cryptographically attested.
+cryptographically attested. **This source revision fails closed on native
+Windows for all local file hashing and log ingestion**: no Windows native
+handle-anchored/no-reparse-point equivalent has been implemented or verified.
+The `fd_anchored_hashing_supported` preflight gate is false on Windows, so a
+native Windows execution path remains HOLD. A specifically approved and
+attested POSIX execution environment can be evaluated independently; calling
+WSL itself a verified VN1 machine/runner without host identity attestation is
+not sufficient.
+
+### W22 security repair: exact scope and residual races
+
+Local byte verification and log ingestion now open from the filesystem root
+through **each** POSIX directory component using retained directory FDs,
+`O_DIRECTORY`/`O_NOFOLLOW`, and a no-follow regular-file leaf. The nine snapshot
+members share one retained snapshot directory FD. File and log reads use that
+same open FD for size check, bounded read, SHA, and pre/post `fstat` identity,
+size, mtime and **ctime** comparison. Log ingestion refuses more than 2 MiB
+even if the path grows or is swapped during a read. Malformed timing text
+produces null TPS fields, not a parser exception.
+
+This mitigates ordinary symlink ancestors and in-place rewrites with restored
+mtime. It does **not** establish immutable snapshot semantics: a privileged
+actor might manipulate timestamps; a hard link or bind mount may refer to
+another object; bytes may be modified *after* the final `fstat`; a live
+converter/runner could open different bytes later. A host-owned trusted
+staging directory, snapshot lock/ownership, SHA bound to the process-opened
+file descriptor and independently authenticated execution receipt are still
+required for physical custody proof. No CLI flag supplies that authority.
 
 ### Exact physical VN1 authority request
 
@@ -165,5 +197,6 @@ python -m unittest -v tests.test_trainingday_official_inference_admission
 The tests intentionally reject a fake two-shard model as official even when
 its local synthetic SHA files can be hashed correctly. They test path and
 collision HOLDs, unknown/busy host resource HOLDs, pinned argv, GGUF command
-generation, and untrusted log parsing. Source-ready ≠ verified official
+generation, ancestor symlink races, log swaps, restored-mtime rewrites,
+admission-vs-hash exit codes, and malformed TPS text. Source-ready ≠ verified official
 weights ≠ compatible GGUF ≠ actual inference ≠ trusted benchmark.

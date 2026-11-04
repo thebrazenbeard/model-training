@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -147,6 +148,118 @@ class OfficialInferenceAdmissionTests(unittest.TestCase):
                 exit_code = impl.main(["plan", "--snapshot", str(self.root / "new")])
             self.assertEqual(exit_code, 0)
             self.assertFalse(json.loads(output.getvalue())["downloaded"])
+
+    def test_ancestor_swap_cannot_redirect_open_into_external_file(self):
+        parent = self.root / "safe"
+        parent.mkdir()
+        original = parent / "model.bin"
+        original.write_bytes(b"A" * 32)
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "model.bin").write_bytes(b"B" * 32)
+        real_open = impl.os.open
+        swapped = [False]
+
+        def race(path, flags, *args, **kwargs):
+            if path == "model.bin" and not swapped[0]:
+                swapped[0] = True
+                parent.rename(self.root / "safe_old")
+                parent.symlink_to(outside, target_is_directory=True)
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch.object(impl.os, "open", side_effect=race):
+            receipt = impl.measure_file(original)
+        self.assertTrue(swapped[0])
+        self.assertEqual(receipt["sha256_measured"], hashlib.sha256(b"A" * 32).hexdigest())
+
+    def test_ancestor_symlink_before_component_open_fails_closed(self):
+        parent = self.root / "safe"
+        parent.mkdir()
+        file = parent / "model.bin"
+        file.write_bytes(b"A")
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "model.bin").write_bytes(b"B")
+        real_open = impl.os.open
+        swapped = [False]
+
+        def race(path, flags, *args, **kwargs):
+            if path == "safe" and not swapped[0]:
+                swapped[0] = True
+                parent.rename(self.root / "safe_old")
+                parent.symlink_to(outside, target_is_directory=True)
+            return real_open(path, flags, *args, **kwargs)
+
+        with patch.object(impl.os, "open", side_effect=race):
+            with self.assertRaises(impl.AdmissionError):
+                impl.measure_file(file)
+        self.assertTrue(swapped[0])
+
+    def test_log_symlink_replacement_after_size_check_stays_bounded(self):
+        log = self.root / "log.txt"
+        log.write_text("ok")
+        outside = self.root / "large.txt"
+        outside.write_bytes(b"X" * (impl.MAX_LOG_BYTES + 1))
+        real_read = impl.os.read
+        swapped = [False]
+
+        def race(fd, size):
+            if not swapped[0]:
+                swapped[0] = True
+                log.rename(self.root / "log_old")
+                log.symlink_to(outside)
+            return real_read(fd, size)
+
+        with patch.object(impl.os, "read", side_effect=race):
+            with self.assertRaisesRegex(impl.AdmissionError, "log changed"):
+                impl._read_bounded_log(log)
+        self.assertTrue(swapped[0])
+
+    def test_in_place_rewrite_restored_mtime_rejected_by_ctime(self):
+        file = self.root / "data.bin"
+        file.write_bytes(b"A" * (2 * 1024 * 1024))
+        before = file.stat()
+        real_read = impl.os.read
+        calls = [0]
+
+        def rewrite(fd, size):
+            block = real_read(fd, size)
+            calls[0] += 1
+            if calls[0] == 1:
+                with file.open("r+b") as output:
+                    output.seek(1024 * 1024)
+                    output.write(b"B" * (1024 * 1024))
+                os.utime(file, ns=(before.st_atime_ns, before.st_mtime_ns))
+            return block
+
+        with patch.object(impl.os, "read", side_effect=rewrite):
+            with self.assertRaisesRegex(impl.AdmissionError, "changed during read"):
+                impl.measure_file(file)
+
+    def test_hash_audit_is_separate_from_admission_exit_code(self):
+        synthetic = {"shards_verified": True,
+                     "official_checkpoint_admitted": False,
+                     "status": "LOCAL_SHARD_HASH_AUDIT_PASS_NOT_ADMISSION"}
+        with patch.object(impl, "verify_snapshot", return_value=synthetic):
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, impl.main(["hash-audit", "--snapshot", str(self.root)]))
+                self.assertEqual(3, impl.main(["verify", "--snapshot", str(self.root)]))
+
+    def test_malformed_timing_is_null_not_exception_or_nan(self):
+        malformed = "eval time = 1 ms / 1 tokens (.. tokens per second)"
+        result = impl.parse_operator_logs(malformed, "", returncode=0,
+                                          wall_ms=1, gguf_sha256="0" * 64)
+        self.assertIsNone(result["generation_tokens_per_second"])
+        self.assertIsNone(result["generated_tokens_timing"])
+
+    def test_windows_without_safe_handle_opener_fails_closed(self):
+        file = self.root / "tiny.bin"
+        file.write_bytes(b"tiny")
+        with patch.object(impl, "_anchored_fd_supported", return_value=False):
+            with self.assertRaisesRegex(impl.AdmissionError, "unavailable"):
+                impl.measure_file(file)
+            with self.assertRaisesRegex(impl.AdmissionError, "unavailable"):
+                impl._read_bounded_log(file)
 
 
 if __name__ == "__main__":

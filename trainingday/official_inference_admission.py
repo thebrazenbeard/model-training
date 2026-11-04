@@ -8,12 +8,13 @@ approve and execute the emitted argv, and capture its output for `record`.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import csv
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
-import platform
 import re
 import shutil
 import socket
@@ -49,7 +50,7 @@ class AdmissionError(ValueError):
 
 
 def safe_absolute(path: str | Path, *, needs_file: bool = False) -> Path:
-    """Reject relative/symlinked target components; do not resolve aliases."""
+    """Reject lexical aliases; this precheck is NOT a race-safe path opener."""
     value = Path(path)
     if not value.is_absolute() or ".." in value.parts:
         raise AdmissionError("absolute path without traversal required")
@@ -61,54 +62,112 @@ def safe_absolute(path: str | Path, *, needs_file: bool = False) -> Path:
     return value
 
 
+def _anchored_fd_supported() -> bool:
+    """Windows is HOLD until a native no-reparse, handle-anchored opener exists."""
+    return (os.name == "posix"
+            and any(getattr(fn, "__name__", None) == "open"
+                    for fn in getattr(os, "supports_dir_fd", ()))
+            and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW"))
+
+
+@contextmanager
+def _open_anchored(path: Path, *, directory: bool = False):
+    """Traverse / -> each component with O_NOFOLLOW and retained dir_fds.
+
+    Holding parent handles defeats ancestor symlink swaps. It does not freeze
+    an adversary-controlled inode or attest any path's owner/custody.
+    """
+    path = safe_absolute(path)
+    if not _anchored_fd_supported():
+        raise AdmissionError("fd-anchored nofollow unavailable on this platform; HOLD")
+    components = path.parts[1:]
+    if not components:
+        raise AdmissionError("filesystem root is not a file/snapshot")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    leaf_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    parent_fd = leaf_fd = None
+    try:
+        parent_fd = os.open(path.anchor, directory_flags)
+        for component in components[:-1]:
+            replacement = os.open(component, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = replacement
+        flags = directory_flags if directory else leaf_flags
+        leaf_fd = os.open(components[-1], flags, dir_fd=parent_fd)
+        info = os.fstat(leaf_fd)
+        if not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
+            raise AdmissionError("expected regular file or directory")
+        yield leaf_fd
+    except OSError as exc:
+        raise AdmissionError("anchored nofollow open failed") from exc
+    finally:
+        if leaf_fd is not None:
+            os.close(leaf_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
+def _stable_stamp(info: os.stat_result) -> tuple:
+    """ctime covers the restored-mtime mutation witnessed in hostile review."""
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _measure_fd(descriptor: int, *, expected_bytes: int | None = None,
+                expected_sha256: str | None = None,
+                expected_magic: bytes | None = None) -> dict:
+    before = os.fstat(descriptor)
+    if not stat.S_ISREG(before.st_mode):
+        raise AdmissionError("model entry is not regular")
+    sha = hashlib.sha256()
+    count = 0
+    first_bytes = b""
+    while True:
+        block = os.read(descriptor, 1024 * 1024)
+        if not block:
+            break
+        if count == 0 and expected_magic is not None:
+            first_bytes = block[:len(expected_magic)]
+        count += len(block)
+        sha.update(block)
+    after = os.fstat(descriptor)
+    if (_stable_stamp(before) != _stable_stamp(after)
+            or count != before.st_size or before.st_ctime_ns <= 0):
+        raise AdmissionError("file changed during read or lacks stable ctime")
+    if expected_magic is not None and first_bytes != expected_magic:
+        raise AdmissionError("required file magic missing")
+    digest = sha.hexdigest()
+    size_match = expected_bytes is None or count == expected_bytes
+    hash_match = expected_sha256 is None or digest == expected_sha256
+    return {"size_bytes": count, "sha256_measured": digest,
+            "size_match": size_match, "sha256_match": hash_match,
+            "verified": size_match and hash_match,
+            "content_stability_claim": "FD_PLUS_PRE_POST_STAT_NOT_IMMUTABLE_SNAPSHOT"}
+
+
 def measure_file(path: Path, *, expected_bytes: int | None = None,
                  expected_sha256: str | None = None) -> dict:
-    """Stream SHA256 from a no-follow FD and detect concurrent modification."""
-    path = safe_absolute(path, needs_file=True)
-    descriptor = None
-    try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise AdmissionError("model entry is not regular")
-        sha = hashlib.sha256()
-        count = 0
-        while True:
-            block = os.read(descriptor, 1024 * 1024)
-            if not block:
-                break
-            count += len(block)
-            sha.update(block)
-        after = os.fstat(descriptor)
-        if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-                or count != before.st_size):
-            raise AdmissionError("file changed during verification")
-        digest = sha.hexdigest()
-        size_match = expected_bytes is None or count == expected_bytes
-        hash_match = expected_sha256 is None or digest == expected_sha256
-        return {"size_bytes": count, "sha256_measured": digest,
-                "size_match": size_match, "sha256_match": hash_match,
-                "verified": size_match and hash_match}
-    except OSError as exc:
-        raise AdmissionError("file hash read failed") from exc
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
+    """Hash a single anchored inode; no model execution or custody grant."""
+    with _open_anchored(path) as descriptor:
+        return _measure_fd(descriptor, expected_bytes=expected_bytes,
+                           expected_sha256=expected_sha256)
 
 
 def verify_snapshot(snapshot: Path) -> dict:
     """Full two-shard byte check; metadata recorded as untrusted local digests."""
     snapshot = safe_absolute(snapshot)
-    if not snapshot.is_dir():
-        raise AdmissionError("snapshot directory does not exist")
     inspected = {}
-    for name, size, sha in SHARDS:
-        inspected[name] = measure_file(snapshot / name, expected_bytes=size,
-                                      expected_sha256=sha)
+    with _open_anchored(snapshot, directory=True) as snapshot_fd:
+        # Children all resolve under the SAME retained directory handle.
+        # Never re-resolve snapshot path for individual file opens.
+        for name, size, sha in SHARDS:
+            with _open_snapshot_child(snapshot_fd, name) as child_fd:
+                inspected[name] = _measure_fd(child_fd, expected_bytes=size,
+                                              expected_sha256=sha)
+        for name in METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS:
+            with _open_snapshot_child(snapshot_fd, name) as child_fd:
+                inspected[name] = _measure_fd(child_fd)
     shard_verified = all(inspected[name]["verified"] for name, _, _ in SHARDS)
-    for name in METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS:
-        inspected[name] = measure_file(snapshot / name)
     return {"schema": SCHEMA, "evidence_class": "LOCAL_HASH_WITH_UPSTREAM_LFS_PINS",
             "repository": OFFICIAL_ID, "revision": OFFICIAL_REVISION,
             "snapshot": str(snapshot), "files": inspected,
@@ -116,7 +175,28 @@ def verify_snapshot(snapshot: Path) -> dict:
             "metadata_full_byte_pins_admitted": False,
             "official_checkpoint_admitted": False,
             "inference_executed": False,
+            "status": ("LOCAL_SHARD_HASH_AUDIT_PASS_NOT_ADMISSION" if shard_verified
+                       else "HOLD_SHARD_HASH_OR_SIZE_MISMATCH"),
+            "file_identity_limit": "Retained directory FD and ctime checks, not immutable snapshot",
             "note": "Metadata hashes are measurements, not independently trusted upstream pins."}
+
+
+@contextmanager
+def _open_snapshot_child(directory_fd: int, name: str):
+    if name not in MODEL_FILENAMES or "/" in name or "\\" in name:
+        raise AdmissionError("snapshot child name not on pinned allowlist")
+    descriptor = None
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW |
+                             getattr(os, "O_CLOEXEC", 0), dir_fd=directory_fd)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise AdmissionError("snapshot child is not regular")
+        yield descriptor
+    except OSError as exc:
+        raise AdmissionError("snapshot child nofollow open failed") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _available_ram_bytes() -> int | None:
@@ -232,6 +312,7 @@ def preflight(host: str, target: Path, *, stage: bool) -> dict:
     needed_ram = STAGE_MIN_AVAILABLE_RAM if stage else INFERENCE_MIN_AVAILABLE_RAM
     guard = {
         "host_identity_matches_declared": identity_match,
+        "fd_anchored_hashing_supported": _anchored_fd_supported(),
         "disk_headroom": disk is not None and disk >= needed_disk,
         "ram_headroom": ram is not None and ram >= needed_ram,
         "cpu_load": cpu is not None and cpu <= CPU_LOAD_CEILING,
@@ -264,7 +345,7 @@ def download_plan(snapshot: Path, host: str) -> dict:
             "preflight": observed,
             "operator_command_argv_not_executed": None if collision else argv,
             "candidate_resource_ready": not collision and observed["resource_preflight_pass"],
-            "next": "Host-owned authorization and distinct execution; then run verify.",
+            "next": "Host-owned authorization and distinct execution; then run hash-audit.",
             "downloaded": False, "authorized": False}
 
 
@@ -294,10 +375,8 @@ def benchmark_plan(host: str, gguf: Path, binary: Path, engine: str,
     binary = safe_absolute(binary, needs_file=True)
     if gguf.suffix.lower() != ".gguf":
         raise AdmissionError("GGUF suffix required")
-    with gguf.open("rb") as source:
-        if source.read(4) != b"GGUF":
-            raise AdmissionError("GGUF magic missing")
-    measured_gguf = measure_file(gguf)
+    with _open_anchored(gguf) as gguf_fd:
+        measured_gguf = _measure_fd(gguf_fd, expected_magic=b"GGUF")
     if engine == "llama.cpp":
         argv = [str(binary), "-m", str(gguf), "-p", PROBE_PROMPT,
                 "-n", "48", "-c", "512", "--temp", "0",
@@ -324,12 +403,25 @@ def benchmark_plan(host: str, gguf: Path, binary: Path, engine: str,
                      if argv is None else "Run only under separately authenticated host owner.")}
 
 
+_FINITE_DECIMAL = r"(?:\d+(?:\.\d+)?|\.\d+)"
 _EVAL_PATTERN = re.compile(
-    r"(?<!prompt )eval time\s*=\s*[0-9.]+\s*ms\s*/\s*(\d+)\s+tokens?"
-    r"\s*\([^)]*?([0-9.]+)\s+tokens? per second\)", re.IGNORECASE)
+    rf"(?<!prompt )eval time\s*=\s*{_FINITE_DECIMAL}\s*ms\s*/\s*(\d+)\s+tokens?"
+    rf"\s*\([^)]*?({_FINITE_DECIMAL})\s+tokens? per second\)", re.IGNORECASE)
 _PROMPT_EVAL_PATTERN = re.compile(
-    r"prompt eval time\s*=\s*[0-9.]+\s*ms\s*/\s*(\d+)\s+tokens?"
-    r"\s*\([^)]*?([0-9.]+)\s+tokens? per second\)", re.IGNORECASE)
+    rf"prompt eval time\s*=\s*{_FINITE_DECIMAL}\s*ms\s*/\s*(\d+)\s+tokens?"
+    rf"\s*\([^)]*?({_FINITE_DECIMAL})\s+tokens? per second\)", re.IGNORECASE)
+
+
+def _timing_from_match(match) -> tuple[int | None, float | None]:
+    if match is None:
+        return None, None
+    try:
+        count, rate = int(match.group(1)), float(match.group(2))
+        if not math.isfinite(rate) or rate < 0:
+            return None, None
+        return count, rate
+    except (OverflowError, ValueError):
+        return None, None
 
 
 def parse_operator_logs(stdout: str, stderr: str, *, returncode: int,
@@ -338,6 +430,8 @@ def parse_operator_logs(stdout: str, stderr: str, *, returncode: int,
     combined = stdout + "\n" + stderr
     eval_match = _EVAL_PATTERN.search(combined)
     prompt_match = _PROMPT_EVAL_PATTERN.search(combined)
+    generated_tokens, generation_tps = _timing_from_match(eval_match)
+    prompt_tokens, prompt_tps = _timing_from_match(prompt_match)
     generated = stdout.strip()
     return {"schema": TELEMETRY_SCHEMA,
             "evidence_class": "UNATTESTED_OPERATOR_SUPPLIED_LOGS",
@@ -351,22 +445,35 @@ def parse_operator_logs(stdout: str, stderr: str, *, returncode: int,
             "nonempty_stdout": bool(generated),
             "decode_claim_in_logs": returncode == 0 and bool(generated),
             "decode_verified_by_trusted_witness": False,
-            "generated_tokens_timing": int(eval_match.group(1)) if eval_match else None,
-            "generation_tokens_per_second": float(eval_match.group(2)) if eval_match else None,
-            "prompt_tokens_timing": int(prompt_match.group(1)) if prompt_match else None,
-            "prompt_tokens_per_second": float(prompt_match.group(2)) if prompt_match else None,
+            "generated_tokens_timing": generated_tokens,
+            "generation_tokens_per_second": generation_tps,
+            "prompt_tokens_timing": prompt_tokens,
+            "prompt_tokens_per_second": prompt_tps,
             "peak_ram_bytes": None, "peak_vram_bytes": None,
             "memory_telemetry_note": "No monitored OS peak-memory witness supplied."}
 
 
 def _read_bounded_log(path: Path) -> str:
-    path = safe_absolute(path, needs_file=True)
-    if path.stat().st_size > MAX_LOG_BYTES:
-        raise AdmissionError("log exceeds 2 MiB bound")
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        raise AdmissionError("log read failed") from exc
+    """No-follow anchored same-FD size-check/read capped at MAX_LOG_BYTES+1."""
+    with _open_anchored(path) as descriptor:
+        before = os.fstat(descriptor)
+        if before.st_size > MAX_LOG_BYTES:
+            raise AdmissionError("log exceeds 2 MiB bound")
+        chunks = []
+        count = 0
+        while count <= MAX_LOG_BYTES:
+            block = os.read(descriptor, min(64 * 1024, MAX_LOG_BYTES + 1 - count))
+            if not block:
+                break
+            chunks.append(block)
+            count += len(block)
+        if count > MAX_LOG_BYTES:
+            raise AdmissionError("log grew beyond 2 MiB bound during read")
+        after = os.fstat(descriptor)
+        if (_stable_stamp(before) != _stable_stamp(after) or
+                count != before.st_size or before.st_ctime_ns <= 0):
+            raise AdmissionError("log changed during bounded read")
+        return b"".join(chunks).decode("utf-8", errors="replace")
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -375,7 +482,9 @@ def make_parser() -> argparse.ArgumentParser:
     plan = commands.add_parser("plan", help="VN1-first dry-run download plan")
     plan.add_argument("--host", choices=("VN1", "VN2"), default="VN1")
     plan.add_argument("--snapshot", required=True)
-    verify = commands.add_parser("verify", help="offline full shard SHA256+size")
+    hash_audit = commands.add_parser("hash-audit", help="local byte audit, NOT admission")
+    hash_audit.add_argument("--snapshot", required=True)
+    verify = commands.add_parser("verify", help="legacy admission check: HOLD until trusted metadata")
     verify.add_argument("--snapshot", required=True)
     benchmark = commands.add_parser("benchmark-plan", help="dry-run text-only GGUF probe")
     benchmark.add_argument("--host", choices=("VN1", "VN2"), default="VN1")
@@ -402,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "plan":
             result = download_plan(Path(args.snapshot), args.host)
-        elif args.command == "verify":
+        elif args.command in ("verify", "hash-audit"):
             result = verify_snapshot(Path(args.snapshot))
         elif args.command == "benchmark-plan":
             result = benchmark_plan(args.host, Path(args.gguf), Path(args.binary),
@@ -419,8 +528,13 @@ def main(argv: list[str] | None = None) -> int:
                 returncode=args.exit_code, wall_ms=args.wall_ms,
                 gguf_sha256=args.gguf_sha256)
         print(json.dumps(result, sort_keys=True, indent=2))
-        if args.command == "verify" and not result["shards_verified"]:
-            return 2
+        if args.command in ("verify", "hash-audit"):
+            if not result["shards_verified"]:
+                return 2
+            # Legacy `verify` exit 0 was falsely construed as production
+            # admission; admission remains HOLD without trusted metadata pins.
+            if args.command == "verify" and not result["official_checkpoint_admitted"]:
+                return 3
         return 0
     except (AdmissionError, OSError) as exc:
         print(json.dumps({"schema": SCHEMA, "status": "HOLD",
