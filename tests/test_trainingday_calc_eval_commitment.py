@@ -7,20 +7,33 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import secrets
 import unittest
+from unittest.mock import patch
 
 from trainingday import calc_eval_commitment as candidate
+from trainingday import calc_curriculum
 from trainingday import synthetic_arithmetic
 
 
 PUBLIC_TEST_NONCE = bytes(range(1, 33))  # Fixture only. Never enroll it.
 SECOND_TEST_NONCE = bytes(range(33, 65))
+EPHEMERAL_MATCHED_TEST_NONCE = secrets.token_bytes(32)  # Never persisted or enrolled.
+SECOND_EPHEMERAL_MATCHED_TEST_NONCE = secrets.token_bytes(32)
 _PROMPT = re.compile(
     r"Evaluate P'\(x\) at x=(-?\d+) for the polynomial with ascending coefficients (\[[^\]]+\])\."
 )
 
 
 class CalcEvalCommitmentTests(unittest.TestCase):
+    @staticmethod
+    def _public_r201_prompts():
+        prompts = []
+        for index in range(calc_curriculum.TRAIN_COUNT):
+            a, b, c, d, x = calc_curriculum._parameters(index)
+            prompts.append(f"f(x)=({a})x^3+({b})x^2+({c})x+({d}); f'({x})=?")
+        return prompts
+
     def _check_math(self, row):
         match = _PROMPT.fullmatch(row["prompt"])
         self.assertIsNotNone(match)
@@ -124,6 +137,120 @@ class CalcEvalCommitmentTests(unittest.TestCase):
             self.assertIsNotNone(match)
             x, coeffs = int(match.group(1)), json.loads(match.group(2))
             self.assertEqual(Polynomial(coeffs).differentiate()(x), int(row["answer"]))
+
+    def test_matched_private_dev_is_bounded_correct_unique_and_separate(self):
+        rows = candidate._private_matched_dev_rows(PUBLIC_TEST_NONCE)
+        shifted = candidate._private_dev_rows(PUBLIC_TEST_NONCE)
+        self.assertEqual(len(rows), 64)
+        self.assertEqual(len({row["id"] for row in rows}), 64)
+        self.assertEqual(len({row["prompt"] for row in rows}), 64)
+        self.assertTrue({row["prompt"] for row in rows}.isdisjoint(
+            {row["prompt"] for row in shifted}))
+        self.assertTrue({row["prompt"] for row in rows}.isdisjoint(
+            set(self._public_r201_prompts())))
+        pattern = re.compile(
+            r"f\(x\)=\((-?\d+)\)x\^3\+\((-?\d+)\)x\^2\+\((-?\d+)\)x\+\((-?\d+)\); f'\((-?\d+)\)=\?"
+        )
+        for row in rows:
+            self.assertEqual(row["split"], "dev")
+            match = pattern.fullmatch(row["prompt"])
+            self.assertIsNotNone(match)
+            a, b, c, d, x = map(int, match.groups())
+            self.assertTrue(1 <= abs(a) <= 17)
+            self.assertTrue(-30 <= b <= 30)
+            self.assertTrue(-50 <= c <= 50)
+            self.assertTrue(-50 <= d <= 50)
+            self.assertTrue(-5 <= x <= 5)
+            self.assertEqual(int(row["answer"]), 3*a*x*x + 2*b*x + c)
+
+    def test_matched_commitment_is_digest_only_deterministic_and_hard_hold(self):
+        public = self._public_r201_prompts()
+        first = candidate.matched_commitment(EPHEMERAL_MATCHED_TEST_NONCE,
+                                             public_train_prompts=public)
+        again = candidate.matched_commitment(EPHEMERAL_MATCHED_TEST_NONCE,
+                                             public_train_prompts=public)
+        other = candidate.matched_commitment(SECOND_EPHEMERAL_MATCHED_TEST_NONCE,
+                                             public_train_prompts=public)
+        self.assertEqual(first, again)
+        self.assertNotEqual(first["private_dev_sha256"], other["private_dev_sha256"])
+        self.assertNotEqual(first["private_dev_sha256"],
+                            candidate.commitment(EPHEMERAL_MATCHED_TEST_NONCE)["private_dev_sha256"])
+        self.assertRegex(first["private_dev_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(first["dev_count"], 64)
+        self.assertEqual(first["distribution"], "R201_CUBIC_SMALL_X_MATCHED")
+        self.assertIs(first["public_train_surface_overlap_checked"], True)
+        encoded = json.dumps(first, sort_keys=True)
+        self.assertNotIn(EPHEMERAL_MATCHED_TEST_NONCE.hex(), encoded)
+        self.assertNotIn("prompt", encoded)
+        self.assertNotIn("answer", encoded)
+        private = candidate._private_matched_dev_rows(EPHEMERAL_MATCHED_TEST_NONCE)[0]
+        self.assertNotIn(private["id"], encoded)
+        self.assertNotIn(private["prompt"], encoded)
+        # Small integer answers can coincidentally occur *inside a hash*.
+        # Check actual exposed fields instead of substring-matching a digest.
+        self.assertNotIn("nonce", first)
+        self.assertNotIn("rows", first)
+        self.assertTrue(all(not isinstance(value, (dict, list, tuple))
+                            for value in first.values()))
+        self.assertTrue(all(value != private["answer"]
+                            for value in first.values() if type(value) is str))
+        for name in ("source_rights_authenticated", "protected_evaluator_custody_verified",
+                     "gpu_lease_granted", "authorizes_training", "authorizes_eval_unseal",
+                     "semantic_disjointness_independently_verified",
+                     "private_nonce_entropy_independently_verified"):
+            self.assertIs(first[name], False, name)
+        self.assertIs(first["public_train_frozen_digest_verified"], True)
+        self.assertIs(first["public_train_source_independently_authenticated"], False)
+
+    def test_matched_requires_exact_ordered_frozen_train_not_1024_arbitrary_strings(self):
+        public = self._public_r201_prompts()
+        for forged in ([f"different-{index:04d}" for index in range(1024)],
+                       public[::-1],
+                       public[:-1] + ["a-unique-spoofed-prompt"]):
+            with self.subTest(first=forged[0]):
+                with self.assertRaises(candidate.CalcEvalCommitmentError):
+                    candidate.matched_commitment(EPHEMERAL_MATCHED_TEST_NONCE,
+                                                 public_train_prompts=forged)
+
+    def test_derivative_semantic_key_ignores_constant_term_and_format_spaces(self):
+        original = self._public_r201_prompts()[0]
+        revised = re.sub(r"\+\((-?\d+)\);", "+(999);", original)
+        revised = revised.replace("x^3+", "x^3 + ")
+        self.assertNotEqual(original, revised)
+        self.assertEqual(candidate._derivative_semantic_key(original),
+                         candidate._derivative_semantic_key(revised))
+
+    def test_matched_rejects_same_derivative_task_despite_different_d(self):
+        public = self._public_r201_prompts()
+        rows = candidate._private_matched_dev_rows(EPHEMERAL_MATCHED_TEST_NONCE)
+        alias = re.sub(r"\+\((-?\d+)\);", "+(999);", public[0])
+        rows[0] = {**rows[0], "prompt": alias}
+        with patch.object(candidate, "_private_matched_dev_rows", return_value=rows):
+            with self.assertRaises(candidate.CalcEvalCommitmentError):
+                candidate.matched_commitment(EPHEMERAL_MATCHED_TEST_NONCE,
+                                             public_train_prompts=public)
+
+    def test_matched_rejects_known_public_fixtures_as_secrets(self):
+        public = self._public_r201_prompts()
+        for nonce in (PUBLIC_TEST_NONCE, SECOND_TEST_NONCE):
+            with self.assertRaises(candidate.CalcEvalCommitmentError):
+                candidate.matched_commitment(nonce, public_train_prompts=public)
+
+    def test_matched_commitment_rejects_partial_spoofed_and_overlapping_train(self):
+        public = self._public_r201_prompts()
+        leaked = candidate._private_matched_dev_rows(EPHEMERAL_MATCHED_TEST_NONCE)[0]["prompt"]
+        poisoned = public.copy()
+        poisoned[0] = leaked
+        with self.assertRaises(candidate.CalcEvalCommitmentError):
+            candidate.matched_commitment(EPHEMERAL_MATCHED_TEST_NONCE,
+                                         public_train_prompts=poisoned)
+        for malformed in (None, [], public[:100], [public[0]]*1024):
+            with self.subTest(malformed_type=type(malformed).__name__):
+                with self.assertRaises(candidate.CalcEvalCommitmentError):
+                    candidate.matched_commitment(EPHEMERAL_MATCHED_TEST_NONCE,
+                                                 public_train_prompts=malformed)
+        with self.assertRaises(candidate.CalcEvalCommitmentError):
+            candidate.matched_commitment(bytes(32), public_train_prompts=public)
 
 
 if __name__ == "__main__":
