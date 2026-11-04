@@ -67,7 +67,9 @@ try {
         $facts.service_process_id = [int]$service.ProcessId
         if ($service.StartName -ine 'LocalSystem') { $problems.Add('SERVICE_IDENTITY_CHANGED') }
         if ($service.State -ine 'Running') { $problems.Add('SERVICE_NOT_RUNNING') }
-        $quoted = [regex]::Match([string]$service.PathName, '^\s*"([^"]+\.exe)"(?:\s|$)')
+        # A differently quoted/arg-bearing ImagePath is not the reviewed
+        # service command, even if its first token ends in the expected exe.
+        $quoted = [regex]::Match([string]$service.PathName, '^\s*"([^"]+\.exe)"\s*$')
         if (-not $quoted.Success) {
             $problems.Add('INSTALLED_SERVICE_PATH_UNQUOTED_OR_AMBIGUOUS')
         } else {
@@ -92,6 +94,10 @@ try {
                 while ($ancestor) {
                     if (($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                         $problems.Add('INSTALL_PATH_ANCESTOR_IS_REPARSE_POINT')
+                        break
+                    }
+                    if (-not (Test-TrainingDayNoUnexpectedWriters (Get-Acl -LiteralPath $ancestor.FullName))) {
+                        $problems.Add('INSTALL_PATH_ANCESTOR_HAS_UNTRUSTED_OWNER_OR_WRITER')
                         break
                     }
                     if (-not $ancestor.Parent) { break }
@@ -134,6 +140,7 @@ try {
 
 # Never return a ready-to-install or launch state: passing a snapshot does not
 # prove no concurrent changes, signer custody, protected rights, or WSL cleanup.
+$problems.Add('FILE_OBSERVATIONS_NOT_HANDLE_STABLE')
 $result = [ordered]@{
     schema = 'VERA_TRAININGDAY_BROKER_MAINTENANCE_PREFLIGHT_V1'
     maintenance_state = 'HOLD'
