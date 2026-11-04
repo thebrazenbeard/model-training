@@ -1,0 +1,41 @@
+name: TrainingDay Tier1 B ephemeral owner-certificate proof (no host enrollment)
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/trainingday-tier1-b-ephemeral-cert.yml'
+      - 'tests/native_tier1_b_ephemeral_cert.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ephemeral-windows-certificate:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check public repository and ephemeral Windows context
+        shell: pwsh
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if ($env:REPOSITORY_PRIVATE -ne 'false' -or
+              $env:GITHUB_ACTIONS -ne 'true' -or
+              $env:RUNNER_OS -ne 'Windows') {
+            throw 'Only the public ephemeral Windows GitHub runner is in scope'
+          }
+      - name: Checkout exact PR source without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact checkout and ephemeral DER-only enrollment contract
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $head = (git rev-parse --verify HEAD).Trim()
+          if ($head -ne $env:EXPECTED_SHA) { throw 'Source checkout changed' }
+          Write-Output "SOURCE_HEAD=$head"
+          & (Join-Path $PWD 'tests/native_tier1_b_ephemeral_cert.ps1')
