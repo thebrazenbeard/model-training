@@ -26,6 +26,10 @@ def spec():
         lora_target_spec_sha256="5" * 64,
         seeds=(11, 13, 17),
         schedule_commitments=schedule,
+        initial_adapter_commitments=[
+            {"seed": seed, "initial_adapter_sha256": hashlib.sha256(
+                f"synthetic-init-{seed}".encode()).hexdigest()}
+            for seed in (11, 13, 17)],
         wall_clock_budget_seconds=90,
     )
 
@@ -45,7 +49,9 @@ def receipts(plan):
             peak_vram_bytes=2_700_000_000,
             peak_host_ram_bytes=3_200_000_000,
             checkpoint_reloaded=True, interruption_resumed=not zero and not base,
-            adapter_sha256=None if base else "7" * 64,
+            adapter_sha256=(None if base else arm["initial_adapter_sha256"]
+                            if zero else "7" * 64),
+            initial_adapter_sha256=arm["initial_adapter_sha256"],
             loaded_weight_sha256=plan["official_weight_sha256"],
             train_order_sha256=arm["train_order_sha256"],
             label_assignment_sha256=arm["label_assignment_sha256"],
@@ -84,6 +90,7 @@ class MatchedMethodStudyTests(unittest.TestCase):
             self.assertIs(a[k], False)
         self.assertTrue(a["base_zero_update_reference_required"])
         self.assertFalse(a["full_chatml_tokenizer_fit_independently_verified"])
+        self.assertFalse(a["initial_adapter_bytes_independently_attested"])
         self.assertEqual(a["candidate_sequence_length"], 128)
 
     def test_plan_rejects_spoofed_hashes_seeds_and_bounds(self):
@@ -102,6 +109,21 @@ class MatchedMethodStudyTests(unittest.TestCase):
             proposed[key] = wrong
             with self.subTest(key=key, wrong=wrong), self.assertRaises(
                     MatchedStudyError):
+                build_study_plan(**proposed)
+
+    def test_initial_adapter_commitment_required_for_every_seed(self):
+        for change in ("missing", "wrong_seed", "bad_hash", "duplicate"):
+            proposed = spec()
+            items = proposed["initial_adapter_commitments"]
+            if change == "missing":
+                items.pop()
+            elif change == "wrong_seed":
+                items[1]["seed"] = 99
+            elif change == "bad_hash":
+                items[1]["initial_adapter_sha256"] = "not-a-hash"
+            else:
+                items[1]["seed"] = items[0]["seed"]
+            with self.subTest(change=change), self.assertRaises(MatchedStudyError):
                 build_study_plan(**proposed)
 
     def test_schedule_commitment_changes_on_label_or_example_mutation(self):
@@ -194,6 +216,7 @@ class MatchedMethodStudyTests(unittest.TestCase):
             ("train_order_sha256", "bad"),
             ("label_assignment_sha256", "a" * 64),
             ("truncated_training_rows", 1),
+            ("initial_adapter_sha256", "e" * 64),
         ):
             r = receipts(plan)
             record = next(x for x in r if ":correct:" in x["arm_id"])
@@ -204,6 +227,28 @@ class MatchedMethodStudyTests(unittest.TestCase):
         zero = next(x for x in r if ":zero:" in x["arm_id"])
         zero["optimizer_steps"] = 1
         with self.assertRaises(MatchedStudyError):
+            validate_untrusted_receipts(plan, r)
+
+    def test_zero_update_adapter_must_equal_seed_initial_checkpoint(self):
+        plan = build_study_plan(**spec())
+        r = receipts(plan)
+        zero = next(x for x in r if x["arm_id"] == "MEZO_LORA:zero:11")
+        self.assertNotEqual(zero["adapter_sha256"], "e" * 64)
+        zero["adapter_sha256"] = "e" * 64
+        with self.assertRaisesRegex(MatchedStudyError, "zero-update control changed"):
+            validate_untrusted_receipts(plan, r)
+
+    def test_cross_method_initial_adapter_and_unmodified_base_enforced(self):
+        plan = build_study_plan(**spec())
+        r = receipts(plan)
+        qlora = next(x for x in r if x["arm_id"] == "QLORA_ADAMW:correct:11")
+        qlora["initial_adapter_sha256"] = "e" * 64
+        with self.assertRaisesRegex(MatchedStudyError, "initial adapter identity"):
+            validate_untrusted_receipts(plan, r)
+        r = receipts(plan)
+        base = next(x for x in r if x["arm_id"] == "OFFICIAL_BASE:reference:11")
+        base["initial_adapter_sha256"] = "e" * 64
+        with self.assertRaisesRegex(MatchedStudyError, "initial adapter identity"):
             validate_untrusted_receipts(plan, r)
         r = receipts(plan)
         mezo = next(x for x in r if x["arm_id"].startswith("MEZO_LORA:correct:"))
