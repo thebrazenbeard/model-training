@@ -6,7 +6,7 @@ import unittest
 from trainingday.r202_admission_candidate import (
     CORPUS_ID, SCHEMA, TRAIN_SCHEMA, TRAIN_COUNT, TRAIN_SHA256,
     GENERATOR_GIT_BLOB_SHA1, MODEL_ID, MODEL_REVISION, PURPOSE,
-    REQUIRED_EXCLUSIONS, R202AdmissionEvidenceError,
+    REQUIRED_EXCLUSIONS, WITHHOLD_FIELDS, R202AdmissionEvidenceError,
     inspect_r202_admission_request_candidate,
 )
 
@@ -60,10 +60,48 @@ class R202AdmissionRequestTest(unittest.TestCase):
                     or key == "authorizes_training":
                 self.assertFalse(value, key)
 
-    def test_withhold_stays_hold(self):
+    def test_withhold_without_any_evaluator_or_exclusion_commitment_stays_hold(self):
         subject = fixture()
         subject["decision"] = "WITHHOLD"
-        self.assertEqual(inspect(subject)["status"], "UNSIGNED_OWNER_WITHHOLD_HOLD")
+        subject = {key: subject[key] for key in WITHHOLD_FIELDS}
+        self.assertNotIn("private_dev_commitment_sha256", subject)
+        self.assertNotIn("protected_exclusion_receipt_sha256", subject)
+        result = inspect_r202_admission_request_candidate(
+            request_bytes=json_bytes(subject),
+            expected_private_dev_commitment_sha256="",
+            expected_protected_exclusion_receipt_sha256="",
+        )
+        self.assertEqual(result["status"], "UNSIGNED_OWNER_WITHHOLD_HOLD")
+        self.assertFalse(result["supplied_evaluator_digests_match"])
+        self.assertFalse(result["authorizes_training"])
+        self.assertFalse(result["data_rights_admitted"])
+
+    def test_withhold_still_rejects_changed_exact_subject(self):
+        subject = fixture()
+        subject["decision"] = "WITHHOLD"
+        subject = {key: subject[key] for key in WITHHOLD_FIELDS}
+        subject["train_sha256"] = "0" * 64
+        with self.assertRaisesRegex(R202AdmissionEvidenceError, "subject mismatch"):
+            inspect(subject)
+
+    def test_withhold_cannot_become_grant_by_extra_field(self):
+        subject = fixture()
+        subject["decision"] = "WITHHOLD"
+        subject = {key: subject[key] for key in WITHHOLD_FIELDS}
+        subject["authorizes_training"] = True
+        with self.assertRaisesRegex(R202AdmissionEvidenceError, "wrong request fields"):
+            inspect(subject)
+
+    def test_review_request_rejects_missing_dev_and_exclusion_commitments(self):
+        for field in ("private_dev_commitment_sha256",
+                      "protected_exclusion_receipt_sha256"):
+            for empty_value in ("", None):
+                with self.subTest(field=field, empty_value=empty_value):
+                    subject = fixture()
+                    subject[field] = empty_value
+                    with self.assertRaisesRegex(R202AdmissionEvidenceError,
+                                                "protected commitment"):
+                        inspect(subject)
 
     def test_wrong_public_dataset_digest_is_rejected(self):
         subject = fixture()

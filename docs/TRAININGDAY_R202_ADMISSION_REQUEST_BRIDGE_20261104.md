@@ -63,17 +63,27 @@ not claim that an unsigned JSON object constitutes the final grant.
 `trainingday.r202_admission_candidate.inspect_r202_admission_request_candidate`
 accepts only strict canonical UTF-8 JSON, exact R202 generator Git-blob SHA1,
 TRAIN SHA256/count/schema, exact model revision and noncommercial purpose,
-named rights-holder/steward, declared rights basis, all mandatory exclusions,
-and supplied private DEV and exclusion-receipt commitments. It recomputes
-the public TRAIN SHA from the installed generator. It explicitly allows
-the **same identity** to fill both roles.
+and a declared claimant. For `ASSERT_SCOPE_AND_REQUEST_REVIEW`, it additionally
+requires the steward, rights basis, all mandatory exclusions, and supplied
+private DEV and exclusion-receipt commitments. It recomputes the public TRAIN
+SHA from the installed generator. The **same identity** may fill both roles.
 
-It rejects wrong digest, source, count, model, scope, omitted exclusions,
-missing commitments, ambiguous JSON aliases and attempt to inject an
+For `WITHHOLD`, it instead accepts **only the exact-source identifiers,
+specified model/purpose, claimant name, and refusal decision**. It does not
+require inventing rights provenance, a data steward, exclusions, a protected
+evaluator, or hashes for any DEV or exclusion evidence. The program does not
+authenticate the person refusing either; it stays in HARD HOLD. An unrelated
+party's fake unsigned refusal must never be treated as authenticated owner
+revocation or host-state mutation.
+
+It rejects wrong digest, source, count, model or scope in both branches.
+Review requests additionally reject omitted exclusions and missing commitments.
+Both branches reject ambiguous JSON aliases and attempts to inject an
 `authorizes_training` field. It has **no signing interface**; rights/identity,
 evaluator commitment provenance, and protected DEV custody remain unverified.
 
-Example **structure only** — placeholders are *not* usable receipts or claims:
+Minimal **WITHHOLD structure** (the identity is a placeholder, not a signed
+refusal or authenticated person). It needs **no private DEV information**:
 
 ```json
 {
@@ -87,17 +97,13 @@ Example **structure only** — placeholders are *not* usable receipts or claims:
   "model_revision":"851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
   "purpose":"NONCOMMERCIAL_VERA_TRAINING_ONLY",
   "rights_holder_identity":"CLAIMANT_TO_COMPLETE",
-  "data_steward_identity":"CLAIMANT_TO_COMPLETE",
-  "rights_basis":"ORIGINAL_CREATED_OR_COMMISSIONED",
-  "decision":"WITHHOLD",
-  "exclusions":["credentials_keys_and_secrets","personal_or_confidential_information","private_chat_and_trauma_exports","protected_dev_and_test_material","unlicensed_third_party_text_or_code"],
-  "private_dev_commitment_sha256":"INDEPENDENT_CUSTODIAN_TO_SUPPLY",
-  "protected_exclusion_receipt_sha256":"INDEPENDENT_CUSTODIAN_TO_SUPPLY"
+  "decision":"WITHHOLD"
 }
 ```
 
-Placeholders deliberately fail validation; even a syntactically valid
-synthetic test request returns `authorizes_training=false` and
+This unsigned refusal may pass **structural** validation with the placeholder
+identity yet has no binding authority; even a syntactically valid synthetic
+request or refusal returns `authorizes_training=false` and
 `data_rights_admitted=false`. Do not publish a real owner's signature,
 private DEV contents, evaluation seeds, exclusion-sensitive source material,
 tokens or credentials in the repository.

@@ -39,6 +39,13 @@ FIELDS = frozenset({
     "decision", "exclusions", "private_dev_commitment_sha256",
     "protected_exclusion_receipt_sha256",
 })
+# Refusal must not depend on a nonexistent DEV set, license paperwork, or a
+# fictitious exclusion receipt. Still bind it to an exact corpus and purpose.
+WITHHOLD_FIELDS = frozenset({
+    "schema", "corpus_id", "train_schema", "train_count", "train_sha256",
+    "generator_git_blob_sha1", "model_id", "model_revision", "purpose",
+    "rights_holder_identity", "decision",
+})
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -83,7 +90,11 @@ def inspect_r202_admission_request_candidate(
         if isinstance(exc, R202AdmissionEvidenceError):
             raise
         raise R202AdmissionEvidenceError("malformed request JSON") from exc
-    _require(type(request) is dict and set(request) == FIELDS,
+    _require(type(request) is dict and type(request.get("decision")) is str
+             and request["decision"] in DECISIONS,
+             "invalid decision")
+    withhold = request["decision"] == "WITHHOLD"
+    _require(set(request) == (WITHHOLD_FIELDS if withhold else FIELDS),
              "wrong request fields")
     _require(canonical == request_bytes, "request JSON is not canonical")
 
@@ -100,38 +111,38 @@ def inspect_r202_admission_request_candidate(
              "R202 exact TRAIN/model/purpose/source subject mismatch")
     _require(hashlib.sha256(train_bytes()).hexdigest() == TRAIN_SHA256,
              "installed public generator no longer matches pinned TRAIN rows")
-    for name in ("rights_holder_identity", "data_steward_identity"):
+    for name in (("rights_holder_identity",) if withhold
+                 else ("rights_holder_identity", "data_steward_identity")):
         value = request[name]
         _require(type(value) is str and value.strip() == value
                  and 1 <= len(value) <= 120
                  and all(char.isprintable() and char not in "\u202a\u202b\u202d\u202e\u2066\u2067\u2068\u2069"
                          for char in value), "invalid declared identity")
-    _require(type(request["rights_basis"]) is str
-             and request["rights_basis"] in RIGHTS_BASES,
-             "unsupported or unspecified rights basis")
-    _require(type(request["decision"]) is str
-             and request["decision"] in DECISIONS, "invalid decision")
-    exclusions = request["exclusions"]
-    _require(type(exclusions) is list and all(type(item) is str for item in exclusions)
-             and exclusions == sorted(set(exclusions))
-             and REQUIRED_EXCLUSIONS.issubset(exclusions),
-             "required exclusions absent, duplicated or unsorted")
-    for field, supplied in (
-        ("private_dev_commitment_sha256", expected_private_dev_commitment_sha256),
-        ("protected_exclusion_receipt_sha256", expected_protected_exclusion_receipt_sha256),
-    ):
-        actual = request[field]
-        _require(type(actual) is str and HEX64.fullmatch(actual) is not None
-                 and actual != "0" * 64 and type(supplied) is str
-                 and actual == supplied, "missing/mismatched protected commitment")
+    if not withhold:
+        _require(type(request["rights_basis"]) is str
+                 and request["rights_basis"] in RIGHTS_BASES,
+                 "unsupported or unspecified rights basis")
+        exclusions = request["exclusions"]
+        _require(type(exclusions) is list and all(type(item) is str for item in exclusions)
+                 and exclusions == sorted(set(exclusions))
+                 and REQUIRED_EXCLUSIONS.issubset(exclusions),
+                 "required exclusions absent, duplicated or unsorted")
+        for field, supplied in (
+            ("private_dev_commitment_sha256", expected_private_dev_commitment_sha256),
+            ("protected_exclusion_receipt_sha256", expected_protected_exclusion_receipt_sha256),
+        ):
+            actual = request[field]
+            _require(type(actual) is str and HEX64.fullmatch(actual) is not None
+                     and actual != "0" * 64 and type(supplied) is str
+                     and actual == supplied, "missing/mismatched protected commitment")
 
     return {
         "schema": SCHEMA,
-        "status": "UNSIGNED_OWNER_WITHHOLD_HOLD" if request["decision"] == "WITHHOLD"
+        "status": "UNSIGNED_OWNER_WITHHOLD_HOLD" if withhold
                   else "UNSIGNED_EXACT_SCOPE_REQUEST_HOLD",
         "request_sha256": hashlib.sha256(request_bytes).hexdigest(),
         "exact_public_train_scope_checked": True,
-        "supplied_evaluator_digests_match": True,
+        "supplied_evaluator_digests_match": not withhold,
         "same_rights_holder_and_steward_permitted": True,
         "claimant_identity_authenticated": False,
         "rights_or_license_independently_authenticated": False,
