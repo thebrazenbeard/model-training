@@ -96,9 +96,24 @@ def expected_source_record() -> dict:
     }
 
 
+def _same_typed_structure(actual, expected) -> bool:
+    """JSON equality alone is unsafe: Python considers False == 0, 1 == 1.0."""
+    if type(actual) is not type(expected):
+        return False
+    if type(expected) is dict:
+        return (actual.keys() == expected.keys()
+                and all(_same_typed_structure(actual[key], expected[key])
+                        for key in expected))
+    if type(expected) is list:
+        return (len(actual) == len(expected)
+                and all(_same_typed_structure(a, b)
+                        for a, b in zip(actual, expected)))
+    return actual == expected
+
+
 def validate_official_source_record(document: object) -> dict:
     """Reject modified/shape-compatible/third-party source records, exactly."""
-    if type(document) is not dict or document != expected_source_record():
+    if not _same_typed_structure(document, expected_source_record()):
         raise OfficialBaseSourceError("not the pinned official public source record")
     return document
 

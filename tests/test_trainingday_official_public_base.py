@@ -49,12 +49,19 @@ class OfficialPublicBaseSourceTests(unittest.TestCase):
     def test_rejects_inflated_authority_or_signature(self):
         for key, replacement in (("status", "TRUSTED"), ("signature", "self-signed"),
                                  ("physical_launch_allowed", True),
-                                 ("protected_training_data_allowed", True)):
+                                 ("protected_training_data_allowed", True),
+                                 ("physical_launch_allowed", 0)):
             with self.subTest(key=key):
                 record = copy.deepcopy(expected_source_record())
                 record["admission"][key] = replacement
                 with self.assertRaises(OfficialBaseSourceError):
                     validate_official_source_record(record)
+
+    def test_rejects_numeric_type_smuggling(self):
+        record = copy.deepcopy(expected_source_record())
+        record["safetensors"]["index_metadata_tensor_bytes"] = float(INDEX_TENSOR_BYTES)
+        with self.assertRaises(OfficialBaseSourceError):
+            validate_official_source_record(record)
 
     def test_rejects_missing_or_extra_keys(self):
         for change in ("extra", "missing"):
