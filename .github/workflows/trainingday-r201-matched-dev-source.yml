@@ -1,0 +1,36 @@
+name: TrainingDay R201 Matched DEV Source Checks (HOLD)
+
+on:
+  push:
+    paths:
+      - '.github/workflows/trainingday-r201-matched-dev-source.yml'
+      - 'trainingday/calc_eval_commitment.py'
+      - 'trainingday/calc_eval_commitment.md'
+      - 'tests/test_trainingday_calc_eval_commitment.py'
+      - 'trainingday/calc_curriculum.py'
+  pull_request:
+    paths:
+      - '.github/workflows/trainingday-r201-matched-dev-source.yml'
+      - 'trainingday/calc_eval_commitment.py'
+      - 'trainingday/calc_eval_commitment.md'
+      - 'tests/test_trainingday_calc_eval_commitment.py'
+      - 'trainingday/calc_curriculum.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-only-matched-dev:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Run public-fixture and source-only commitment adversarial tests
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python -B -m unittest -q tests.test_trainingday_calc_eval_commitment
+          echo 'R201_MATCHED_DEV_SOURCE_ONLY_NO_AUTHORITY_PASS'
