@@ -2,9 +2,9 @@ name: TRAININGDAY official Qwen3.5 CPU meta-only PEFT names
 
 on:
   push:
-    branches: ["fix/trainingday-qwen35-meta-skeleton-*", "test/trainingday-qwen35-meta-text-memory-*", "test/trainingday-qwen35-official-rank4-meta-*"]
+    branches: ["fix/trainingday-qwen35-meta-skeleton-*", "test/trainingday-qwen35-meta-text-memory-*", "test/trainingday-qwen35-official-rank4-meta-*", "test/trainingday-qwen35-rank4-adamw-*"]
   pull_request:
-    branches: ["fix/trainingday-qwen35-adapter-coverage-20261103", "test/trainingday-qwen35-meta-text-memory-*"]
+    branches: ["fix/trainingday-qwen35-adapter-coverage-20261103", "test/trainingday-qwen35-meta-text-memory-*", "test/trainingday-qwen35-official-rank4-meta-*"]
   workflow_dispatch:
 
 permissions:
@@ -42,6 +42,7 @@ jobs:
           python -m unittest -v
           tests.test_trainingday_qwen35_meta_skeleton_probe
           tests.test_trainingday_qwen35_hybrid_rank4_meta_budget
+          tests.test_trainingday_qwen35_adapter_cpu_step
       - name: Fetch only official pinned config metadata (64 KiB cap)
         shell: bash
         run: |
@@ -139,4 +140,50 @@ jobs:
                   or rank4.get("training_authorized") is not False
                   or base.get("text_parameter_elements") != 4_205_751_296):
               raise SystemExit("actual hybrid meta inventory or arithmetic drift")
+          PY
+      - name: Materialize only adapter tensors and observe one synthetic CPU AdamW step
+        shell: bash
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          timeout --signal=TERM 150s python -m trainingday.qwen35_hybrid_rank4_meta_budget \
+            --config "$RUNNER_TEMP/qwen35-official-config.json" \
+            --adapter-only-cpu-step \
+            | tee "$RUNNER_TEMP/qwen35-rank4-adapter-only-cpu-step-evidence.json"
+          python - "$RUNNER_TEMP/qwen35-rank4-adapter-only-cpu-step-evidence.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          step = report.get("adapter_only_cpu_rehearsal", {})
+          n = 3_594_240
+          expected = {
+              "basis": "ACTUAL_PEFT_META_SHAPES_MATERIALIZED_AS_CPU_FP32",
+              "adapter_only_synthetic_cpu_step": True,
+              "official_backbone_forward_or_backward": False,
+              "official_pretrained_weights_loaded": False,
+              "device": "cpu",
+              "adapter_parameter_elements": n,
+              "adapter_tensor_count": 304,
+              "optimizer": "torch.optim.AdamW(foreach=False,fused=False)",
+              "adapter_weight_allocated_tensor_bytes": 4 * n,
+              "adapter_gradient_allocated_tensor_bytes": 4 * n,
+              "adamw_exp_avg_allocated_tensor_bytes": 4 * n,
+              "adamw_exp_avg_sq_allocated_tensor_bytes": 4 * n,
+              "adamw_step_scalar_allocated_tensor_bytes": 304 * 4,
+              "sum_allocated_tensor_bytes": 16 * n + 304 * 4,
+              "adapter_only_cpu_optimizer_steps_observed": 1,
+              "memory_fit": "UNKNOWN",
+              "physical_training_authorized": False,
+          }
+          if any(step.get(k) != v for k, v in expected.items()):
+              raise SystemExit("actual adapter-only CPU rehearsal inventory drift")
+          if (report.get("status") != "OFFICIAL_TEXT_META_HYBRID_RANK4_ADAPTER_ONLY_CPU_STEP_HOLD"
+                  or report.get("meta_only") is not False
+                  or report.get("pretrained_weights_loaded") is not False
+                  or report.get("optimizer_steps_observed") != 0
+                  or report.get("hardware_fit") != "UNKNOWN"
+                  or report.get("physical_training_authorized") is not False):
+              raise SystemExit("CPU rehearsal misrepresented as official-model training")
           PY
