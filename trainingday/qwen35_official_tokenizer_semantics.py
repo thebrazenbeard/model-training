@@ -21,7 +21,17 @@ from trainingday.pinned_base import BASE_ID, BASE_REVISION
 SCHEMA = "TRAININGDAY_QWEN35_PUBLIC_TOKENIZER_SEMANTICS_V1"
 TOKENIZER_SHA256 = "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42"
 TOKENIZERS_VERSION = "0.22.1"
-EOS_ID = 248046
+# Pin/source distinction, not an inferred runtime stop policy:
+# Official Qwen/Qwen3.5-4B@851bf6e.../config.json text_config has
+# eos_token_id=248044 (<|endoftext|>), while the independently published
+# tokenizer_config.json has eos_token="<|im_end|>" (248046) and
+# pad_token="<|endoftext|>" (248044). ChatML IM_START is 248045.
+# https://huggingface.co/Qwen/Qwen3.5-4B/blob/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/config.json
+# https://huggingface.co/Qwen/Qwen3.5-4B/blob/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/tokenizer_config.json
+TEXT_MODEL_CONFIG_EOS_ID = 248044
+TOKENIZER_EOS_ID = 248046
+END_OF_TEXT_ID = 248044
+CHATML_IM_START_ID = 248045
 MAX_BYTES = 32 * 1024 * 1024
 UNICODE_SAMPLES = (
     "Café, naïve, déjà vu — punctuation!",
@@ -46,11 +56,15 @@ def check_raw_tokenizer(tokenizer) -> dict:
     """Exercise actual raw encode/decode, independent of transformers wrappers."""
     start = tokenizer.token_to_id("<|im_start|>")
     end = tokenizer.token_to_id("<|im_end|>")
+    end_of_text = tokenizer.token_to_id("<|endoftext|>")
     _require(type(start) is int and type(end) is int
-             and start != end and end == EOS_ID,
+             and start == CHATML_IM_START_ID and end == TOKENIZER_EOS_ID
+             and type(end_of_text) is int and end_of_text == END_OF_TEXT_ID
+             and end_of_text != end,
              "official ChatML boundary IDs invalid")
     _require(tokenizer.encode("<|im_start|>", add_special_tokens=False).ids == [start]
-             and tokenizer.encode("<|im_end|>", add_special_tokens=False).ids == [end],
+             and tokenizer.encode("<|im_end|>", add_special_tokens=False).ids == [end]
+             and tokenizer.encode("<|endoftext|>", add_special_tokens=False).ids == [end_of_text],
              "ChatML delimiters do not occupy single reserved token IDs")
 
     normalized_samples = []
@@ -87,6 +101,11 @@ def check_raw_tokenizer(tokenizer) -> dict:
         "nfc_normalized_inputs": normalized_samples,
         "im_start_token_id": start,
         "im_end_token_id": end,
+        "endoftext_token_id": end_of_text,
+        "text_model_config_eos_token_id": TEXT_MODEL_CONFIG_EOS_ID,
+        "tokenizer_eos_token_id": TOKENIZER_EOS_ID,
+        "text_config_eos_source": "pinned-official-config-constant-not-runtime-binding",
+        "koboldcpp_stop_policy": "UNKNOWN",
         "literal_reserved_spelling_maps_to_special_id": start in untrusted_ids,
         "literal_reserved_spelling_requires_application_level_isolation": True,
         "official_pretrained_weights_exercised": False,
