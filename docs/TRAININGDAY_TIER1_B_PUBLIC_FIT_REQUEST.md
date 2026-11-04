@@ -25,7 +25,12 @@ Fixed request scope:
 * Candidate `trainingday.lowmem_experiment.one_step_kernel` already contains
   official NF4/BF16 LoRA synthetic batch 1, sequence length 64 and precisely
   one AdamW optimizer step, but is presently **unreachable** behind its
-  unconditional physical HARD HOLD. No alternate Python flag authorizes it.
+  unconditional physical HARD HOLD. Its source uses `device_map=0` and reports
+  `actual_cpu_offload_used=False`: **no demonstrated CPU offload backend, no
+  measured official 4B training fit in Lappy's 4 GiB GPU**. A separate ZeRO-3
+  offload configuration is a hypothesis, not tested kernel behavior. Hardware
+  fit remains `UNKNOWN_NOT_ESTABLISHED_ON_LAPPY` even if free-VRAM preflight
+  is favorable. No alternate Python flag authorizes launch.
 * Maximum wall time 1,800 s; **observational** GPU-memory target 3,072 MiB
   plus 256 MiB driver headroom for initial preflight. WDDM has no guaranteed
   per-process hard GPU-memory quota. A valid preflight does not prove a lease;
