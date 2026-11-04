@@ -162,6 +162,8 @@ def verify_snapshot(snapshot: Path) -> dict:
     snapshot = safe_absolute(snapshot)
     inspected = {}
     with _open_anchored(snapshot, directory=True) as snapshot_fd:
+        snapshot_info = os.fstat(snapshot_fd)
+        snapshot_identity = (snapshot_info.st_dev, snapshot_info.st_ino)
         # Keep ALL original inode handles open until the final pathname pass.
         # Otherwise shard 1's path could be swapped after it hashes but before
         # shard 2 hashes, falsely yielding `shards_verified: true`.
@@ -196,6 +198,15 @@ def verify_snapshot(snapshot: Path) -> dict:
                 with _open_snapshot_child(snapshot_fd, name) as current_fd:
                     if _stable_stamp(os.fstat(current_fd)) != original:
                         raise AdmissionError("hashed snapshot pathname replaced after read")
+
+        # The retained snapshot FD might no longer be reachable through the
+        # caller's ABSOLUTE path: an ancestor could have been renamed and
+        # replaced with a symlink/different directory after the first hash.
+        # Rewalk / -> every ancestor O_NOFOLLOW and compare the final dir inode.
+        with _open_anchored(snapshot, directory=True) as current_snapshot_fd:
+            current_info = os.fstat(current_snapshot_fd)
+            if (current_info.st_dev, current_info.st_ino) != snapshot_identity:
+                raise AdmissionError("absolute snapshot pathname replaced after read")
     shard_verified = all(inspected[name]["verified"] for name, _, _ in SHARDS)
     return {"schema": SCHEMA, "evidence_class": "LOCAL_HASH_WITH_UPSTREAM_LFS_PINS",
             "repository": OFFICIAL_ID, "revision": OFFICIAL_REVISION,
@@ -205,6 +216,7 @@ def verify_snapshot(snapshot: Path) -> dict:
             "official_checkpoint_admitted": False,
             "inference_executed": False,
             "all_snapshot_entries_revalidated": True,
+            "absolute_snapshot_directory_revalidated": True,
             "status": ("LOCAL_SHARD_HASH_AUDIT_PASS_NOT_ADMISSION" if shard_verified
                        else "HOLD_SHARD_HASH_OR_SIZE_MISMATCH"),
             "file_identity_limit": "Final same-inode pathname checks are non-atomic; no immutable snapshot",
