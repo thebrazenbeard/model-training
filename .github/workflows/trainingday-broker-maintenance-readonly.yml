@@ -1,0 +1,53 @@
+name: TrainingDay broker maintenance read-only source checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/trainingday-broker-maintenance-readonly.yml'
+      - 'trainingday/windows_host_broker/Assert-BrokerMaintenancePreflight.ps1'
+      - 'trainingday/windows_host_broker/Test-BrokerMaintenanceAcl.ps1'
+      - 'tests/native_broker_preflight_readonly.ps1'
+      - 'trainingday/windows_host_broker/TrainingDayHostBroker.cs'
+      - 'trainingday/windows_host_broker/BoundedPipeRequest.cs'
+      - 'trainingday/windows_host_broker/BrokerPipeTransport.cs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-source-preflight:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Compile source-only broker and record evidence
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { throw 'C# compiler unavailable' }
+          $root = Join-Path $PWD 'trainingday/windows_host_broker'
+          $sources = @('TrainingDayHostBroker.cs','BoundedPipeRequest.cs','BrokerPipeTransport.cs') |
+            ForEach-Object { Join-Path $root $_ }
+          $exe = Join-Path $env:RUNNER_TEMP 'BrokerUnsignedSourceOnly.exe'
+          & $csc /nologo /target:exe /optimize+ ('/out:'+$exe) /r:System.ServiceProcess.dll /r:System.Core.dll /r:System.Security.dll $sources
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) { throw 'Broker source compile failed' }
+          $head = (git rev-parse --verify HEAD).Trim()
+          $tree = (git rev-parse 'HEAD^{tree}').Trim()
+          $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash
+          Write-Output "SOURCE_HEAD=$head TREE=$tree STAGED_BINARY_SHA256=$sha"
+          foreach ($source in $sources) { Write-Output "SOURCE_SHA256 $((Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash) $source" }
+          # A byte-identical cross-host build has not been established. These are
+          # exact-source, local-compiler and binary-hash receipts only.
+          $result = & (Join-Path $PWD 'tests/native_broker_preflight_readonly.ps1') `
+            -PreflightScript (Join-Path $root 'Assert-BrokerMaintenancePreflight.ps1') `
+            -AclHelper (Join-Path $root 'Test-BrokerMaintenanceAcl.ps1') `
+            -UnsignedBrokerExecutable $exe
+          if ($result -notmatch 'BROKER_MAINTENANCE_READONLY_NEGATIVE_PASS') {
+            throw 'Read-only maintenance preflight tests failed'
+          }
+          Write-Output $result
