@@ -5,12 +5,17 @@ read-only, deterministic integration-gap inventory. It intentionally exits 1
 because no complete, independently qualified training-to-serving recovery
 chain has been established by this source command.
 
-The nine ordered checks distinguish **official model source metadata** from
-locally authenticated model bytes, corpus rights, owner-held process/GPU and
-anti-replay custody, optimizer/checkpoint recovery, evaluator custody,
-**official adapter GGUF conversion**, real conversation serving and an
-independent destination restore. Base-GGUF synthetic test success is never
-evidence of an adapter conversion or official base inference.
+The eleven topologically ordered checks distinguish **official model source
+metadata** from locally authenticated model bytes; recovered R16 adapter
+provenance; independent destination restore; corpus rights; owner-held
+process/GPU and anti-replay custody; actual **base-model inference**;
+optimizer/checkpoint reload; evaluator custody; **official adapter GGUF
+conversion**; and actual **trained Vera conversation**. Restoration is an
+early, independent preservation track, not something postponed until after
+model serving. Base inference can precede training and protected evaluation;
+serving recovered adapter weights does not itself establish generalization.
+Synthetic GGUF success never proves official adapter conversion or base
+inference.
 
 The command does not contact GitHub, Lappy, VN1, VN2, the NAS, the broker or a
 private evaluator. It does not admit a user's self-declared receipt, mutate
@@ -26,7 +31,7 @@ the repository's separate public Aggressive/uncensored checkpoint manifest.
 ## A concrete integration criterion
 
 The release remains **HOLD** until independently established evidence can be
-read back for **all** nine stages on their actual owners; a local CLI cannot
+read back for **all** eleven stages on their actual owners; a local CLI cannot
 promote the result. To progress the program, land and individually qualify
 real host/artifact/data/evaluator/runtime components and only then build a
 separate, authority-bearing release controller. No source-only PR or synthetic

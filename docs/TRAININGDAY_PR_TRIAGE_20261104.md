@@ -13,14 +13,15 @@ instructions, and current protected-effect gates.
 | Order | Interface/evidence | Candidate source | Not established by candidate |
 | --- | --- | --- | --- |
 | 1 | Official base identity, local weight **and metadata byte** witness | Merged #310 + draft #327 | local byte readback, trusted metadata enrollment, host ownership |
-| 2 | Recover correct8/corrupt8/zero adapter and training receipts | Historical R16 stacked #140 | independently recovered bytes, rights and checkpoint provenance |
-| 3 | Rights-admitted TRAIN/DEV curriculum | #265; matched-evaluation #296 | actual data-owner grant and independent evaluator custody |
-| 4 | Exclusive host process/GPU lease and durable anti-replay witness | #319–#321, negative #320 | installed positive-grant broker or independently monotonic Q6 |
-| 5 | Physical bounded optimizer/checkpoint/reload | #330 and R16 #140 | authorized optimizer under a present host-owned lease |
-| 6 | Protected held-out independent comparison | #296 and #329 | fresh same-budget MeZO vs QLoRA, multiple seeds, generalization |
-| 7 | Actual official base + recovered adapter GGUF conversion | #328; lineage #316 | official trained adapter compatibility and exact converter validation |
-| 8 | Real local conversation through intended Vera UI | #326 + runtime integration work | live model-serving readback and measured latency/quality |
-| 9 | Destination restore after independent artifact custody | external VN1/VN2 artifact transfer | checksum-verified restore and Lappy-independent recovery |
+| 2 | Recover correct8/corrupt8/zero adapter and receipts | Historical R16 stacked #140 | independently recovered bytes, rights and checkpoint provenance |
+| 3 | **Early, independent** VN1/VN2 destination restore | external artifact transfer | checksum-verified restore and Lappy-independent recovery |
+| 4 | Real base-model inference (can occur before new training) | #326 and runtime work | local base-model process/tokenizer/latency readback |
+| 5 | Rights-admitted TRAIN/DEV curriculum | #265; matched-evaluation #296 | actual data-owner grant and independent evaluator custody |
+| 6 | Exclusive host process/GPU lease and durable anti-replay witness | #319–#321, negative #320 | installed positive-grant broker or independently monotonic Q6 |
+| 7 | Physical bounded optimizer/checkpoint/reload | #330 and R16 #140 | authorized optimizer under a present host-owned lease |
+| 8 | Protected held-out independent comparison | #296 and #329 | fresh same-budget MeZO vs QLoRA, multiple seeds, generalization |
+| 9 | Recovered trained-adapter GGUF conversion | #328; lineage #316 | exact official adapter compatibility and converter validation |
+| 10 | Trained Vera conversation through intended UI | #326 + runtime work | live model-serving readback and measured latency/quality |
 
 **Order is a dependency interpretation, not a pass claim.** #328 is synthetic
 conversion evidence; it does not prove the recovered adapter converts. An

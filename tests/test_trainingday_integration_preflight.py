@@ -22,7 +22,7 @@ class IntegrationPreflightTests(unittest.TestCase):
         self.assertEqual(value["model_id"], "Qwen/Qwen3.5-4B")
         steps = value["steps"]
         indices = {step["name"]: i for i, step in enumerate(steps)}
-        self.assertEqual(len(indices), 9)
+        self.assertEqual(len(indices), 11)
         for step in steps:
             self.assertIn(step["status"], ("SOURCE_ONLY", "HOLD", "UNKNOWN"))
             self.assertNotEqual(step["evidence_class"], "RUNTIME_PROBE")
@@ -30,7 +30,13 @@ class IntegrationPreflightTests(unittest.TestCase):
                 self.assertIn(dependency, indices)
                 self.assertLess(indices[dependency], indices[step["name"]])
         self.assertEqual(steps[0]["status"], "SOURCE_ONLY")
-        self.assertEqual(steps[3]["status"], "HOLD")
+        self.assertEqual(steps[5]["status"], "HOLD")
+        self.assertLess(indices["independent_artifact_restore"],
+                        indices["trained_vera_conversation"])
+        self.assertNotIn("trained_vera_conversation",
+                         steps[3]["depends_on"])
+        self.assertNotIn("independent_protected_evaluation",
+                         steps[10]["depends_on"])
 
     def test_metadata_enrollment_does_not_claim_weight_or_host_admission(self):
         required = integration_preflight.METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS
@@ -39,7 +45,7 @@ class IntegrationPreflightTests(unittest.TestCase):
             value = integration_preflight.report()
         self.assertTrue(value["source_metadata_pins_enrolled"])
         self.assertEqual(value["steps"][1]["status"], "UNKNOWN")
-        self.assertEqual(value["steps"][3]["status"], "HOLD")
+        self.assertEqual(value["steps"][5]["status"], "HOLD")
         self.assertFalse(value["ready"])
 
     def test_fake_positive_launcher_fails_closed(self):
