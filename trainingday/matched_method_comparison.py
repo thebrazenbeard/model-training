@@ -19,6 +19,7 @@ BASE_ID = "Qwen/Qwen3.5-4B"
 BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 METHODS = ("MEZO_LORA", "QLORA_ADAMW")
 LABEL_MODES = ("correct", "corrupted", "zero")
+BASE_REFERENCE = "OFFICIAL_BASE"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _CASE_ID = re.compile(r"case-[0-9a-f]{16}\Z")
 
@@ -70,6 +71,12 @@ def build_study_plan(*, official_weight_sha256: str,
          "wall_clock_budget_seconds": wall_clock_budget_seconds}
         for seed in seeds for method in METHODS for mode in LABEL_MODES
     ]
+    arms.extend(
+        {"arm_id": f"{BASE_REFERENCE}:reference:{seed}",
+         "method": BASE_REFERENCE, "label_mode": "reference", "seed": seed,
+         "trainable_subspace": "NO_ADAPTER_UNMODIFIED_OFFICIAL_BASE",
+         "wall_clock_budget_seconds": wall_clock_budget_seconds}
+        for seed in seeds)
     record = {
         "schema": SCHEMA,
         "status": "SOURCE_ONLY_HARD_HOLD",
@@ -86,7 +93,8 @@ def build_study_plan(*, official_weight_sha256: str,
         "arms": arms,
         "base_zero_update_reference_required": True,
         "equal_wall_clock_budget_seconds": wall_clock_budget_seconds,
-        "require_equal_example_exposure_record": True,
+        "require_equal_paired_example_token_exposure": True,
+        "require_identical_paired_example_order_sha256": True,
         "require_forward_and_backward_count_record": True,
         "require_per_arm_checkpoint_reload": True,
         "require_trained_arm_interruption_resume": True,
@@ -112,17 +120,21 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
     if (type(plan) is not dict or plan.get("schema") != SCHEMA
             or not _sha(plan.get("plan_sha256"))):
         raise MatchedStudyError("invalid study plan")
-    copy = dict(plan)
-    claimed_sha = copy.pop("plan_sha256")
-    if hashlib.sha256(_canonical_bytes(copy)).hexdigest() != claimed_sha:
-        raise MatchedStudyError("study plan modified after commitment")
-    if (type(plan.get("arms")) is not list or not plan["arms"]
-            or any(type(arm) is not dict or type(arm.get("arm_id")) is not str
-                   for arm in plan["arms"])):
-        raise MatchedStudyError("study arm schedule missing or malformed")
+    # A caller can rehash an incomplete/forged plan; recompute the *entire*
+    # schema-controlled plan rather than accepting any internally consistent
+    # hash. This also rejects attempts to turn false grants into true claims.
+    canonical = build_study_plan(
+        official_weight_sha256=plan.get("official_weight_sha256"),
+        tokenizer_sha256=plan.get("tokenizer_sha256"),
+        train_sha256=plan.get("train_sha256"),
+        private_dev_commitment_sha256=plan.get("private_dev_commitment_sha256"),
+        lora_target_spec_sha256=plan.get("lora_target_spec_sha256"),
+        seeds=plan.get("seeds"),
+        wall_clock_budget_seconds=plan.get("equal_wall_clock_budget_seconds"))
+    if canonical != plan:
+        raise MatchedStudyError("plan deviates from non-authorizing canonical schedule")
+    claimed_sha = plan["plan_sha256"]
     scheduled = {arm["arm_id"]: arm for arm in plan["arms"]}
-    if len(scheduled) != len(plan["arms"]):
-        raise MatchedStudyError("duplicate scheduled arm")
     if (type(receipts) not in (list, tuple)
             or len(receipts) != len(scheduled)):
         raise MatchedStudyError("incomplete study arm coverage")
@@ -130,8 +142,11 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
                      "optimizer_steps", "examples_seen", "tokens_seen",
                      "forward_calls", "backward_calls", "peak_vram_bytes",
                      "peak_host_ram_bytes", "checkpoint_reloaded",
+                     "adapter_sha256", "loaded_weight_sha256",
+                     "train_order_sha256",
                      "interruption_resumed"}
     seen = set()
+    comparable = {}
     for receipt in receipts:
         if type(receipt) is not dict or set(receipt) != expected_keys:
             raise MatchedStudyError("unexpected public receipt field or omitted telemetry")
@@ -140,6 +155,9 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
                 or arm_id in seen or receipt["plan_sha256"] != claimed_sha):
             raise MatchedStudyError("unknown, duplicate, or replayed arm")
         seen.add(arm_id)
+        if (receipt["loaded_weight_sha256"] != plan["official_weight_sha256"]
+                or type(receipt["loaded_weight_sha256"]) is not str):
+            raise MatchedStudyError("model byte-manifest identity mismatch")
         for field in ("elapsed_ms", "optimizer_steps", "examples_seen",
                       "tokens_seen", "forward_calls", "backward_calls",
                       "peak_vram_bytes", "peak_host_ram_bytes"):
@@ -147,22 +165,40 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
                 raise MatchedStudyError("invalid nonnegative integer telemetry")
         if not 0 < receipt["elapsed_ms"] <= plan["equal_wall_clock_budget_seconds"] * 1_000:
             raise MatchedStudyError("wall-clock budget exceeded or not measured")
+        if receipt["peak_host_ram_bytes"] == 0 or receipt["peak_vram_bytes"] == 0:
+            raise MatchedStudyError("missing positive host and GPU memory telemetry")
         if (type(receipt["checkpoint_reloaded"]) is not bool
                 or type(receipt["interruption_resumed"]) is not bool):
             raise MatchedStudyError("unverifiable reload/resume telemetry shape")
         if not receipt["checkpoint_reloaded"]:
             raise MatchedStudyError("fresh-process checkpoint reload not demonstrated")
         arm = scheduled[arm_id]
+        if arm["method"] == BASE_REFERENCE:
+            if (receipt["adapter_sha256"] is not None
+                    or receipt["train_order_sha256"] is not None
+                    or any(receipt[name] for name in ("optimizer_steps", "examples_seen",
+                                                       "tokens_seen", "backward_calls"))
+                    or receipt["interruption_resumed"]):
+                raise MatchedStudyError("untouched base reference was fine-tuned or adapted")
+            continue
+        if not _sha(receipt["adapter_sha256"]):
+            raise MatchedStudyError("PEFT arm requires adapter byte identity")
         if arm["label_mode"] == "zero":
-            if receipt["optimizer_steps"] != 0 or receipt["backward_calls"] != 0:
+            if (receipt["optimizer_steps"] != 0 or receipt["backward_calls"] != 0
+                    or receipt["train_order_sha256"] is not None):
                 raise MatchedStudyError("zero-update control performed updates")
         else:
+            if not _sha(receipt["train_order_sha256"]):
+                raise MatchedStudyError("training-example order commitment missing")
             if (receipt["optimizer_steps"] < 1 or receipt["examples_seen"] < 1
                     or receipt["tokens_seen"] < 1
                     or receipt["forward_calls"] < 1):
                 raise MatchedStudyError("training arm lacks work accounting")
             if not receipt["interruption_resumed"]:
                 raise MatchedStudyError("training-arm recovery not demonstrated")
+            comparable[(arm["seed"], arm["label_mode"], arm["method"])] = (
+                receipt["examples_seen"], receipt["tokens_seen"],
+                receipt["train_order_sha256"])
         if arm["method"] == "MEZO_LORA" and receipt["backward_calls"]:
             raise MatchedStudyError("MeZO arm used gradient backpropagation")
         if (arm["method"] == "MEZO_LORA" and arm["label_mode"] != "zero"
@@ -171,6 +207,10 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
         if arm["method"] == "QLORA_ADAMW" and arm["label_mode"] != "zero" \
                 and receipt["backward_calls"] < receipt["optimizer_steps"]:
             raise MatchedStudyError("QLoRA arm lacks backward-pass accounting")
+    for seed in plan["seeds"]:
+        for mode in ("correct", "corrupted"):
+            if comparable[(seed, mode, METHODS[0])] != comparable[(seed, mode, METHODS[1])]:
+                raise MatchedStudyError("methods saw different example/token exposure or order")
     return {
         "schema": SCHEMA,
         "status": "SHAPE_VALIDATED_UNAUTHENTICATED_RECEIPTS",
