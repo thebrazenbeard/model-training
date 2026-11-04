@@ -2,9 +2,9 @@ name: TRAININGDAY official Qwen3.5 CPU meta-only PEFT names
 
 on:
   push:
-    branches: ["fix/trainingday-qwen35-meta-skeleton-*", "test/trainingday-qwen35-meta-text-memory-*"]
+    branches: ["fix/trainingday-qwen35-meta-skeleton-*", "test/trainingday-qwen35-meta-text-memory-*", "test/trainingday-qwen35-official-rank4-meta-*"]
   pull_request:
-    branches: ["fix/trainingday-qwen35-adapter-coverage-20261103"]
+    branches: ["fix/trainingday-qwen35-adapter-coverage-20261103", "test/trainingday-qwen35-meta-text-memory-*"]
   workflow_dispatch:
 
 permissions:
@@ -38,7 +38,10 @@ jobs:
             'transformers==5.22.1' 'accelerate==1.12.0' 'peft==0.21.2'
           python -m pip check
       - name: Verify zero-GPU source memory arithmetic and negative controls
-        run: python -m unittest -v tests.test_trainingday_qwen35_meta_skeleton_probe
+        run: >-
+          python -m unittest -v
+          tests.test_trainingday_qwen35_meta_skeleton_probe
+          tests.test_trainingday_qwen35_hybrid_rank4_meta_budget
       - name: Fetch only official pinned config metadata (64 KiB cap)
         shell: bash
         run: |
@@ -91,4 +94,49 @@ jobs:
                   or budget.get("memory_fit") != "UNKNOWN"
                   or budget.get("training_authorized") is not False):
               raise SystemExit("actual text meta memory bound malformed or overclaimed")
+          PY
+      - name: Measure official 152-target rank-four LoRA state on CPU meta only
+        shell: bash
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          timeout --signal=TERM 150s python -m trainingday.qwen35_hybrid_rank4_meta_budget \
+            --config "$RUNNER_TEMP/qwen35-official-config.json" \
+            | tee "$RUNNER_TEMP/qwen35-official-rank4-meta-evidence.json"
+          python - "$RUNNER_TEMP/qwen35-official-rank4-meta-evidence.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          rank4 = report.get("hybrid_rank4_adapter_state", {})
+          base = report.get("base_text_meta_memory", {})
+          n = rank4.get("adapter_parameter_elements")
+          expected = {
+              "status": "OFFICIAL_TEXT_META_HYBRID_RANK4_SOURCE_ONLY_HOLD",
+              "meta_only": True,
+              "pretrained_weights_loaded": False,
+              "weight_shards_authenticated": False,
+              "cuda_used": False,
+              "optimizer_steps_observed": 0,
+              "physical_training_authorized": False,
+              "hardware_fit": "UNKNOWN",
+          }
+          if any(report.get(k) != v for k, v in expected.items()):
+              raise SystemExit("hybrid meta evidence overclaimed protected effects")
+          if (type(n) is not int or n != 3_594_240
+                  or rank4.get("target_module_count") != 152
+                  or rank4.get("trainable_lora_a_b_tensors") != 304
+                  or rank4.get("optimistic_training_state_bytes") != 12 * n
+                  or rank4.get("observed_meta_lora_dtypes") != ["torch.float32"]
+                  or rank4.get("scenario_basis") != "OBSERVED_META_LORA_DTYPE_FP32_ONLY"
+                  or rank4.get("observed_dtype_fp32_adapter_weight_bytes") != 4 * n
+                  or rank4.get("observed_dtype_fp32_gradient_bytes") != 4 * n
+                  or rank4.get("observed_dtype_fp32_adamw_moment_bytes") != 8 * n
+                  or rank4.get("observed_dtype_fp32_training_state_bytes") != 16 * n
+                  or rank4.get("optimizer_allocation_observed") is not False
+                  or rank4.get("physical_fit") != "UNKNOWN"
+                  or rank4.get("training_authorized") is not False
+                  or base.get("text_parameter_elements") != 4_205_751_296):
+              raise SystemExit("actual hybrid meta inventory or arithmetic drift")
           PY
