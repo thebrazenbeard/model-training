@@ -45,6 +45,36 @@ class HeldoutControlSourceTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             trial._row((8, 9), answer_override=19)
 
+    def test_top1_probe_never_supplies_answer_as_completion(self):
+        for seed in trial.SEEDS:
+            train, heldout = trial._pairs(seed)
+            for pair in train + heldout:
+                prefix, expected = trial._completion_prefix(pair)
+                self.assertEqual(len(prefix), 5)
+                self.assertEqual(prefix[-1], trial.EQUAL)
+                self.assertEqual(expected, trial.NUMBER_OFFSET + sum(pair))
+                self.assertEqual(prefix[2:4], [trial.NUMBER_OFFSET + x for x in pair])
+
+    def test_commuted_heldout_uses_only_unseen_reversed_prompts(self):
+        for seed in trial.SEEDS:
+            train, heldout = trial._pairs(seed)
+            training_prefixes = {tuple(trial._completion_prefix(pair)[0]) for pair in train}
+            shifted = [pair for pair in heldout if pair[0] != pair[1]]
+            self.assertTrue(shifted)
+            for pair in shifted:
+                canonical, canonical_expected = trial._completion_prefix(pair)
+                commuted, commuted_expected = trial._completion_prefix(pair, commuted=True)
+                self.assertNotEqual(canonical, commuted)
+                self.assertEqual(canonical_expected, commuted_expected)
+                self.assertEqual(commuted[2:4], canonical[3:1:-1])
+                self.assertNotIn(tuple(commuted), training_prefixes)
+        with self.assertRaises(AssertionError):
+            trial._completion_prefix((4, 4), commuted=True)
+
+    def test_top1_metric_rejects_empty_probe(self):
+        with self.assertRaises(AssertionError):
+            trial._answer_top1(object(), [], object())
+
 
 if __name__ == "__main__":
     unittest.main()
