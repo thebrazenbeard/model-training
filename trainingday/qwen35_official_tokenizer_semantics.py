@@ -52,11 +52,16 @@ def check_raw_tokenizer(tokenizer) -> dict:
              and tokenizer.encode("<|im_end|>", add_special_tokens=False).ids == [end],
              "ChatML delimiters do not occupy single reserved token IDs")
 
+    unicode_mismatches = []
     for sample in UNICODE_SAMPLES:
         ids = tokenizer.encode(sample, add_special_tokens=False).ids
         _require(bool(ids), "Unicode sample unexpectedly empty")
         decoded = tokenizer.decode(ids, skip_special_tokens=False)
-        _require(decoded == sample, "pinned Unicode/whitespace roundtrip changed bytes")
+        if decoded != sample:
+            unicode_mismatches.append({"input": repr(sample), "decoded": repr(decoded)})
+    _require(not unicode_mismatches,
+             "pinned Unicode/whitespace roundtrip changed bytes: "
+             + json.dumps(unicode_mismatches, ensure_ascii=False))
 
     framed = "<|im_start|>user\nhello, 世界<|im_end|>"
     ids = tokenizer.encode(framed, add_special_tokens=False).ids
