@@ -1,0 +1,36 @@
+name: TrainingDay Linux child custody source witness (no GPU)
+
+on:
+  push:
+    paths:
+      - "trainingday/linux_child_custody_probe.py"
+      - "tests/test_trainingday_linux_child_custody.py"
+      - ".github/workflows/trainingday-linux-child-custody.yml"
+  pull_request:
+    paths:
+      - "trainingday/linux_child_custody_probe.py"
+      - "tests/test_trainingday_linux_child_custody.py"
+      - ".github/workflows/trainingday-linux-child-custody.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  harmless-linux-child-custody:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Check out exact source HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Exercise harmless real Linux test-owned group and crash counterexample
+        run: |
+          python3 -m unittest discover -s tests -p test_trainingday_linux_child_custody.py -v
