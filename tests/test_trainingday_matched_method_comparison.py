@@ -6,12 +6,18 @@ import json
 import unittest
 
 from trainingday.matched_method_comparison import (
-    MatchedStudyError, build_study_plan, summarize_paired_binary_outcomes,
+    MatchedStudyError, build_study_plan, commit_training_schedule,
+    summarize_paired_binary_outcomes,
     validate_untrusted_receipts,
 )
 
 
 def spec():
+    schedule = [commit_training_schedule(seed, [
+        {"row_id": f"row-{i}", "input": f"prompt-{i}",
+         "correct_label": f"answer-{i}",
+         "corrupted_label": f"wrong-{seed}-{i}"}
+        for i in range(3)]) for seed in (11, 13, 17)]
     return dict(
         official_weight_sha256="1" * 64,
         tokenizer_sha256="2" * 64,
@@ -19,6 +25,7 @@ def spec():
         private_dev_commitment_sha256="4" * 64,
         lora_target_spec_sha256="5" * 64,
         seeds=(11, 13, 17),
+        schedule_commitments=schedule,
         wall_clock_budget_seconds=90,
     )
 
@@ -40,7 +47,9 @@ def receipts(plan):
             checkpoint_reloaded=True, interruption_resumed=not zero and not base,
             adapter_sha256=None if base else "7" * 64,
             loaded_weight_sha256=plan["official_weight_sha256"],
-            train_order_sha256=None if zero or base else "6" * 64,
+            train_order_sha256=arm["train_order_sha256"],
+            label_assignment_sha256=arm["label_assignment_sha256"],
+            truncated_training_rows=0,
         ))
         if base:
             result[-1]["optimizer_steps"] = 0
@@ -74,6 +83,8 @@ class MatchedMethodStudyTests(unittest.TestCase):
                   "authorizes_eval_unseal", "allow_full_parameter_mezo_as_matched_arm"):
             self.assertIs(a[k], False)
         self.assertTrue(a["base_zero_update_reference_required"])
+        self.assertFalse(a["full_chatml_tokenizer_fit_independently_verified"])
+        self.assertEqual(a["candidate_sequence_length"], 128)
 
     def test_plan_rejects_spoofed_hashes_seeds_and_bounds(self):
         for key, wrong in (("official_weight_sha256", "z" * 64),
@@ -84,11 +95,45 @@ class MatchedMethodStudyTests(unittest.TestCase):
                            ("seeds", [1, True, 3]),
                            ("seeds", [-1, 2, 3]),
                            ("wall_clock_budget_seconds", True),
-                           ("wall_clock_budget_seconds", 10)):
+                           ("wall_clock_budget_seconds", 10),
+                           ("candidate_sequence_length", 12),
+                           ("actual_time_tolerance_percent", 51)):
             proposed = spec()
             proposed[key] = wrong
             with self.subTest(key=key, wrong=wrong), self.assertRaises(
                     MatchedStudyError):
+                build_study_plan(**proposed)
+
+    def test_schedule_commitment_changes_on_label_or_example_mutation(self):
+        rows = [{"row_id": "r1", "input": "what is 2 + 2?",
+                 "correct_label": "4", "corrupted_label": "5"},
+                {"row_id": "r2", "input": "what is 3 + 4?",
+                 "correct_label": "7", "corrupted_label": "6"}]
+        original = commit_training_schedule(11, rows)
+        for field, replacement in (("input", "different input"),
+                                   ("correct_label", "9"),
+                                   ("corrupted_label", "8")):
+            modified = copy.deepcopy(rows)
+            modified[1][field] = replacement
+            with self.subTest(field=field):
+                self.assertNotEqual(commit_training_schedule(11, modified), original)
+        self.assertNotEqual(commit_training_schedule(13, rows), original)
+        with self.assertRaises(MatchedStudyError):
+            commit_training_schedule(11, [rows[0], rows[0]])
+
+    def test_study_rejects_missing_or_reused_corruption_schedule(self):
+        for change in ("missing", "duplicate", "same_labels", "bad_seed"):
+            proposed = spec()
+            rows = proposed["schedule_commitments"]
+            if change == "missing":
+                rows.pop()
+            elif change == "duplicate":
+                rows[1]["corrupted_labels_sha256"] = rows[0]["corrupted_labels_sha256"]
+            elif change == "same_labels":
+                rows[1]["corrupted_labels_sha256"] = rows[1]["correct_labels_sha256"]
+            else:
+                rows[1]["seed"] = 99
+            with self.subTest(change=change), self.assertRaises(MatchedStudyError):
                 build_study_plan(**proposed)
 
     def test_receipt_shape_covers_all_arms_but_does_not_authenticate(self):
@@ -147,6 +192,8 @@ class MatchedMethodStudyTests(unittest.TestCase):
             ("peak_host_ram_bytes", 0),
             ("peak_vram_bytes", 0),
             ("train_order_sha256", "bad"),
+            ("label_assignment_sha256", "a" * 64),
+            ("truncated_training_rows", 1),
         ):
             r = receipts(plan)
             record = next(x for x in r if ":correct:" in x["arm_id"])
@@ -188,6 +235,39 @@ class MatchedMethodStudyTests(unittest.TestCase):
         base["adapter_sha256"] = "9" * 64
         with self.assertRaises(MatchedStudyError):
             validate_untrusted_receipts(plan, r)
+
+    def test_two_method_receipts_cannot_collude_to_reassign_labels(self):
+        plan = build_study_plan(**spec())
+        r = receipts(plan)
+        for arm in r:
+            if ":corrupted:11" in arm["arm_id"]:
+                arm["label_assignment_sha256"] = "f" * 64
+        with self.assertRaises(MatchedStudyError):
+            validate_untrusted_receipts(plan, r)
+
+    def test_actual_time_disparity_is_reported_not_called_compute_matching(self):
+        plan = build_study_plan(**spec())
+        r = receipts(plan)
+        mezo = next(x for x in r if x["arm_id"] == "MEZO_LORA:correct:11")
+        qlora = next(x for x in r if x["arm_id"] == "QLORA_ADAMW:correct:11")
+        mezo["elapsed_ms"] = 1
+        mezo["forward_calls"] = 41
+        qlora["elapsed_ms"] = 80_000
+        verdict = validate_untrusted_receipts(plan, r)
+        self.assertEqual(verdict["scientific_cost_comparison_status"],
+                         "TIME_DISPARITY_REQUIRES_SEPARATE_ANALYSIS")
+        self.assertFalse(verdict["actual_elapsed_time_within_declared_tolerance"])
+        self.assertGreater(verdict["forward_count_disparate_pairs"], 0)
+        self.assertFalse(verdict["measured_compute_equivalence_established"])
+        self.assertFalse(verdict["proves_learning"])
+
+    def test_equal_time_and_count_still_do_not_prove_compute_equivalence(self):
+        plan = build_study_plan(**spec())
+        outcome = validate_untrusted_receipts(plan, receipts(plan))
+        self.assertTrue(outcome["actual_elapsed_time_within_declared_tolerance"])
+        self.assertFalse(outcome["measured_compute_equivalence_established"])
+        self.assertEqual(outcome["scientific_cost_comparison_status"],
+                         "EQUAL_TIME_CEILING_ONLY_COMPUTE_UNQUALIFIED")
 
     def test_mcnemar_is_paired_not_deducible_from_marginals(self):
         # Same historical 3/64 vs 5/64 totals; different case identities
