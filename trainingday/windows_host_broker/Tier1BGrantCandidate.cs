@@ -206,9 +206,12 @@ internal static class Tier1BGrantCandidate {
                 var e=extension as X509EnhancedKeyUsageExtension;
                 if(e!=null) purpose=e;
             }
-            if (usage==null ||
-                (usage.KeyUsages & X509KeyUsageFlags.DigitalSignature)==0)
+            if (usage==null)
                 return Hold("OWNER_CERTIFICATE_DIGITAL_SIGNATURE_REQUIRED");
+            // Owner signer is dedicated to scoped digital signatures, not
+            // TLS key transport, CA signing, or another cryptographic role.
+            if (usage.KeyUsages!=X509KeyUsageFlags.DigitalSignature)
+                return Hold("OWNER_CERTIFICATE_KEY_USAGE_NOT_SIGNING_ONLY");
             if (constraints==null || constraints.CertificateAuthority)
                 return Hold("OWNER_CERTIFICATE_MUST_NOT_BE_CA");
             if (purpose==null || purpose.EnhancedKeyUsages.Count!=1 ||
