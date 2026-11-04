@@ -1,6 +1,7 @@
 // SOURCE-ONLY Contract B owner-signature candidate. No broker route imports this.
 // A signature and scoped manifest can never, by themselves, authorize execution.
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
@@ -28,6 +29,10 @@ internal static class Tier1BGrantCandidate {
     // This can be enrolled only by an independently reviewed host deployment.
     // Never read a fingerprint or signer cert from the request or environment.
     const string InstalledOwnerCertificateDerSha256 = "UNENROLLED";
+    // Self-assigned UUID OID under the ISO 2.25 arc. This is intentionally
+    // distinct from generic TLS/code-signing EKUs and scoped only to Tier1 B.
+    const string OwnerTier1BGrantPurposeOid =
+        "2.25.281124513629607016020108740092472226515";
     const string OfficialRevision = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a";
     const string OfficialShard1 = "26a93f066e1916adb13453dae5a0c707c0fbc71299ed98779571a907b8e74c61";
     const string OfficialShard2 = "cb544bd9bfae93dc59b0f22b292f5933573854a7f9b97835c67060d7d910e188";
@@ -130,7 +135,7 @@ internal static class Tier1BGrantCandidate {
         if (signature==null || ownerPublicKey==null) return false;
         try {
             int rsaBits=ownerPublicKey.KeySize;
-            if(rsaBits<2048 || rsaBits>4096 || rsaBits%8!=0
+            if(rsaBits<3072 || rsaBits>4096 || rsaBits%8!=0
                     || signature.Length!=rsaBits/8) return false;
             return ownerPublicKey.VerifyData(payload, signature,
                 HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -183,19 +188,36 @@ internal static class Tier1BGrantCandidate {
                 return Hold("OWNER_CERTIFICATE_OUT_OF_DATE");
             X509KeyUsageExtension usage=null;
             X509BasicConstraintsExtension constraints=null;
+            X509EnhancedKeyUsageExtension purpose=null;
+            var extensionOids=new HashSet<string>(StringComparer.Ordinal);
             foreach(X509Extension extension in cert.Extensions) {
+                if(extension.Oid==null || extension.Oid.Value==null ||
+                    !extensionOids.Add(extension.Oid.Value))
+                    return Hold("OWNER_CERTIFICATE_DUPLICATE_EXTENSION");
+                // Unknown critical extensions cannot be safely interpreted.
+                if(extension.Critical && extension.Oid.Value!="2.5.29.15" &&
+                   extension.Oid.Value!="2.5.29.19" &&
+                   extension.Oid.Value!="2.5.29.37")
+                    return Hold("OWNER_CERTIFICATE_UNKNOWN_CRITICAL_EXTENSION");
                 var u=extension as X509KeyUsageExtension;
                 if(u!=null) usage=u;
                 var c=extension as X509BasicConstraintsExtension;
                 if(c!=null) constraints=c;
+                var e=extension as X509EnhancedKeyUsageExtension;
+                if(e!=null) purpose=e;
             }
             if (usage==null ||
                 (usage.KeyUsages & X509KeyUsageFlags.DigitalSignature)==0)
                 return Hold("OWNER_CERTIFICATE_DIGITAL_SIGNATURE_REQUIRED");
             if (constraints==null || constraints.CertificateAuthority)
                 return Hold("OWNER_CERTIFICATE_MUST_NOT_BE_CA");
+            if (purpose==null || purpose.EnhancedKeyUsages.Count!=1 ||
+                purpose.EnhancedKeyUsages[0].Value!=OwnerTier1BGrantPurposeOid)
+                return Hold("OWNER_CERTIFICATE_PURPOSE_REQUIRED");
             using(RSA publicKey=cert.GetRSAPublicKey()) {
                 if(publicKey==null) return Hold("OWNER_CERTIFICATE_RSA_REQUIRED");
+                if(publicKey.KeySize<3072 || publicKey.KeySize>4096)
+                    return Hold("OWNER_CERTIFICATE_RSA_STRENGTH");
                 return VerifyForNativeTestOnly(payload,signature,publicKey,
                                               verifiedHost);
             }
@@ -204,6 +226,27 @@ internal static class Tier1BGrantCandidate {
         } catch(System.Security.SecurityException) {
             return Hold("OWNER_CERTIFICATE_ACCESS_DENIED");
         }
+    }
+
+    // Unlike a first-match lookup, this rejects ambiguous same-DER certificate
+    // contexts. The result is STILL an observation, never a launch grant.
+    internal static Tier1BCandidateObservation VerifyStoreSnapshotForNativeTestOnly(
+        X509Certificate2Collection certificates, string expectedDerSha256,
+        byte[] payload, byte[] signature, HostExpected verifiedHost) {
+        if (!Digest(expectedDerSha256))
+            return Hold("OWNER_CERTIFICATE_NOT_ENROLLED");
+        if (certificates==null) return Hold("OWNER_CERTIFICATE_STORE_UNAVAILABLE");
+        X509Certificate2 matched=null;
+        foreach(X509Certificate2 cert in certificates) {
+            if(cert==null) continue;
+            if(Sha(cert.RawData)!=expectedDerSha256) continue;
+            if(matched!=null)
+                return Hold("OWNER_CERTIFICATE_AMBIGUOUS_MACHINE_STORE");
+            matched=cert;
+        }
+        if(matched==null) return Hold("OWNER_CERTIFICATE_NOT_FOUND");
+        return VerifyPublicCertForNativeTestOnly(matched,expectedDerSha256,
+                                                 payload,signature,verifiedHost);
     }
 
     // Production-facing candidate additionally needs a *compiled and verified*
@@ -217,12 +260,9 @@ internal static class Tier1BGrantCandidate {
         using(var store=new X509Store(StoreName.My,StoreLocation.LocalMachine)) {
             try {
                 store.Open(OpenFlags.ReadOnly | OpenFlags.OpenExistingOnly);
-                foreach(X509Certificate2 cert in store.Certificates) {
-                    if(Sha(cert.RawData)!=InstalledOwnerCertificateDerSha256) continue;
-                    return VerifyPublicCertForNativeTestOnly(cert,
-                        InstalledOwnerCertificateDerSha256,payload,signature,
-                        verifiedHost);
-                }
+                return VerifyStoreSnapshotForNativeTestOnly(store.Certificates,
+                    InstalledOwnerCertificateDerSha256,payload,signature,
+                    verifiedHost);
             } catch (CryptographicException) { return Hold("HOST_CERTIFICATE_STORE_UNAVAILABLE"); }
               catch (System.Security.SecurityException) { return Hold("HOST_CERTIFICATE_STORE_UNAVAILABLE"); }
         }
