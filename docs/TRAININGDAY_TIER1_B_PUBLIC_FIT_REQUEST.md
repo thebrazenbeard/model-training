@@ -45,6 +45,17 @@ The candidate must be reviewed and installed/tested in Windows+WSL with forged,
 expired, replayed, wrong-host, wrong-model, OOM, timeout, PID-reuse and broker
 crash negative cases. Source-only tests cannot establish this host behavior.
 
+This source's `manifest_sha256` is the SHA-256 of canonical ASCII JSON for the
+four-file official **allowlist**, not the independently verified complete local
+snapshot. It is not a substitute for authenticating index, tokenizer config,
+other signed bindings, or current model file bytes. The proposed companion
+Tier1 grant validator uses `model_revision`, `vram_target_mib`,
+`protected_access=NONE`, `outputs=UNPROMOTED_ONLY`, and
+`wsl_cleanup=TARGETED_WSL_PIDTREE_REQUIRED`; the host must independently
+compute the expected allowlist digest and file/executable bindings before
+accepting an owner signature. Until that integration is implemented and tested,
+both source candidates remain unconnected HOLD contracts.
+
 Source-only checks:
 
 ```sh
