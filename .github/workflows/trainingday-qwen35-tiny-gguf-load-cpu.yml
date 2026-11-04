@@ -63,6 +63,8 @@ jobs:
             -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF \
             -DLLAMA_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
           cmake --build llama-cpp/build --target llama-cli --parallel 2
+      - name: Run independent numerical parity corruption controls
+        run: python -m unittest discover -s tests -p test_trainingday_qwen35_gguf_tensor_parity_cpu.py -v
       - name: Create 32-layer random hybrid LoRA and merged HF checkpoint
         shell: bash
         run: |
@@ -76,6 +78,14 @@ jobs:
             "$RUNNER_TEMP/qwen35tiny/merged" \
             --outfile "$RUNNER_TEMP/qwen35tiny/merged-f16.gguf" --outtype f16 --no-mtp
           test -s "$RUNNER_TEMP/qwen35tiny/merged-f16.gguf"
+      - name: Verify full selected HF tensors against actual GGUF numbers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m trainingday.qwen35_gguf_tensor_parity_cpu \
+            "$RUNNER_TEMP/qwen35tiny/merged" \
+            "$RUNNER_TEMP/qwen35tiny/merged-f16.gguf" \
+            "$GITHUB_WORKSPACE/llama-cpp/gguf-py"
       - name: Load converted GGUF in actual pinned llama.cpp CPU CLI
         shell: bash
         run: |
