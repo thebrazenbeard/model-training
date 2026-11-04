@@ -66,13 +66,18 @@ row payloads (including chat template, tokenizer and special tokens) would
 need an explicit adapter and verified data lineage; none has been built here.
 
 The `candidate_sequence_length=128` field is a planning candidate, **not**
-a certified context limit. A separate source-only R202 check using the pinned
+a certified runtime context limit. A source-only R202 check with the pinned
 official Qwen3.5-4B tokenizer found **757 of 1,536** simple
-`prompt + newline + answer` rows above 64 tokens; the longest was 91 and
-none exceeded 128 *without chat template/BOS/EOS overhead*. Thus seq64
-silently truncates many source examples, while seq128 does **not** prove the
-real template, activations, or VRAM fit. Physical launch qualification must
-recheck all examples after actual templating and reject any truncated labels;
+`prompt + newline + answer` rows above 64 tokens (max 91); none exceeded
+128 *without template overhead*. A subsequent corrected **official chat-
+template** tokenization measured min 44, median 77, p95 99, max 104 tokens;
+**1,024 of 1,536** examples exceed 64 tokens and **none** exceed 128.
+The earlier observation `len(BatchEncoding)=2` was a misuse of the API; the
+corrected counts use `len(input_ids)` with the actual pinned tokenizer. Thus
+seq64 would truncate most R202 examples, while the tested template fits
+128 token positions. This does **not** qualify actual activation memory,
+device support, throughput, or unrelated admitted curricula. Physical launch
+qualification must recheck all examples using its actual formatting and reject any truncated labels;
 the receipt's `truncated_training_rows=0` is only untrusted telemetry.
 
 ### Wall-clock cap versus measured cost
