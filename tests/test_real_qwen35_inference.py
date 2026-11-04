@@ -7,10 +7,12 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from trainingday.real_qwen35_inference import (
     BASE_ID, BASE_REVISION, OFFICIAL_SHARD_SHA256, SCHEMA,
-    InferenceHold, build_command, main, verify_manifest,
+    InferenceHold, build_command, main, probe, require_probe_resources,
+    verify_manifest,
 )
 
 
@@ -52,6 +54,30 @@ class RealQwenInferenceContractTests(unittest.TestCase):
         self.assertEqual(build_command(trained, port=18888)[-2:],
                          ["--lora", str(self.adapter)])
         self.assertIn("127.0.0.1", build_command(base, port=18888))
+        self.assertEqual(build_command(base, port=18888).count("--threads"), 1)
+        self.assertEqual(build_command(base, port=18888).count("--threads-batch"), 1)
+
+    def test_probe_refuses_without_owner_idle_ack_before_process_launch(self):
+        preflight = verify_manifest(self.manifest, "base")
+        with patch("trainingday.real_qwen35_inference.subprocess.Popen") as launch:
+            with self.assertRaisesRegex(InferenceHold, "owner confirmation"):
+                probe(preflight)
+            launch.assert_not_called()
+
+    def test_probe_refuses_low_available_ram_before_process_launch(self):
+        preflight = verify_manifest(self.manifest, "base")
+        with patch("trainingday.real_qwen35_inference.available_ram_bytes", return_value=2 * 1024**3):
+            with patch("trainingday.real_qwen35_inference.subprocess.Popen") as launch:
+                with self.assertRaisesRegex(InferenceHold, "insufficient available physical RAM"):
+                    probe(preflight, host_idle_acknowledged=True)
+                launch.assert_not_called()
+
+    def test_preflight_ram_floor_scales_with_actual_model_size(self):
+        preflight = verify_manifest(self.manifest, "base")
+        preflight["base_gguf_bytes"] = 9 * 1024**3
+        with patch("trainingday.real_qwen35_inference.available_ram_bytes", return_value=8 * 1024**3):
+            with self.assertRaisesRegex(InferenceHold, "insufficient available"):
+                require_probe_resources(preflight, host_idle_acknowledged=True)
 
     def test_edited_gguf_is_rejected(self):
         self.base.write_bytes(b"GGUF" + b"\x00" * 64)

@@ -9,8 +9,10 @@ Run `preflight` first. `probe` must be invoked separately for base and R16.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -109,6 +111,7 @@ def verify_manifest(manifest: dict, mode: str) -> dict:
         "mode": mode,
         "source": f"{BASE_ID}@{BASE_REVISION}",
         "base_gguf_sha256": base_sha,
+        "base_gguf_bytes": base.stat().st_size,
         "adapter_gguf_sha256": adapter_sha,
         "llama_server_sha256": server_sha,
         "paths": {"base": str(base), "adapter": str(adapter_path) if adapter_path else None,
@@ -140,14 +143,62 @@ def build_command(preflight: dict, *, port: int) -> list[str]:
     p = preflight["paths"]
     cmd = [p["server"], "--model", p["base"], "--host", "127.0.0.1",
            "--port", str(port), "--ctx-size", "512", "--parallel", "1",
-           "--n-gpu-layers", "0"]
+           "--threads", "2", "--threads-batch", "2", "--n-gpu-layers", "0"]
     if p["adapter"] is not None:
         cmd += ["--lora", p["adapter"]]
     return cmd
 
 
-def probe(preflight: dict, *, timeout: int = 150) -> dict:
+def available_ram_bytes() -> int:
+    """Read current OS available physical RAM without a dependency or swap fiction."""
+    if os.name == "nt":
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        status = MemoryStatus()
+        status.dwLength = ctypes.sizeof(MemoryStatus)
+        _require(bool(ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))),
+                 "Windows physical available RAM unavailable")
+        return int(status.ullAvailPhys)
+    if sys.platform.startswith("linux"):
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                parts = line.split()
+                _require(len(parts) == 3 and parts[2] == "kB" and parts[1].isdigit(),
+                         "Linux available RAM report malformed")
+                return int(parts[1]) * 1024
+    raise InferenceHold("available physical RAM cannot be established on this host")
+
+
+def require_probe_resources(preflight: dict, *, host_idle_acknowledged: bool) -> int:
+    """Refuse to compete with host work or model size before spawning a process.
+
+    The human idle assertion is not a host-owned lease or process custody proof.
+    """
+    _require(host_idle_acknowledged is True,
+             "explicit owner confirmation that host workloads are idle required")
+    model_bytes = preflight["base_gguf_bytes"]
+    _require(type(model_bytes) is int and model_bytes >= 5,
+             "model size missing from verified preflight")
+    minimum = max(5 * 1024**3, int(model_bytes * 1.3) + 1024**3)
+    available = available_ram_bytes()
+    _require(available >= minimum,
+             f"insufficient available physical RAM: {available} < {minimum}; swap not counted")
+    return available
+
+
+def probe(preflight: dict, *, host_idle_acknowledged: bool = False,
+          timeout: int = 150) -> dict:
     """One bounded fresh-process CPU conversation; never touch existing services."""
+    available_before = require_probe_resources(
+        preflight, host_idle_acknowledged=host_idle_acknowledged)
     port = _free_port()
     command = build_command(preflight, port=port)
     # Keep noisy loader logs private to this owned temporary process.
@@ -186,6 +237,8 @@ def probe(preflight: dict, *, timeout: int = 150) -> dict:
                     "runtime_started": True,
                     "runtime": "llama.cpp /v1/chat/completions, fresh process, CPU",
                     "readiness_seconds": round(ready_sec, 3),
+                    "prelaunch_available_ram_bytes": available_before,
+                    "host_idle_status": "OPERATOR_ACKNOWLEDGED_NOT_INDEPENDENTLY_VERIFIED",
                     "elapsed_seconds": round(elapsed, 3),
                     "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
                     "generated_text": message["content"],
@@ -209,13 +262,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("action", choices=["preflight", "probe"])
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--mode", choices=["base", "trained"], required=True)
+    parser.add_argument("--acknowledge-host-idle", action="store_true",
+                        help="required for probe; operator confirms the host is not busy")
     args = parser.parse_args(argv)
     try:
         _require(args.manifest.is_file() and not args.manifest.is_symlink(),
                  "manifest path unavailable")
         manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
         bound = verify_manifest(manifest, args.mode)
-        report = probe(bound) if args.action == "probe" else bound
+        report = (probe(bound, host_idle_acknowledged=args.acknowledge_host_idle)
+                  if args.action == "probe" else bound)
     except (InferenceHold, OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"REAL QWEN INFERENCE HOLD: {exc}", file=sys.stderr)
         return 1

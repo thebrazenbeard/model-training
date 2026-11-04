@@ -62,17 +62,21 @@ on Linux. For each mode run `preflight` before `probe`:
 ```bash
 python -m trainingday.real_qwen35_inference preflight --manifest PRIVATE.json --mode base
 python -m trainingday.real_qwen35_inference preflight --manifest PRIVATE.json --mode trained
-python -m trainingday.real_qwen35_inference probe --manifest PRIVATE.json --mode base
-python -m trainingday.real_qwen35_inference probe --manifest PRIVATE.json --mode trained
+python -m trainingday.real_qwen35_inference probe --manifest PRIVATE.json --mode base --acknowledge-host-idle
+python -m trainingday.real_qwen35_inference probe --manifest PRIVATE.json --mode trained --acknowledge-host-idle
 ```
 
 No `probe` call occurs during `preflight`; no model server is started. The
 explicit `probe` command verifies files, starts **one owned temporary process**
-on a random loopback port, uses `--n-gpu-layers 0`, runs a fixed public prompt,
+on a random loopback port, uses `--n-gpu-layers 0` and two CPU threads, runs a fixed public prompt,
 records API output/timing and terminates only its child. On a host with
 insufficient free RAM or an active competing workload, **do not invoke** it.
-All commands presume sufficient CPU memory and a validated conversion; those
-preconditions must be checked independently.
+The program requires both explicit host-idle acknowledgment and a live OS
+available-*physical*-RAM check of at least 5 GiB or 1.3×GGUF bytes + 1 GiB,
+whichever is greater; it does not count swap as free RAM. Those guards are
+conservative heuristics, **not a physical host-owned resource lease** and not
+proof that no other processes will contend. The operator must actually check
+and preserve other users' workloads.
 
 ### Evidence boundary
 
