@@ -69,6 +69,25 @@ def _assigned_answers(
     return answers, changed
 
 
+def _exposure_domain(assigned: list[tuple[int, int]], steps: int
+                     ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Partition the fixed schedule into *ever-exposed* and never-exposed pairs.
+
+    This is a descriptive optimizer-exposure partition, NOT a protected DEV
+    split.  Repeated pair occurrences remain exposed after first consumption.
+    """
+    if not isinstance(steps, int) or steps not in CHECKPOINT_STEPS:
+        raise AssertionError("unsupported checkpoint")
+    if len(assigned) != CHECKPOINT_STEPS[-1] * BATCH_SIZE:
+        raise AssertionError("invalid fixed learning schedule")
+    consumed = set(assigned[:steps * BATCH_SIZE])
+    scheduled = set(assigned)
+    exposed, unexposed = sorted(consumed), sorted(scheduled - consumed)
+    if set(exposed) & set(unexposed) or len(exposed) + len(unexposed) != len(scheduled):
+        raise AssertionError("optimizer exposure partition invalid")
+    return exposed, unexposed
+
+
 def _arm(torch, seed: int, train_pairs: list[tuple[int, int]],
          withheld_pairs: list[tuple[int, int]], *, shuffled: bool) -> dict:
     model = baseline._model(torch, seed)
@@ -91,11 +110,18 @@ def _arm(torch, seed: int, train_pairs: list[tuple[int, int]],
     points: list[dict] = []
     for step in range(CHECKPOINT_STEPS[-1] + 1):
         if step in CHECKPOINT_STEPS:
+            exposed, unexposed = _exposure_domain(assigned, step)
             points.append({
                 "steps": step,
                 "scheduled_train_domain_true_answer_nll": baseline._answer_nll(
                     model, scheduled_train_domain, torch),
                 "heldout_answer_nll": baseline._answer_nll(model, withheld_pairs, torch),
+                "exposed_train_pair_count": len(exposed),
+                "unexposed_train_pair_count": len(unexposed),
+                "exposed_train_domain_true_answer_nll": (
+                    baseline._answer_nll(model, exposed, torch) if exposed else None),
+                "unexposed_train_domain_true_answer_nll": (
+                    baseline._answer_nll(model, unexposed, torch) if unexposed else None),
             })
         if step == CHECKPOINT_STEPS[-1]:
             break
@@ -146,12 +172,23 @@ def run() -> dict:
             if a["steps"] == 0 and any(abs(a[key] - b[key]) > 1e-6 for key in
                                        ("scheduled_train_domain_true_answer_nll", "heldout_answer_nll")):
                 raise AssertionError("paired arms differ before training")
-            paired.append({"steps": a["steps"],
-                           "heldout_advantage_nats": b["heldout_answer_nll"] - a["heldout_answer_nll"],
-                           "scheduled_train_domain_advantage_nats": (
-                               b["scheduled_train_domain_true_answer_nll"] -
-                               a["scheduled_train_domain_true_answer_nll"]),
-                           })
+            row = {"steps": a["steps"],
+                   "heldout_advantage_nats": b["heldout_answer_nll"] - a["heldout_answer_nll"],
+                   "scheduled_train_domain_advantage_nats": (
+                       b["scheduled_train_domain_true_answer_nll"] -
+                       a["scheduled_train_domain_true_answer_nll"])}
+            for domain in ("exposed", "unexposed"):
+                if a[f"{domain}_train_pair_count"] != b[f"{domain}_train_pair_count"]:
+                    raise AssertionError("paired arms differ in exposure partition")
+                k = f"{domain}_train_domain_true_answer_nll"
+                if (a[k] is None) != (b[k] is None):
+                    raise AssertionError("paired arms differ in exposure metric availability")
+                row[f"{domain}_train_pair_count"] = a[f"{domain}_train_pair_count"]
+                row[f"{domain}_train_domain_advantage_nats"] = (
+                    b[k] - a[k] if a[k] is not None else None)
+                if a["steps"] == 0 and a[k] is not None and abs(a[k] - b[k]) > 1e-6:
+                    raise AssertionError("paired exposure arms differ before training")
+            paired.append(row)
         records.append({
             "seed": seed, "train_count": len(train_pairs), "heldout_count": len(heldout),
             "train_digest": hashlib.sha256(json.dumps(train_pairs).encode()).hexdigest(),
@@ -171,7 +208,11 @@ def run() -> dict:
             "interpretation": (
                 "Both signs retained; no best-step/seed selection. The fixed "
                 "scheduled training domain includes future optimizer pairs at "
-                "early checkpoints; it is not a seen-so-far memorization measure."
+                "early checkpoints; it is not a seen-so-far memorization measure. "
+                "Separate exposed/unexposed training-domain NLL partitions the "
+                "schedule by actual optimizer exposure at each checkpoint. "
+                "Unexposed scheduled examples are not independently heldout, "
+                "and both empty-domain NLLs are null rather than zero."
             )}
 
 
