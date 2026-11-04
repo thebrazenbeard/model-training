@@ -32,8 +32,23 @@ class TinyQwenLearningCurveTests(unittest.TestCase):
             self.assertEqual(changed_truth, 0)
             self.assertGreaterEqual(changed, len(assigned) // 2)
             self.assertEqual(sorted(truth), sorted(shuffled))
+            stable = {}
+            for pair, answer in zip(assigned, shuffled):
+                if pair in stable:
+                    self.assertEqual(stable[pair], answer,
+                                     "repeated train pair received inconsistent control labels")
+                stable[pair] = answer
             self.assertEqual(shuffled,
                              curve._assigned_answers(seed, assigned, shuffled=True)[0])
+
+    def test_scheduled_domain_includes_future_optimizer_pairs_at_four_steps(self):
+        for seed in curve.SEEDS:
+            train, _ = baseline._pairs(seed)
+            assigned = curve._assigned_pairs(seed, train)
+            # The fixed full-curve domain is not the 16 examples consumed by
+            # the 4-step checkpoint. Do not label its NLL as already-seen.
+            self.assertGreater(len(set(assigned)), curve.CHECKPOINT_STEPS[1] * curve.BATCH_SIZE)
+            self.assertEqual(len(set(assigned)), len(train))
 
     def test_invalid_training_source_fails_closed(self):
         with self.assertRaises(AssertionError):
