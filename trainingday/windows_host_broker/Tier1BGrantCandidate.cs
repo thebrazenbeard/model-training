@@ -159,6 +159,53 @@ internal static class Tier1BGrantCandidate {
             "SIGNATURE_AND_SCOPE_MATCHED_SOURCE_ONLY_NO_LAUNCH", true, abortBy);
     }
 
+    // This shared test seam allows an ephemeral certificate fixture to prove
+    // that the real machine-store path rejects certificates whose private key
+    // leaked into LocalMachine\My. The caller-provided digest is never accepted
+    // as host enrollment; this function, too, ALWAYS returns HOLD.
+    internal static Tier1BCandidateObservation VerifyPublicCertForNativeTestOnly(
+        X509Certificate2 cert, string expectedDerSha256, byte[] payload,
+        byte[] signature, HostExpected verifiedHost) {
+        if (!Digest(expectedDerSha256)) return Hold("OWNER_CERTIFICATE_NOT_ENROLLED");
+        if (cert==null) return Hold("OWNER_CERTIFICATE_NOT_FOUND");
+        try {
+            if (Sha(cert.RawData)!=expectedDerSha256)
+                return Hold("OWNER_CERTIFICATE_DER_MISMATCH");
+            // No machine-local copy of the owner signing secret is permitted.
+            // The broker's LocalMachine\My store contains public DER only;
+            // the non-exportable signing key stays in an independent owner
+            // user/hardware security boundary.
+            if (cert.HasPrivateKey)
+                return Hold("OWNER_PRIVATE_KEY_IN_MACHINE_STORE");
+            DateTime now=DateTime.UtcNow;
+            if (now<cert.NotBefore.ToUniversalTime() ||
+                now>=cert.NotAfter.ToUniversalTime())
+                return Hold("OWNER_CERTIFICATE_OUT_OF_DATE");
+            X509KeyUsageExtension usage=null;
+            X509BasicConstraintsExtension constraints=null;
+            foreach(X509Extension extension in cert.Extensions) {
+                var u=extension as X509KeyUsageExtension;
+                if(u!=null) usage=u;
+                var c=extension as X509BasicConstraintsExtension;
+                if(c!=null) constraints=c;
+            }
+            if (usage==null ||
+                (usage.KeyUsages & X509KeyUsageFlags.DigitalSignature)==0)
+                return Hold("OWNER_CERTIFICATE_DIGITAL_SIGNATURE_REQUIRED");
+            if (constraints==null || constraints.CertificateAuthority)
+                return Hold("OWNER_CERTIFICATE_MUST_NOT_BE_CA");
+            using(RSA publicKey=cert.GetRSAPublicKey()) {
+                if(publicKey==null) return Hold("OWNER_CERTIFICATE_RSA_REQUIRED");
+                return VerifyForNativeTestOnly(payload,signature,publicKey,
+                                              verifiedHost);
+            }
+        } catch(CryptographicException) {
+            return Hold("OWNER_CERTIFICATE_CRYPTOGRAPHIC_ERROR");
+        } catch(System.Security.SecurityException) {
+            return Hold("OWNER_CERTIFICATE_ACCESS_DENIED");
+        }
+    }
+
     // Production-facing candidate additionally needs a *compiled and verified*
     // owner public-certificate DER SHA256 pinned at installation. The current
     // source and installed service have NO enrolled anchor. No provided key,
@@ -172,15 +219,9 @@ internal static class Tier1BGrantCandidate {
                 store.Open(OpenFlags.ReadOnly | OpenFlags.OpenExistingOnly);
                 foreach(X509Certificate2 cert in store.Certificates) {
                     if(Sha(cert.RawData)!=InstalledOwnerCertificateDerSha256) continue;
-                    DateTime now=DateTime.UtcNow;
-                    if(now<cert.NotBefore.ToUniversalTime() ||
-                       now>cert.NotAfter.ToUniversalTime())
-                        return Hold("OWNER_CERTIFICATE_OUT_OF_DATE");
-                    using(RSA publicKey=cert.GetRSAPublicKey()) {
-                        if(publicKey==null) return Hold("OWNER_CERTIFICATE_RSA_REQUIRED");
-                        return VerifyForNativeTestOnly(payload,signature,publicKey,
-                                                      verifiedHost);
-                    }
+                    return VerifyPublicCertForNativeTestOnly(cert,
+                        InstalledOwnerCertificateDerSha256,payload,signature,
+                        verifiedHost);
                 }
             } catch (CryptographicException) { return Hold("HOST_CERTIFICATE_STORE_UNAVAILABLE"); }
               catch (System.Security.SecurityException) { return Hold("HOST_CERTIFICATE_STORE_UNAVAILABLE"); }
