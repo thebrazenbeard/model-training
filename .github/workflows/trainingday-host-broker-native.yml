@@ -66,8 +66,8 @@ jobs:
           & $csc /nologo /target:exe ('/out:'+$holdExe) /r:System.Web.Extensions.dll $hold (Join-Path $PWD 'tests/native_broker_hold_response.cs')
           if ($LASTEXITCODE -ne 0) { throw 'Deny-only response tests compile failed' }
           $holdOutput = & $holdExe
-          if ($LASTEXITCODE -ne 0 -or $holdOutput -notmatch 'NATIVE_BROKER_DENY_ONLY_PASS') { throw 'Deny-only response tests failed' }
           Write-Output $holdOutput
+          if ($LASTEXITCODE -ne 0 -or ($holdOutput -join "`n") -notmatch 'NATIVE_BROKER_DENY_ONLY_PASS') { throw 'Deny-only response tests failed' }
           $readerExe = Join-Path $env:RUNNER_TEMP 'BrokerBoundedRequestTests.exe'
           & $csc /nologo /target:exe ('/out:'+$readerExe) $reader (Join-Path $PWD 'tests/native_broker_request_contract.cs')
           if ($LASTEXITCODE -ne 0) { throw 'Request tests compile failed' }
