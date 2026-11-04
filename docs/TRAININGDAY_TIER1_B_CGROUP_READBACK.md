@@ -15,6 +15,8 @@ scope must use a dedicated `trainingday-...` leaf. The observer rejects:
 - a different observed unified cgroup-v2 membership;
 - broad, malformed or traversed scope paths;
 - symlink substitution within the proposed scope path;
+- symlink substitution of `cgroup.events` or `cgroup.procs` themselves,
+  using descriptor-relative `O_NOFOLLOW` opens rather than racy `is_symlink`;
 - missing or contradictory `cgroup.events`/`cgroup.procs` readback.
 
 `cgroup.procs` contains direct processes only. `cgroup.events` `populated`
@@ -29,6 +31,12 @@ Unit tests inject fake `/proc` and cgroup roots. Those results are labelled
 `CALLER_SUPPLIED_TEST_PATHS`; callers cannot promote them to kernel evidence.
 Even the `DEFAULT_LINUX_PATHS` label does not authenticate the caller or
 prove the mount namespace is the owner-controlled one.
+The observer reads `/proc` identity before and after the scope inspection to
+catch a PID that exits and is reused mid-observation. That still is not an
+atomic snapshot: the caller does **not** retain a kernel pidfd, and processes
+can move, die or be reused between separate reads. Every receipt explicitly
+sets `readback_atomic=false`; a future real broker must retain suitable
+kernel handles and reconcile scope changes under host-owned custody.
 
 ## Remaining host-native work (not accomplished here)
 
