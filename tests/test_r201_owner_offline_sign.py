@@ -204,6 +204,48 @@ class OwnerOfflineSignTest(unittest.TestCase):
             self.assertEqual(opened, 2)
             self.assertFalse(list(place.glob("signed-request.*")))
 
+    def test_interrupt_does_not_remove_replacement_from_other_writer(self):
+        """Rollback must not unlink a path that no longer names our file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            place = Path(tmp)
+            selected = place / "dedicated-owner.pem"
+            selected.write_bytes(self.key.private_bytes(
+                Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+            prefix = place / "signed-request"
+            argv = [
+                "--existing-key-pem", str(selected),
+                "--owner-identity", "synthetic-owner",
+                "--private-dev-commitment-sha256", self.dev,
+                "--protected-exclusion-receipt-sha256", self.exclusion,
+                "--owner-key-epoch", "4",
+                "--not-before-utc", "2000-01-01T00:00:00Z",
+                "--expires-utc", "2099-12-31T00:00:00Z",
+                "--decision", "WITHHOLD",
+                "--output-prefix", str(prefix),
+            ]
+            original = place / "signed-request.claim.json"
+            moved = place / "moved-original-claim.json"
+            replacement = b"another writer's retained artifact"
+            real_open = os.open
+            opened = 0
+
+            def replace_then_interrupt(path, flags, mode=0o777):
+                nonlocal opened
+                opened += 1
+                if opened == 2:
+                    original.rename(moved)
+                    original.write_bytes(replacement)
+                    raise KeyboardInterrupt("synthetic cross-writer interrupt")
+                return real_open(path, flags, mode)
+
+            with patch("trainingday.r201_owner_offline_sign.os.open",
+                       side_effect=replace_then_interrupt):
+                with self.assertRaisesRegex(KeyboardInterrupt, "cross-writer interrupt"):
+                    main(argv)
+            self.assertEqual(opened, 2)
+            self.assertEqual(original.read_bytes(), replacement)
+            self.assertTrue(moved.is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
