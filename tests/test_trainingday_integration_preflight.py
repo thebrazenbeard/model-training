@@ -48,6 +48,29 @@ class IntegrationPreflightTests(unittest.TestCase):
         self.assertEqual(value["steps"][5]["status"], "HOLD")
         self.assertFalse(value["ready"])
 
+    def test_malformed_metadata_digest_enrollment_stays_hold(self):
+        required = integration_preflight.METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS
+        valid = tuple((name, "a" * 64) for name in required)
+        malformed = (
+            tuple((name, "not-a-sha") for name in required),
+            tuple((name, "A" * 64) for name in required),
+            tuple((name, "a" * 63 + "g") for name in required),
+            tuple((name, 123) for name in required),
+            valid[:-1] + (valid[0],),
+            valid[:-1] + (("../tokenizer.json", "a" * 64),),
+            valid[:-1] + ((required[-1], "a" * 64, "extra"),),
+            list(valid),
+        )
+        for injected in malformed:
+            with self.subTest(injected=injected):
+                with patch.object(integration_preflight,
+                                  "TRUSTED_OFFICIAL_METADATA_PIN_ITEMS", injected):
+                    value = integration_preflight.report()
+                self.assertFalse(value["source_metadata_pins_enrolled"])
+                self.assertEqual(value["steps"][1]["status"], "HOLD")
+                self.assertFalse(value["ready"])
+                self.assertFalse(value["physical_launch_attempted"])
+
     def test_fake_positive_launcher_fails_closed(self):
         with patch.object(integration_preflight, "require_physical_launch_authority",
                           return_value=None):

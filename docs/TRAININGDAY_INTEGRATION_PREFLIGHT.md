@@ -28,6 +28,13 @@ The upstream official checkpoint is pinned to `Qwen/Qwen3.5-4B` at
 `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`. This is distinct from
 the repository's separate public Aggressive/uncensored checkpoint manifest.
 
+The JSON field `source_metadata_pins_enrolled` is **syntactic enrollment only**:
+all seven required metadata names must occur exactly once with lowercase,
+64-character SHA-256 hex strings, matching the source admission gate's shape
+check. A missing or malformed pin leaves the metadata-byte stage at `HOLD`;
+even a well-formed source tuple moves that stage only to `UNKNOWN`. Neither
+case attests the hashes as independently trusted or validates local bytes.
+
 ## A concrete integration criterion
 
 The release remains **HOLD** until independently established evidence can be

@@ -27,6 +27,7 @@ from trainingday.physical_launch_authority import (
 from trainingday.pinned_base import (
     BASE_ID,
     BASE_REVISION,
+    HEX64,
     TRUSTED_OFFICIAL_METADATA_PIN_ITEMS,
 )
 
@@ -51,6 +52,28 @@ def _step(name: str, status: str, evidence: str, *dependencies: str) -> dict:
     }
 
 
+def _source_metadata_pin_shape_enrolled(pins: object) -> bool:
+    """Mirror the production gate's exact name/HEX64 validation, offline.
+
+    A syntactically enrolled source tuple remains unverified and is NEVER a
+    trusted signature, on-disk byte check, or physical launch admission.
+    """
+    required = METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS
+    if (type(pins) is not tuple or len(pins) != len(required)
+            or not required or len(set(required)) != len(required)):
+        return False
+    seen: set[str] = set()
+    for entry in pins:
+        if type(entry) is not tuple or len(entry) != 2:
+            return False
+        name, digest = entry
+        if (type(name) is not str or name not in required or name in seen
+                or type(digest) is not str or HEX64.fullmatch(digest) is None):
+            return False
+        seen.add(name)
+    return seen == set(required)
+
+
 def report() -> dict:
     """Inspect current in-process *source* guarantees only.
 
@@ -61,13 +84,8 @@ def report() -> dict:
     validate_official_source_record(expected_source_record())
     if BASE_ID != OFFICIAL_ID or BASE_REVISION != OFFICIAL_REVISION:
         raise SourceIdentityMismatch("official source and byte verifier identity differ")
-    required = set(METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS)
-    enrolled = dict(TRUSTED_OFFICIAL_METADATA_PIN_ITEMS)
-    metadata_complete = (
-        len(enrolled) == len(TRUSTED_OFFICIAL_METADATA_PIN_ITEMS)
-        and set(enrolled) == required
-        and len(required) > 0
-    )
+    metadata_complete = _source_metadata_pin_shape_enrolled(
+        TRUSTED_OFFICIAL_METADATA_PIN_ITEMS)
 
     try:
         require_physical_launch_authority(operation="integration source preflight")
