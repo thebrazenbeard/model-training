@@ -22,6 +22,11 @@ from urllib.request import Request, urlopen
 
 PROMPT_IDS = (5, 6, 7, 8, 9)
 SAMPLES = 12
+# Top-12 alone admits a server that silently drops the next ranked tokens.
+# Bound the real CPU response to 64 (not the ~250k-token full vocabulary).
+# No claim is made about the remaining server probability tail.
+WITNESS_TOPK = 64
+MAX_HF_MASS_DELTA = 5e-4
 # F16 GGUF from F32 HF can move close logits. These bounds are deliberately
 # loose for an early smoke, but reject substantial cross-runtime divergence.
 MAX_TOKEN_LOGPROB_DELTA = 0.25
@@ -39,21 +44,30 @@ def assert_sampled_logprobs(
     probabilities reconstructed from the same HF logits. A corruption of one
     returned token or probability must fail.
     """
-    if not isinstance(reported, list) or len(reported) < SAMPLES:
+    if not isinstance(reported, list) or len(reported) < WITNESS_TOPK:
         raise AssertionError("llama.cpp response missing required top_logprobs")
     if len(hf_logprobs) < 128:
         raise AssertionError("unexpected tiny HF vocabulary")
     if any(not math.isfinite(float(v)) for v in hf_logprobs):
         raise AssertionError("nonfinite HF log probability")
+    # HF's full logits are available locally. A deleted/damaged HF tail must
+    # not pass merely because its highest-ranked 12 values are unchanged.
+    hf_mass = sum(math.exp(float(v)) for v in hf_logprobs)
+    if abs(hf_mass - 1.0) > MAX_HF_MASS_DELTA:
+        raise AssertionError(f"HF full-vocabulary probability mass invalid: {hf_mass}")
 
-    # A reported set with correct probabilities on the wrong 12 token IDs
-    # is not top-k output parity. Check membership AND rank independently.
-    hf_top_ids = sorted(range(len(hf_logprobs)),
-                        key=lambda i: (-float(hf_logprobs[i]), i))[:SAMPLES]
+    # Exact ordering is stable for the original top 12, but F16 rounding may
+    # shuffle near-tied ranks 13..64. Compare their *token-specific numbers*,
+    # and require a bounded HF rank window without claiming exact top64 IDs.
+    hf_ranked_ids = sorted(range(len(hf_logprobs)),
+                           key=lambda i: (-float(hf_logprobs[i]), i))
+    hf_top_ids = hf_ranked_ids[:SAMPLES]
+    tail_rank_window = min(len(hf_logprobs), WITNESS_TOPK * 8)
+    plausible_tail_ids = set(hf_ranked_ids[:tail_rank_window])
     seen: set[int] = set()
     reported_ids: list[int] = []
     deltas: list[float] = []
-    for entry in reported[:SAMPLES]:
+    for entry in reported[:WITNESS_TOPK]:
         if not isinstance(entry, dict):
             raise AssertionError("invalid llama.cpp top_logprobs item")
         token_id = entry.get("id")
@@ -70,9 +84,11 @@ def assert_sampled_logprobs(
             raise AssertionError("nonfinite HF log probability")
         deltas.append(abs(float(observed) - expected))
 
-    if reported_ids != hf_top_ids:
+    if reported_ids[:SAMPLES] != hf_top_ids:
         raise AssertionError("llama.cpp reported top-k token ID rank mismatch "
                              f"reported={reported_ids} hf={hf_top_ids}")
+    if any(token_id not in plausible_tail_ids for token_id in reported_ids[SAMPLES:]):
+        raise AssertionError("llama.cpp tail token outside bounded HF rank window")
     if (not isinstance(generated_ids, list) or len(generated_ids) != 1 or
             type(generated_ids[0]) is not int):
         raise AssertionError("llama.cpp missing a single generated token ID")
@@ -86,9 +102,17 @@ def assert_sampled_logprobs(
             "HF↔GGUF next-token logprob divergence: "
             f"max={maximum:.6f} mean={average:.6f} n={len(deltas)}"
         )
+    hf_top_mass = sum(math.exp(float(hf_logprobs[i])) for i in reported_ids)
     return {"compared_tokens": len(deltas), "max_abs_logprob_delta": maximum,
             "mean_abs_logprob_delta": average,
-            "hf_top_token_ids": hf_top_ids, "generated_token_id": generated_ids[0]}
+            "hf_top_token_ids": hf_top_ids, "generated_token_id": generated_ids[0],
+            "exact_rank_parity_tokens": SAMPLES,
+            "additional_token_probability_checks": WITNESS_TOPK - SAMPLES,
+            "extended_tail_allowed_hf_rank_window": tail_rank_window,
+            "hf_full_vocabulary_probability_mass": hf_mass,
+            "hf_unobserved_tail_probability_mass": hf_mass - hf_top_mass,
+            "unobserved_server_tail_tokens": len(hf_logprobs) - len(deltas),
+            "full_vocabulary_server_probability_parity": "NOT_TESTED"}
 
 
 def _request_json(url: str, body: dict | None = None, *, timeout: float = 10) -> dict:
@@ -161,7 +185,7 @@ def llama_logprobs(gguf: Path, server_bin: Path) -> tuple[list[dict], dict]:
             "prompt": list(PROMPT_IDS), "n_predict": 1,
             "temperature": -1, "top_k": 0, "top_p": 1,
             "min_p": 0, "repeat_penalty": 1,
-            "cache_prompt": False, "n_probs": SAMPLES,
+            "cache_prompt": False, "n_probs": WITNESS_TOPK,
             "return_tokens": True, "stream": False,
         }, timeout=100)
         top = extract_top_logprobs(response)
@@ -216,8 +240,10 @@ def verify(merged_dir: Path, gguf: Path, server_bin: Path) -> dict:
     metrics = assert_sampled_logprobs(hf, top, server_receipt["generated_ids"])
     return {
         "schema": "TRAININGDAY_QWEN35_SYNTHETIC_GGUF_LOGPROB_PARITY_V1",
-        "scope": "random tiny 32-layer Qwen3.5 HF versus pinned llama.cpp GGUF CPU next-token top-k",
+        "scope": "random tiny 32-layer Qwen3.5 HF versus pinned llama.cpp GGUF CPU next-token top-64 only",
         "prompt_ids": list(PROMPT_IDS),
+        "requested_server_topk": WITNESS_TOPK,
+        "hf_vocabulary_size": len(hf),
         "limits_nats": {"max": MAX_TOKEN_LOGPROB_DELTA,
                         "mean": MEAN_TOKEN_LOGPROB_DELTA},
         **metrics, **server_receipt,

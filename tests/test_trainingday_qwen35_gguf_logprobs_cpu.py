@@ -5,13 +5,13 @@ import unittest
 import numpy as np
 
 from trainingday.qwen35_gguf_logprobs_cpu import (
-    SAMPLES, assert_sampled_logprobs, extract_top_logprobs,
+    SAMPLES, WITNESS_TOPK, assert_sampled_logprobs, extract_top_logprobs,
 )
 
 
 def fixtures():
     hf = np.log(np.ones(256, dtype=np.float64) / 256)
-    top = [{"id": k, "logprob": float(hf[k])} for k in range(SAMPLES)]
+    top = [{"id": k, "logprob": float(hf[k])} for k in range(WITNESS_TOPK)]
     return hf, top, [0]
 
 
@@ -19,8 +19,27 @@ class LogprobTests(unittest.TestCase):
     def test_exact_logprob_agrees(self):
         hf, top, generated = fixtures()
         receipt = assert_sampled_logprobs(hf, top, generated)
-        self.assertEqual(receipt["compared_tokens"], SAMPLES)
+        self.assertEqual(receipt["compared_tokens"], WITNESS_TOPK)
         self.assertEqual(receipt["max_abs_logprob_delta"], 0)
+        self.assertEqual(receipt["unobserved_server_tail_tokens"], 256 - WITNESS_TOPK)
+        self.assertEqual(receipt["full_vocabulary_server_probability_parity"], "NOT_TESTED")
+
+    def test_tail_after_old_top12_cannot_be_deleted(self):
+        hf, top, generated = fixtures()
+        with self.assertRaisesRegex(AssertionError, "missing required"):
+            assert_sampled_logprobs(hf, top[:SAMPLES], generated)
+
+    def test_reported_rank40_tail_corruption_rejected(self):
+        hf, top, generated = fixtures()
+        top[SAMPLES + 28]["logprob"] += 0.5
+        with self.assertRaisesRegex(AssertionError, "divergence"):
+            assert_sampled_logprobs(hf, top, generated)
+
+    def test_hf_full_vocabulary_tail_mass_deletion_rejected(self):
+        hf, top, generated = fixtures()
+        hf[100:] -= 100.0  # Top 64 unchanged, full-vocab normalization broken.
+        with self.assertRaisesRegex(AssertionError, "full-vocabulary probability mass"):
+            assert_sampled_logprobs(hf, top, generated)
 
     def test_reported_probability_corruption_rejected(self):
         hf, top, generated = fixtures()
@@ -57,14 +76,14 @@ class LogprobTests(unittest.TestCase):
         logits = np.array([10.0] + [0.0] * 255)
         hf = logits - np.log(np.exp(logits - logits.max()).sum()) - logits.max()
         reported = [{"id": i, "logprob": float(hf[i])}
-                    for i in range(100, 100 + SAMPLES)]
+                    for i in range(100, 100 + WITNESS_TOPK)]
         with self.assertRaisesRegex(AssertionError, "top-k token ID rank"):
             assert_sampled_logprobs(hf, reported, [0])
 
     def test_wrong_topk_rank_rejected(self):
         logits = np.array(list(range(256, 0, -1)), dtype=np.float64)
         hf = logits - np.log(np.exp(logits - logits.max()).sum()) - logits.max()
-        reported = [{"id": i, "logprob": float(hf[i])} for i in range(SAMPLES)]
+        reported = [{"id": i, "logprob": float(hf[i])} for i in range(WITNESS_TOPK)]
         reported[0], reported[1] = reported[1], reported[0]
         with self.assertRaisesRegex(AssertionError, "top-k token ID rank"):
             assert_sampled_logprobs(hf, reported, [0])

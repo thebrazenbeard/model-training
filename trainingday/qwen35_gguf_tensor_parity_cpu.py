@@ -27,6 +27,22 @@ TENSOR_MAP = (
 )
 
 
+def selected_tensor_coverage_manifest(hf_total: int, gguf_total: int) -> dict:
+    """Make the six inspected tensors visibly non-exhaustive in every receipt."""
+    checked = len(TENSOR_MAP)
+    if hf_total <= checked or gguf_total <= checked:
+        raise AssertionError("expected larger synthetic HF and GGUF tensor inventories")
+    return {
+        "scope": "SIX_SELECTED_TENSOR_PAIRS_ONLY",
+        "checked_pair_count": checked,
+        "hf_checkpoint_tensor_count": hf_total,
+        "gguf_tensor_count": gguf_total,
+        "unverified_hf_tensor_count": hf_total - checked,
+        "unverified_gguf_tensor_count": gguf_total - checked,
+        "full_tensor_conversion_parity": "NOT_TESTED",
+    }
+
+
 def transform_hf_values(source, operation: str):
     """Independent fixture-specific representation math, before F16/F32 cast."""
     import numpy as np
@@ -80,8 +96,10 @@ def verify(merged_dir: Path, gguf_path: Path, gguf_python: Path) -> dict:
     if not shards:
         raise AssertionError("merged HF safetensors checkpoint missing")
     hf = {}
+    all_hf_keys: set[str] = set()
     for shard in shards:
         with safe_open(str(shard), framework="np") as source:
+            all_hf_keys.update(source.keys())
             for key in expected_keys.intersection(source.keys()):
                 if key in hf:
                     raise AssertionError(f"duplicate HF checkpoint tensor: {key}")
@@ -109,6 +127,7 @@ def verify(merged_dir: Path, gguf_path: Path, gguf_python: Path) -> dict:
         "assertion": "exact full tensor values after documented representation and F16/F32 casts",
         "matched": len(passed),
         "tensors": passed,
+        "coverage_manifest": selected_tensor_coverage_manifest(len(all_hf_keys), len(gguf)),
         "official_pretrained_weights_exercised": False,
         "hf_gguf_inference_logit_parity": "NOT_TESTED",
         "koboldcpp_compatibility": "UNKNOWN",

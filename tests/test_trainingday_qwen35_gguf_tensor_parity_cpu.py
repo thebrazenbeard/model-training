@@ -5,11 +5,22 @@ import unittest
 import numpy as np
 
 from trainingday.qwen35_gguf_tensor_parity_cpu import (
-    assert_exact_post_cast_tensor, transform_hf_values,
+    assert_exact_post_cast_tensor, selected_tensor_coverage_manifest,
+    transform_hf_values,
 )
 
 
 class TensorParityTests(unittest.TestCase):
+    def test_six_tensor_witness_explicitly_disclaims_full_coverage(self):
+        manifest = selected_tensor_coverage_manifest(730, 722)
+        self.assertEqual(manifest["scope"], "SIX_SELECTED_TENSOR_PAIRS_ONLY")
+        self.assertEqual(manifest["checked_pair_count"], 6)
+        self.assertEqual(manifest["unverified_hf_tensor_count"], 724)
+        self.assertEqual(manifest["unverified_gguf_tensor_count"], 716)
+        self.assertEqual(manifest["full_tensor_conversion_parity"], "NOT_TESTED")
+        with self.assertRaisesRegex(AssertionError, "larger"):
+            selected_tensor_coverage_manifest(6, 6)
+
     def test_exact_float16_cast_matches(self):
         source = np.array([[0.123456, -0.789123]], dtype=np.float32)
         assert_exact_post_cast_tensor(source, source.astype(np.float16), "tensor", "float16")

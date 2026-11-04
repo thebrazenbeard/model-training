@@ -63,6 +63,32 @@ def _adapter_b_hash(model) -> tuple[str, int]:
     return smoke._hash_tensors(tensors), len(tensors)
 
 
+def _adapter_ab_hash(model) -> tuple[str, int]:
+    """Bind both LoRA factors, not only the factor changed from zero at step 1."""
+    tensors = {name: p for name, p in model.named_parameters()
+               if ".lora_A." in name or ".lora_B." in name}
+    if (sum(".lora_A." in name for name in tensors) != smoke.TARGET_COUNT or
+            sum(".lora_B." in name for name in tensors) != smoke.TARGET_COUNT):
+        raise AssertionError("adapter missing LoRA-A or LoRA-B tensor coverage")
+    return smoke._hash_tensors(tensors), len(tensors)
+
+
+def _artifact_hashes(adapter_dir: Path) -> dict[str, str]:
+    """Whole-file witness covers persisted A, B, safetensors header, and config."""
+    digests: dict[str, str] = {}
+    for name in ("adapter_model.safetensors", "adapter_config.json"):
+        path = adapter_dir / name
+        if not path.is_file() or path.is_symlink():
+            raise AssertionError(f"missing regular persisted adapter file: {name}")
+        digests[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return digests
+
+
+def _assert_artifact_hashes(expected: dict[str, str], actual: dict[str, str]) -> None:
+    if expected != actual:
+        raise AssertionError("persisted LoRA-A/B or adapter config bytes changed")
+
+
 def _probe_logits(model, ids, torch):
     model.eval()
     with torch.no_grad():
@@ -84,6 +110,8 @@ def _reload_in_child(adapter_dir: Path) -> dict:
     loaded = PeftModel.from_pretrained(base, str(adapter_dir), is_trainable=False)
     loaded_logits = _probe_logits(loaded, ids, torch)
     loaded_sha, tensor_count = _adapter_b_hash(loaded)
+    loaded_ab_sha, loaded_ab_count = _adapter_ab_hash(loaded)
+    saved_artifact_hashes = _artifact_hashes(adapter_dir)
     if _tensor_sha(loaded_logits) == base_logits_sha:
         raise AssertionError("reloaded adapter has no measurable effect on logits")
     if any(p.device.type != "cpu" for p in loaded.parameters()):
@@ -94,6 +122,9 @@ def _reload_in_child(adapter_dir: Path) -> dict:
         "child_pid": os.getpid(),
         "adapter_b_sha256": loaded_sha,
         "lora_b_tensors": tensor_count,
+        "adapter_ab_sha256": loaded_ab_sha,
+        "lora_a_and_b_tensors": loaded_ab_count,
+        "persisted_artifact_sha256": saved_artifact_hashes,
         "loaded_logits_sha256": _tensor_sha(loaded_logits),
         "frozen_base_sha256": frozen_base_sha,
         "base_logits_sha256": base_logits_sha,
@@ -142,6 +173,7 @@ def run() -> dict:
             raise AssertionError(f"zero adapter gradient at layer {layer}")
     optimizer.step()
     after_sha, tensor_count = _adapter_b_hash(model)
+    after_ab_sha, ab_tensor_count = _adapter_ab_hash(model)
     if before_sha == after_sha:
         raise AssertionError("optimizer did not change persisted LoRA-B tensors")
     trained_logits_sha = _tensor_sha(_probe_logits(model, ids, torch))
@@ -157,6 +189,7 @@ def run() -> dict:
         expected_files = {"adapter_config.json", "adapter_model.safetensors"}
         if not expected_files.issubset({p.name for p in adapter_dir.iterdir()}):
             raise AssertionError("missing persisted PEFT adapter artifact")
+        saved_artifact_hashes = _artifact_hashes(adapter_dir)
         output = subprocess.run(
             [sys.executable, "-m", "trainingday.qwen35_full32_adapter_reload_cpu",
              "--child", str(adapter_dir)],
@@ -174,6 +207,14 @@ def run() -> dict:
             raise AssertionError("adapter consumer did not run in separate process")
         if child["adapter_b_sha256"] != after_sha:
             raise AssertionError("reloaded LoRA-B tensor hash differs")
+        if child["adapter_ab_sha256"] != after_ab_sha:
+            raise AssertionError("reloaded LoRA-A/B tensor hash differs")
+        if child["lora_a_and_b_tensors"] != ab_tensor_count:
+            raise AssertionError("reloaded LoRA-A/B tensor inventory differs")
+        _assert_artifact_hashes(saved_artifact_hashes,
+                                child["persisted_artifact_sha256"])
+        _assert_artifact_hashes(saved_artifact_hashes,
+                                _artifact_hashes(adapter_dir))
         if child["loaded_logits_sha256"] != trained_logits_sha:
             raise AssertionError("fresh-process adapter logits differ")
         if child["base_logits_sha256"] != base_logits_sha:
@@ -210,6 +251,9 @@ def run() -> dict:
         "lora_b_tensors": tensor_count,
         "before_lora_b_sha256": before_sha,
         "after_and_reloaded_lora_b_sha256": after_sha,
+        "after_and_reloaded_lora_ab_sha256": after_ab_sha,
+        "lora_a_and_b_tensors": ab_tensor_count,
+        "persisted_artifact_sha256": saved_artifact_hashes,
         "trained_and_reloaded_logits_sha256": trained_logits_sha,
         "frozen_base_logits_sha256": base_logits_sha,
         "separate_child_process_verified": True,
