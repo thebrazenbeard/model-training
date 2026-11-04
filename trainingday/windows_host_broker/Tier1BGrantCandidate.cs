@@ -214,6 +214,8 @@ internal static class Tier1BGrantCandidate {
             if (purpose==null || purpose.EnhancedKeyUsages.Count!=1 ||
                 purpose.EnhancedKeyUsages[0].Value!=OwnerTier1BGrantPurposeOid)
                 return Hold("OWNER_CERTIFICATE_PURPOSE_REQUIRED");
+            if (!purpose.Critical)
+                return Hold("OWNER_CERTIFICATE_PURPOSE_MUST_BE_CRITICAL");
             using(RSA publicKey=cert.GetRSAPublicKey()) {
                 if(publicKey==null) return Hold("OWNER_CERTIFICATE_RSA_REQUIRED");
                 if(publicKey.KeySize<3072 || publicKey.KeySize>4096)
