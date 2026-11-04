@@ -18,6 +18,11 @@ import sys
 OFFICIAL_MODEL = "Qwen/Qwen3.5-4B"
 OFFICIAL_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 SYNTHETIC_BASE = "synthetic:qwen3.5-full32-hybrid-seed35032-width64-v1"
+# These tiny fixture IDs make labels and loss setup convenient; they DO NOT
+# inherit official model text-config EOS 248044, tokenizer EOS/ChatML IM_END
+# 248046, or official pad 248044. A passing numeric prompt 5..9 never proves
+# stopping, chat-template safety, or token-ID handoff in a production runtime.
+SYNTHETIC_SPECIAL_TOKEN_IDS = {"bos_token_id": 1, "eos_token_id": 2, "pad_token_id": 0}
 SCHEMA = "TRAININGDAY_QWEN35_TINY_FULL32_GGUF_LOAD_V1"
 TOKENIZER_FILES = (
     "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json",
@@ -87,8 +92,8 @@ def prepare(out: Path) -> dict:
         head_dim=32, layer_types=list(LAYER_TYPES), linear_conv_kernel_dim=2,
         linear_key_head_dim=16, linear_value_head_dim=16,
         linear_num_key_heads=2, linear_num_value_heads=4,
-        max_position_embeddings=128, bos_token_id=1, eos_token_id=2,
-        pad_token_id=0, rope_parameters={"rope_type": "default",
+        max_position_embeddings=128, **SYNTHETIC_SPECIAL_TOKEN_IDS,
+        rope_parameters={"rope_type": "default",
                                           "rope_theta": 10000,
                                           "mrope_section": [2, 1, 1],
                                           "mrope_interleaved": True},
@@ -144,6 +149,8 @@ def prepare(out: Path) -> dict:
         "official_pretrained_weights_exercised": False,
         "tokenizer_provenance": f"{OFFICIAL_MODEL}@{OFFICIAL_REVISION}",
         "random_model_lineage": SYNTHETIC_BASE,
+        "special_token_ids": SYNTHETIC_SPECIAL_TOKEN_IDS,
+        "official_chatml_and_runtime_stop_semantics": "NOT_TESTED",
         "layers": 32,
         "gdn_layers": 24,
         "full_attention_layers": 8,
