@@ -49,7 +49,7 @@ order. This output SHA-256 pins the exact generated TRAIN data:
 schema=VERA_TRAININGDAY_R202_COGNITIVE_CURRICULUM_V1
 corpus_id=R202_NEW_ORIGINAL_COGNITIVE_TRAIN
 train_count=1536
-train_sha256=771471a6524410a99b14e8988ef6e0cdd7515a5756c4376a07319b439f58b80a
+train_sha256=3e9c67be9e690588c47e979af0f03981175fb4fc6c22cefcc5df8782c805726a
 private_dev_included=false
 authorizes_training=false
 ```
@@ -57,8 +57,11 @@ authorizes_training=false
 The test suite independently reconstructs each answer using only each row's
 public prompt, verifies row uniqueness, structural/answer-class coverage and
 an exact corpus commitment, rejects invalid generator indices, and checks
-that every authority flag remains false. It is a SOURCE test, not model
-evaluation or host attestation.
+that every authority flag remains false. It also constructs R201's 1,024
+public prompts from its frozen source helper and rejects exact and
+punctuation/case-normalized R201/R202 text overlap. This is **not** a semantic
+equivalence or independently protected DEV contamination check. It is a SOURCE
+test, not model evaluation or host attestation.
 
 ### Cheap shortcut baselines / source bias checks
 
@@ -75,6 +78,25 @@ bias. R202 now applies a bounded, reproducible per-class rejection sampler:
 | `evidence_uncertainty` | ACCEPT 86 / REJECT 85 / INSUFFICIENT 85 | 33.6% |
 | `tool_selection` | Three supported/no-tool intents, each below 42% of rows | Below 42% |
 
+An independent hostile review identified a serious flaw in the first balanced
+revision: even balanced YES/NO and ACCEPT/REJECT/INSUFFICIENT labels were
+**100% predictable from the row ordinal modulo 2 or 3**, and row IDs disclosed
+that ordinal. A model fed IDs could learn the shortcut. The third revision now
+uses a public SHA256-ranked, class-balanced target allocation and derives
+opaque-looking IDs from prompt content, without serial ordinals. On frozen
+TRAIN, the former modulo classifiers fall to 128/256 and 84/256 matches.
+This prevents that *specific* trivial leak; anyone who enumerates the public
+generator can still recover the label table, so it is **not a security or
+holdout guarantee**. Training adapters should omit IDs as features and
+evaluation must use independent, hidden, newly generated tasks.
+
+Error-correction examples now include 0-error controls and both positive and
+negative one-cell corruptions. The prior all-positive corruption was another
+trivial shortcut. Tool examples now use two phrasings per intent, but a
+keyword-based classifier can still identify the tool family from the request;
+correctly extracting typed arguments and handling unseen paraphrases is a
+different and more demanding target.
+
 The other families contain structured output targets rather than small
 enumerated answer classes; their answer frequencies alone are not a meaningful
 measure of shortcut resistance. The generator checks distinct prompt surfaces
@@ -82,6 +104,29 @@ and tests structural varieties but does **not** certify semantic independence.
 Labels are generated after public deterministic rejection, not by protected
 private evaluator sampling. The public class stratification and exact TRAIN
 SHA can still be memorized and must not be used as hidden qualification data.
+
+## Bounded official-tokenizer profile (opt-in; weights not loaded)
+
+`trainingday/r202_tokenizer_probe.py` verifies an already-local
+`Qwen/Qwen3.5-4B` `tokenizer.json` against the pinned SHA256
+`5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42`
+before importing the optional local `tokenizers` library. The pinned official
+source revision is `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`.
+
+```bash
+python -m trainingday.r202_tokenizer_probe --tokenizer /path/to/official/tokenizer.json
+python -m unittest -v tests.test_trainingday_r202_tokenizer_probe
+```
+
+It counts tokenizer IDs for (a) each public prompt, and (b) the literal
+`prompt + '\\n' + answer` string, reporting per-family and overall min,
+median, 95th percentile, maximum, and numbers exceeding 64, 128, 256 tokens.
+It uses **no weights or inference**. It does not account for a deployed chat
+template, BOS/EOS, system instructions, LoRA label masks or batching, and
+therefore cannot by itself certify the real optimizer's sequence fit. The
+stdlib unit test uses a deliberately fake word tokenizer and validates only
+aggregation/fail-closed source logic; a real-Qwen profile requires a separately
+observed runtime invocation and its own receipt.
 
 ## Practical rights admission (owner and steward may be the same person)
 
@@ -136,7 +181,8 @@ hidden grading data invalidates the independence claim.
 - Logged error-correction steps are **independent checks against intended
   correct prior values**. Therefore a later displayed entry can be correct
   even when an earlier entry is wrong; these are not a dependent calculation
-  trace. Tests independently validate that exactly one displayed entry differs.
+  trace. Tests independently validate that either zero or one displayed entry
+  differs, with both error polarities represented.
 - No Qwen tokenizer 64-token fit, contamination-free private DEV, independent
   oracle custody, copyright permission record, owner signature, authenticated
   base checkpoint, actual optimizer training or inference result has been

@@ -100,21 +100,34 @@ def _tool_selection(seed: bytes) -> tuple[str, str]:
     b = seed[3] % 90 - 40
     c = seed[4] % 90 - 40
     mode = seed[5] % 3
-    prefix = ("Available tools: sum_ints(a,b), sort_ints(values), or no_tool. "
-              "Return only compact JSON with keys tool and args. ")
+    prefix = (("Available tools: sum_ints(a,b), sort_ints(values), or no_tool. "
+               "Return only compact JSON with keys tool and args. ")
+              if not seed[10] & 1 else
+              ("Tool catalog: sum_ints(a,b), sort_ints(values), no_tool. "
+               "Reply JSON containing tool and args only. "))
     if mode == 0:
         claim = a + b + seed[9] % 9 - 4
-        prompt = (prefix + f"Select a tool to add integers {a} and {b} "
-                  f"to check whether the claimed sum {claim} is correct.")
+        prompt = (prefix + (f"Select a tool to add integers {a} and {b} "
+                            f"to check whether the claimed sum {claim} is correct."
+                            if not seed[11] & 1 else
+                            f"A report claims {a} plus {b} totals {claim}. "
+                            "Choose the tool and arguments to verify it."))
         answer = {"tool": "sum_ints", "args": {"a": a, "b": b}}
     elif mode == 1:
-        prompt = prefix + f"Select a tool to sort the integers [{a},{b},{c}] ascending."
+        prompt = (prefix + (f"Select a tool to sort the integers [{a},{b},{c}] ascending."
+                            if not seed[11] & 1 else
+                            f"Arrange the list [{a},{b},{c}] from smallest to largest "
+                            "using one tool and matching arguments."))
         answer = {"tool": "sort_ints", "args": {"values": [a, b, c]}}
     else:
         day = 1 + int.from_bytes(seed[7:9], "big") % 366
         hour = seed[9] % 24
-        prompt = prefix + (f"Select a tool to retrieve weather for hour {hour} on day {day} of the year "
-                           f"in city {_CITIES[seed[6] % len(_CITIES)]}. No weather tool is available.")
+        city = _CITIES[seed[6] % len(_CITIES)]
+        prompt = (prefix + (f"Select a tool to retrieve weather for hour {hour} on day {day} "
+                            f"of the year in city {city}. No weather tool is available."
+                            if not seed[11] & 1 else
+                            f"Request weather in {city}, day {day}, hour {hour}. "
+                            "No weather provider is in the catalog. Choose a tool or no_tool."))
         answer = {"tool": "no_tool", "args": {}}
     return prompt, json.dumps(answer, sort_keys=True, separators=(",", ":"))
 
@@ -161,16 +174,20 @@ def _error_correction(seed: bytes) -> tuple[str, str]:
         operations = f"*{mult}, -{sub}, +{add}"
         correct = (start * mult, start * mult - sub,
                    start * mult - sub + add)
-    error_step = 1 + seed[6] % 3
-    wrong = correct[error_step - 1] + (1 + seed[7] % 7)
+    # Include clean controls and both error directions. Historical R202 wave2
+    # had only positive corruptions: a superficial magnitude cue could win.
+    error_step = seed[6] % 4  # 0 means NO ERROR.
+    delta = (1 + seed[7] % 7) * (-1 if seed[11] & 1 else 1)
     shown = list(correct)
-    shown[error_step - 1] = wrong
+    if error_step:
+        shown[error_step - 1] = correct[error_step - 1] + delta
     prompt = (f"Starting value {start}; independent arithmetic checks are "
               f"{operations}. A log lists step1={shown[0]}, step2={shown[1]}, "
               f"step3={shown[2]} (each step computed from the intended correct "
               "prior value). Identify the first wrong entry and its correct value. "
-              "Reply 'STEP N: VALUE'.")
-    return prompt, f"STEP {error_step}: {correct[error_step - 1]}"
+              "If every entry is correct, reply NO ERROR; otherwise reply 'STEP N: VALUE'.")
+    return prompt, (f"STEP {error_step}: {correct[error_step - 1]}"
+                    if error_step else "NO ERROR")
 
 
 def _evidence_uncertainty(seed: bytes) -> tuple[str, str]:
@@ -211,15 +228,35 @@ _GENERATORS = {
 }
 
 
+def _balanced_targets(family: str, labels: tuple[str, ...]) -> tuple[str, ...]:
+    """Assign balanced class labels via a non-sequential public hash ranking.
+
+    This avoids the original index%N target/row-ID leak, but is not a secret
+    partition or proof against a memorizing learner.
+    """
+    ordering = sorted(range(ROWS_PER_FAMILY), key=lambda index:
+                      hashlib.sha256(f"{SCHEMA}:CLASS:{family}:{index}"
+                                     .encode("ascii")).digest())
+    allocations = [""] * ROWS_PER_FAMILY
+    for rank, index in enumerate(ordering):
+        allocations[index] = labels[rank % len(labels)]
+    return tuple(allocations)
+
+
+_BALANCED = {
+    "math_logic": _balanced_targets("math_logic", ("YES", "NO")),
+    "evidence_uncertainty": _balanced_targets(
+        "evidence_uncertainty", ("ACCEPT", "REJECT", "INSUFFICIENT")),
+}
+
+
 def train_row(family: str, index: int) -> dict[str, str]:
     """Return one bounded, reproducible public TRAIN row, never DEV data."""
     seed = _seed(family, index)
     # Source-label balance prevents a majority-class shortcut from scoring
     # 76% on divisibility or >69% on three-valued access. The public rejection
     # loop is deterministic, bounded, and NOT a protected evaluation sampler.
-    target = ("YES" if index % 2 else "NO") if family == "math_logic" else None
-    if family == "evidence_uncertainty":
-        target = ("ACCEPT", "REJECT", "INSUFFICIENT")[index % 3]
+    target = _BALANCED[family][index] if family in _BALANCED else None
     for attempt in range(8192):
         proposed = (hashlib.sha256(seed + attempt.to_bytes(4, "big")).digest()
                     if target is not None else seed)
@@ -231,7 +268,10 @@ def train_row(family: str, index: int) -> dict[str, str]:
     if (type(prompt) is not str or type(answer) is not str or not prompt or not answer
             or len(prompt) > _LIMIT or len(answer) > _LIMIT):
         raise CognitiveCurriculumError("invalid or overlong generated row")
-    return {"id": f"r202-{family}-train-{index:04d}", "prompt": prompt,
+    # IDs are content-derived rather than encoding the TRAIN ordinal or label.
+    # This does not hide a public dataset, but avoids a trivial modulo decoder.
+    public_id = hashlib.sha256((SCHEMA + "\x00" + prompt).encode("utf-8")).hexdigest()[:20]
+    return {"id": f"r202-{family}-{public_id}", "prompt": prompt,
             "answer": answer, "split": "train"}
 
 
