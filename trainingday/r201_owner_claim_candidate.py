@@ -92,6 +92,8 @@ def _canonical_claim_bytes(claim: object) -> bytes:
                           allow_nan=False, separators=(",", ":")).encode("utf-8")
     except UnicodeError as exc:
         raise ClaimEvidenceError("R201 owner claim contains invalid Unicode") from exc
+    except ValueError as exc:
+        raise ClaimEvidenceError("R201 owner claim contains nonfinite numeric value") from exc
 
 
 def _time(value: object) -> datetime:
