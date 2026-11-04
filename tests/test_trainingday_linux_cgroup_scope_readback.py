@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from trainingday.linux_cgroup_scope_readback import (
     CgroupReadbackError,
@@ -122,6 +123,40 @@ class LinuxCgroupScopeReadbackTests(unittest.TestCase):
         alias.symlink_to(parent, target_is_directory=True)
         with self.assertRaisesRegex(CgroupReadbackError, "symlink"):
             scope_empty_readback("/alias/trainingday-synthetic-test-only-0123456789", cgroup_root=self.cg_root)
+
+    def test_leaf_events_symlink_refused_even_with_plausible_empty_readback(self):
+        attacker = Path(self.temp.name) / "attacker-events"
+        attacker.write_text("populated 0\n", encoding="utf-8")
+        self.events.unlink()
+        self.events.symlink_to(attacker)
+        self.procs.write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(CgroupReadbackError, "symlink"):
+            scope_empty_readback(SCOPE, cgroup_root=self.cg_root)
+
+    def test_leaf_procs_symlink_refused_even_with_plausible_empty_readback(self):
+        attacker = Path(self.temp.name) / "attacker-procs"
+        attacker.write_text("", encoding="utf-8")
+        self.procs.unlink()
+        self.procs.symlink_to(attacker)
+        self.events.write_text("populated 0\n", encoding="utf-8")
+        with self.assertRaisesRegex(CgroupReadbackError, "symlink"):
+            scope_empty_readback(SCOPE, cgroup_root=self.cg_root)
+
+    def test_pid_reuse_mid_observation_refused(self):
+        original = Path.read_text
+        swapped = False
+
+        def race(path, *args, **kwargs):
+            nonlocal swapped
+            if path == self.process_cgroup and not swapped:
+                swapped = True
+                self.process_stat.write_text(self.make_stat(self.start_ticks + 1), encoding="utf-8")
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", race):
+            with self.assertRaisesRegex(CgroupReadbackError, "stale or reused"):
+                self.probe()
+        self.assertTrue(swapped)
 
     def test_broad_scope_and_path_traversal_rejected(self):
         for scope in ("/", "/user.slice", "/tmp/../trainingday-synthetic-test-only-0123456789", "/trainingday-x", "../trainingday-synthetic-test-only-0123456789"):
