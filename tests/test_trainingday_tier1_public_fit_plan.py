@@ -58,6 +58,11 @@ class Tier1PublicFitPlanTests(unittest.TestCase):
         self.assertEqual(p["wsl_cleanup"], "TARGETED_WSL_PIDTREE_REQUIRED")
         self.assertEqual(p["protected_access"], "NONE")
         self.assertEqual(p["outputs"], "UNPROMOTED_ONLY")
+        self.assertEqual(p["candidate_kernel_device_map"], 0)
+        self.assertIs(p["candidate_kernel_cpu_offload_used"], False)
+        self.assertIs(p["offload_backend_qualified"], False)
+        self.assertEqual(p["hardware_fit_status"],
+                         "UNKNOWN_NOT_ESTABLISHED_ON_LAPPY")
 
     def test_bad_kernel_hash_rejected(self):
         for value in (None, True, b"a" * 64, "a" * 63, "A" * 64,
@@ -96,6 +101,9 @@ class Tier1PublicFitPlanTests(unittest.TestCase):
         self.assertEqual(a["status"], "RESOURCE_PREFLIGHT_CANDIDATE_ONLY_NO_GPU_LEASE")
         self.assertIs(a["launch_authorized"], False)
         self.assertIs(a["physical_exclusivity_proved"], False)
+        self.assertEqual(fit.build_public_fit_plan(
+            executable_sha256=KERNEL_SHA)["hardware_fit_status"],
+            "UNKNOWN_NOT_ESTABLISHED_ON_LAPPY")
 
     def test_telemetry_incomplete_holds(self):
         a = fit.assess_observed_vram(total_mib=4096, free_mib=3778,
