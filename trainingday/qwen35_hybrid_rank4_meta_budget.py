@@ -111,7 +111,58 @@ def bound_observed_meta_fp32_scenario(*, adapter_elements: int,
     }
 
 
-def rehearse_adapter_only_cpu_adamw(meta_trainable: dict) -> dict:
+def validate_rank4_adapter_inventory(meta_trainable: dict,
+                                     base_target_shapes: dict) -> int:
+    """Bind all 304 A/B names and shapes to exactly 152 hybrid projections.
+
+    A count of 304 arbitrary ``.lora_`` tensors is *not* evidence of the
+    official PEFT layout. This check is intentionally pure so its negative
+    controls also run where PyTorch cannot be installed.
+    """
+    if (type(meta_trainable) is not dict or len(meta_trainable) != 304
+            or type(base_target_shapes) is not dict
+            or len(base_target_shapes) != _EXPECTED_TARGETS):
+        raise HybridMetaBudgetError("304 A/B tensors and 152 base targets required")
+    supplied_targets = set(base_target_shapes)
+    layer_types = []
+    for index in range(32):
+        gdn = {f"model.layers.{index}.{suffix}" for suffix in _GDN}
+        full = {f"model.layers.{index}.{suffix}" for suffix in _FULL}
+        if gdn.issubset(supplied_targets) and not (full & supplied_targets):
+            layer_types.append("linear_attention")
+        elif full.issubset(supplied_targets) and not (gdn & supplied_targets):
+            layer_types.append("full_attention")
+        else:
+            raise HybridMetaBudgetError("missing or mixed hybrid projection targets")
+    if set(hybrid_projection_targets(layer_types)) != supplied_targets:
+        raise HybridMetaBudgetError("foreign or duplicated base target")
+
+    expected_suffix_shapes = {}
+    for name, base_shape in base_target_shapes.items():
+        if (type(name) is not str or type(base_shape) is not tuple
+                or len(base_shape) != 2
+                or any(type(dim) is not int or dim <= 0 for dim in base_shape)):
+            raise HybridMetaBudgetError("invalid base linear shape")
+        out_features, in_features = base_shape
+        expected_suffix_shapes[f".{name}.lora_A.default.weight"] = (4, in_features)
+        expected_suffix_shapes[f".{name}.lora_B.default.weight"] = (out_features, 4)
+
+    matched = set()
+    for name, param in meta_trainable.items():
+        if type(name) is not str or not hasattr(param, "shape"):
+            raise HybridMetaBudgetError("non-PEFT adapter name or tensor")
+        hits = [suffix for suffix in expected_suffix_shapes if name.endswith(suffix)]
+        if (len(hits) != 1 or hits[0] in matched
+                or tuple(param.shape) != expected_suffix_shapes[hits[0]]):
+            raise HybridMetaBudgetError("A/B adapter name or rank-four shape mismatch")
+        matched.add(hits[0])
+    if matched != set(expected_suffix_shapes):
+        raise HybridMetaBudgetError("missing PEFT A/B target")
+    return expected_rank4_elements(list(base_target_shapes.values()))
+
+
+def rehearse_adapter_only_cpu_adamw(meta_trainable: dict,
+                                    *, base_target_shapes: dict) -> dict:
     """Materialize *only* the inspected PEFT adapters for one synthetic CPU step.
 
     The real official text backbone stays on meta and never participates in a
@@ -127,6 +178,8 @@ def rehearse_adapter_only_cpu_adamw(meta_trainable: dict) -> dict:
                    or not p.requires_grad or p.numel() <= 0
                    for name, p in meta_trainable.items())):
         raise HybridMetaBudgetError("304 inspected FP32 meta LoRA tensors required")
+    expected_elements = validate_rank4_adapter_inventory(
+        meta_trainable, base_target_shapes)
     cpu_adapters = [torch.nn.Parameter(torch.full(
         p.shape, 0.125, device="cpu", dtype=torch.float32))
         for p in meta_trainable.values()]
@@ -167,7 +220,8 @@ def rehearse_adapter_only_cpu_adamw(meta_trainable: dict) -> dict:
     second_moment = allocated_bytes(moments_b)
     scalar_state = allocated_bytes(scalar_steps)
     elements = sum(p.numel() for p in cpu_adapters)
-    if (weights != 4 * elements or gradients != 4 * elements
+    if (elements != expected_elements
+            or weights != 4 * elements or gradients != 4 * elements
             or first_moment != 4 * elements or second_moment != 4 * elements):
         raise HybridMetaBudgetError("observed synthetic FP32 state differs from inventory")
     return {
@@ -288,7 +342,9 @@ def run_hybrid_meta_probe(config_path: Path, *, adapter_only_cpu_step: bool = Fa
         "hardware_fit": "UNKNOWN",
     }
     if adapter_only_cpu_step:
-        report["adapter_only_cpu_rehearsal"] = rehearse_adapter_only_cpu_adamw(trainable)
+        report["adapter_only_cpu_rehearsal"] = rehearse_adapter_only_cpu_adamw(
+            trainable, base_target_shapes={
+                name: tuple(original_modules[name].weight.shape) for name in targets})
     return report
 
 

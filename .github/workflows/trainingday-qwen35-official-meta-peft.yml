@@ -42,6 +42,7 @@ jobs:
           python -m unittest -v
           tests.test_trainingday_qwen35_meta_skeleton_probe
           tests.test_trainingday_qwen35_hybrid_rank4_meta_budget
+          tests.test_trainingday_qwen35_adapter_inventory
           tests.test_trainingday_qwen35_adapter_cpu_step
       - name: Fetch only official pinned config metadata (64 KiB cap)
         shell: bash
@@ -187,3 +188,16 @@ jobs:
                   or report.get("physical_training_authorized") is not False):
               raise SystemExit("CPU rehearsal misrepresented as official-model training")
           PY
+      - name: Verify real tiny synthetic CPU NF4 + PEFT forward/backward and AdamW
+        shell: bash
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+          PYTHONHASHSEED: "0"
+          OMP_NUM_THREADS: "2"
+          MKL_NUM_THREADS: "2"
+        run: |
+          python -m pip install --no-cache-dir --only-binary=:all: 'bitsandbytes==0.50.2'
+          python -m pip check
+          timeout --signal=TERM 75s python -m unittest -v \
+            tests.test_trainingday_tiny_cpu_nf4_peft
