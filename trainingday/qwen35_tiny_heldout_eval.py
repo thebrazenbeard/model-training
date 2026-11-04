@@ -56,6 +56,21 @@ def _row(pair: tuple[int, int], *, answer_override: int | None = None) -> tuple[
     return ids, labels
 
 
+def _completion_prefix(pair: tuple[int, int], *, commuted: bool = False) -> tuple[list[int], int]:
+    """Return a five-token prompt and true completion ID, never the answer input.
+
+    Commuted probes use held-out non-diagonal pairs only.  Training receives
+    canonical (left <= right) presentations, so this probes an unseen order,
+    not a new independent arithmetic identity or independently held DEV set.
+    """
+    left, right = pair
+    if not (0 <= left <= right <= 9) or (commuted and left == right):
+        raise AssertionError("invalid canonical pair for completion probe")
+    if commuted:
+        left, right = right, left
+    return [BOS, ADD, NUMBER_OFFSET + left, NUMBER_OFFSET + right, EQUAL], NUMBER_OFFSET + left + right
+
+
 def _model(torch, seed: int):
     from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
     from peft import LoraConfig, get_peft_model
@@ -101,6 +116,30 @@ def _answer_nll(model, pairs: list[tuple[int, int]], torch) -> float:
                 raise AssertionError("nonfinite held-out loss")
             total += float(loss.item()) * len(batch)
     return total / len(pairs)
+
+
+def _answer_top1(model, pairs: list[tuple[int, int]], torch, *, commuted: bool = False) -> dict:
+    """Actual next-token argmax; never supply answer or label to the model.
+
+    This deliberately tests emitted answer identity, not just answer-token NLL.
+    A zero score is a valid result and must be reported without suppression.
+    """
+    if not pairs:
+        raise AssertionError("empty top-1 probe")
+    model.eval()
+    correct = 0
+    with torch.no_grad():
+        for i in range(0, len(pairs), BATCH_SIZE):
+            examples = [_completion_prefix(pair, commuted=commuted)
+                        for pair in pairs[i:i + BATCH_SIZE]]
+            prompts = torch.tensor([row[0] for row in examples], dtype=torch.long)
+            expected = torch.tensor([row[1] for row in examples], dtype=torch.long)
+            if prompts.shape[1] != 5 or not torch.all(prompts[:, -1] == EQUAL):
+                raise AssertionError("top-1 probe included an answer token")
+            output = model(input_ids=prompts, use_cache=False)
+            predicted = output.logits[:, -1, :].argmax(dim=-1)
+            correct += int((predicted == expected).sum().item())
+    return {"correct": correct, "count": len(pairs), "accuracy": correct / len(pairs)}
 
 
 def _run_arm(torch, *, seed: int, train_pairs: list[tuple[int, int]],
@@ -171,12 +210,21 @@ def _run_arm(torch, *, seed: int, train_pairs: list[tuple[int, int]],
         raise AssertionError("frozen embedding changed during optimizer work")
     after = _answer_nll(model, withheld_pairs, torch)
     after_seen = _answer_nll(model, seen_pairs, torch)
+    # Predeclared completion probes: canonical seen/unseen, plus the same
+    # withheld arithmetic identities in an order never used for optimization.
+    shifted = [pair for pair in withheld_pairs if pair[0] != pair[1]]
+    seen_top1 = _answer_top1(model, seen_pairs, torch)
+    heldout_top1 = _answer_top1(model, withheld_pairs, torch)
+    commuted_top1 = _answer_top1(model, shifted, torch, commuted=True)
     return {"before_answer_nll": before, "after_answer_nll": after,
             "seen_before_answer_nll": before_seen,
             "seen_after_answer_nll": after_seen,
             "seen_improvement": before_seen - after_seen,
             "improvement": before - after, "optimizer_steps": STEPS,
             "train_step_losses": losses, "lora_b_changed": True,
+            "seen_answer_top1": seen_top1,
+            "heldout_answer_top1": heldout_top1,
+            "commuted_heldout_answer_top1": commuted_top1,
             "frozen_embedding_unchanged": True,
             "altered_feedback_labels": changed_feedback_count}
 
@@ -214,6 +262,10 @@ def run() -> dict:
     advantages = [row["advantage_vs_shuffled"] for row in results]
     improvements = [row["correct_feedback"]["improvement"] for row in results]
     seen_advantages = [row["seen_advantage_vs_shuffled"] for row in results]
+    def aggregate_top1(arm: str, field: str) -> dict:
+        correct = sum(row[arm][field]["correct"] for row in results)
+        count = sum(row[arm][field]["count"] for row in results)
+        return {"correct": correct, "count": count, "accuracy": correct / count}
     return {"schema": SCHEMA, "status": "HELDOUT_CONTROLS_MEASURED_NO_QUALITY_CLAIM",
             "architecture": "RANDOM_TINY_32L_QWEN35_24GDN_8ATTN_152_LORA_NOT_OFFICIAL_4B",
             "task": "generated_addition_answer_token_nll_with_unseen_unordered_operand_pairs",
@@ -229,6 +281,11 @@ def run() -> dict:
             "mean_advantage_vs_shuffled_nats": sum(advantages) / len(advantages),
             "correct_beats_shuffled_seen_seeds": sum(x > 0 for x in seen_advantages),
             "mean_seen_advantage_vs_shuffled_nats": sum(seen_advantages) / len(seen_advantages),
+            "top1_actual_completion": {
+                arm: {field: aggregate_top1(arm, field) for field in (
+                    "seen_answer_top1", "heldout_answer_top1", "commuted_heldout_answer_top1"
+                )} for arm in ("correct_feedback", "shuffled_feedback")
+            },
             "results": results,
             "cpu_elapsed_seconds": time.monotonic() - start,
             "interpretation": "Report signed NLL deltas; improvement is not presumed.",
