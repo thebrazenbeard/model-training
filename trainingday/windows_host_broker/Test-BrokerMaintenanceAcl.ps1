@@ -17,6 +17,23 @@ function Test-TrainingDayNoUnexpectedWriters {
     } catch { return $false }
 
     try {
+        # Windows object ownership normally confers implicit WRITE_DAC even
+        # with only a Read ACE. Reject untrusted owners of every inspected
+        # file/directory, independent of the DACL allow entries.
+        $owner = $SecurityDescriptor.Owner
+        if (-not $owner) { return $false }
+        if ($owner -is [Security.Principal.SecurityIdentifier]) {
+            $ownerSid = $owner.Value
+        } elseif ($owner -is [Security.Principal.IdentityReference]) {
+            $ownerSid = $owner.Translate([Security.Principal.SecurityIdentifier]).Value
+        } elseif ([string]$owner -match '^S-1-') {
+            $ownerSid = ([Security.Principal.SecurityIdentifier]::new([string]$owner)).Value
+        } else {
+            $ownerSid = ([Security.Principal.NTAccount]::new([string]$owner)).Translate(
+                [Security.Principal.SecurityIdentifier]).Value
+        }
+        if ($ownerSid -notin $trustedSids) { return $false }
+
         foreach ($ace in $SecurityDescriptor.Access) {
             if ($ace.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
             if (($ace.FileSystemRights -band $mutatingRights) -eq 0) { continue }
