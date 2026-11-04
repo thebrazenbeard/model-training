@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import secrets
+import stat
 from collections import Counter
 from pathlib import Path
 
@@ -136,19 +137,53 @@ def validate(rows: list[dict]) -> None:
             raise ValueError(f"noncanonical generated row: {', '.join(differences)}")
 
 
+def _inode(info: os.stat_result) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def _verify_directory(output_dir: Path, dir_fd: int) -> None:
+    try:
+        path_info = os.stat(output_dir, follow_symlinks=False)
+    except OSError as exc:
+        raise RuntimeError("output directory path changed; publication indeterminate") from exc
+    if not stat.S_ISDIR(path_info.st_mode) or _inode(path_info) != _inode(os.fstat(dir_fd)):
+        raise RuntimeError("output directory identity changed; publication indeterminate")
+
+
+def _verify_published(dir_fd: int, name: str, staged_fd: int, data: bytes) -> None:
+    """Refuse symlinks, changed inode or bytes at a published final name."""
+    try:
+        published_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except OSError as exc:
+        raise RuntimeError(f"{name} unsafe or missing; publication indeterminate") from exc
+    try:
+        info = os.fstat(published_fd)
+        if not stat.S_ISREG(info.st_mode) or _inode(info) != _inode(os.fstat(staged_fd)):
+            raise RuntimeError(f"{name} inode changed; publication indeterminate")
+        digest = hashlib.sha256()
+        while chunk := os.read(published_fd, 1024 * 1024):
+            digest.update(chunk)
+        if digest.digest() != hashlib.sha256(data).digest():
+            raise RuntimeError(f"{name} hash changed; publication indeterminate")
+    finally:
+        os.close(published_fd)
+
+
 def _publish_exclusive(output_dir: Path, payloads: dict[str, bytes]) -> None:
     """Stage all bytes; link final names without following or replacing links.
 
     Files are independently linked, so this is not a filesystem transaction.
     Manifest is last. Ordinary failures roll back only names created here;
     after process death, an incomplete directory requires manual inspection.
-    The destination directory and its ancestors must be owner-controlled.
+    The destination directory and its ancestors must be owner-controlled:
+    same-UID hostile modification after readback cannot be prevented here.
     """
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
         raise OSError("exclusive curriculum publication requires POSIX no-follow directory support")
     output_dir.mkdir(parents=True, exist_ok=True)
     dir_fd = os.open(output_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
+        _verify_directory(output_dir, dir_fd)
         for name in payloads:
             try:
                 os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
@@ -156,28 +191,45 @@ def _publish_exclusive(output_dir: Path, payloads: dict[str, bytes]) -> None:
                 continue
             raise FileExistsError(f"candidate output already exists: {name}")
 
-        staged: list[tuple[str, str]] = []
-        published: list[str] = []
+        staged: list[tuple[str, str, int, bytes]] = []
+        published: list[tuple[str, tuple[int, int]]] = []
         try:
             for name, data in payloads.items():
                 tmp_name = f".oc-stage-{secrets.token_hex(16)}"
-                file_fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                file_fd = os.open(tmp_name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                   0o600, dir_fd=dir_fd)
-                staged.append((tmp_name, name))
-                with os.fdopen(file_fd, "wb") as stream:
+                staged.append((tmp_name, name, file_fd, data))
+                with os.fdopen(os.dup(file_fd), "wb") as stream:
                     stream.write(data)
                     stream.flush()
                     os.fsync(stream.fileno())
-            for tmp_name, name in staged:
+            _verify_directory(output_dir, dir_fd)
+            for tmp_name, name, file_fd, data in staged:
+                source_info = os.stat(tmp_name, dir_fd=dir_fd, follow_symlinks=False)
+                if not stat.S_ISREG(source_info.st_mode) or _inode(source_info) != _inode(os.fstat(file_fd)):
+                    raise RuntimeError(f"{name} staged inode changed; publication indeterminate")
                 os.link(tmp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd,
                         follow_symlinks=False)
-                published.append(name)
+                published.append((name, _inode(os.fstat(file_fd))))
+                _verify_published(dir_fd, name, file_fd, data)
+                _verify_directory(output_dir, dir_fd)
+                # Ensure earlier final names still hold their original bytes
+                # before the last manifest link can mark completion.
+                for prior_name, _, prior_fd, prior_data in staged[:len(published)]:
+                    _verify_published(dir_fd, prior_name, prior_fd, prior_data)
             os.fsync(dir_fd)
+            for name, _, file_fd, data in staged:
+                _verify_published(dir_fd, name, file_fd, data)
+            _verify_directory(output_dir, dir_fd)
         except BaseException as exc:
             rollback_errors = []
-            for name in reversed(published):
+            for name, expected_inode in reversed(published):
                 try:
-                    os.unlink(name, dir_fd=dir_fd)
+                    info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                    if _inode(info) == expected_inode:
+                        os.unlink(name, dir_fd=dir_fd)
+                    else:
+                        rollback_errors.append(f"{name}: identity changed; left untouched")
                 except OSError as rollback_exc:
                     rollback_errors.append(f"{name}: {rollback_exc}")
             if rollback_errors:
@@ -185,11 +237,15 @@ def _publish_exclusive(output_dir: Path, payloads: dict[str, bytes]) -> None:
                                    + "; ".join(rollback_errors)) from exc
             raise
         finally:
-            for tmp_name, _ in staged:
+            for tmp_name, _, file_fd, _ in staged:
                 try:
-                    os.unlink(tmp_name, dir_fd=dir_fd)
+                    info = os.stat(tmp_name, dir_fd=dir_fd, follow_symlinks=False)
+                    if _inode(info) == _inode(os.fstat(file_fd)):
+                        os.unlink(tmp_name, dir_fd=dir_fd)
                 except FileNotFoundError:
                     pass
+                finally:
+                    os.close(file_fd)
     finally:
         os.close(dir_fd)
 
@@ -215,7 +271,7 @@ def write_candidate(output_dir: Path) -> dict:
         "source_id_semantics": "generator/family synthetic provenance partition; all rows share one source-authored generator",
         "rights_status": "NOT_ADMITTED", "training_authorized": False,
         "rights_note": "Source-authored synthetic examples; requires independent rights/admission review.",
-        "publication_note": "Manifest linked last; interrupted publication is not transactionally atomic. Verify hashes and manually inspect incomplete directories before retrying.",
+        "publication_note": "Manifest linked last after no-follow inode/hash checks, but multi-file publication is not crash-atomic. Output directory and ancestors must be owner-controlled; concurrent same-UID attackers cannot be excluded after readback. Verify hashes and manually inspect incomplete directories before retrying.",
         "files": files,
     }
     payloads["manifest.json"] = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode("utf-8")
