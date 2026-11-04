@@ -36,20 +36,43 @@ separate public-only DER copy to exercise both branches without host enrollment.
    it does not imply adequate VRAM or grant authority to interrupt users.
 3. Verify that a *newly generated* owner key is non-exportable, independently
    user-/hardware-controlled, RSA 3072 or 4096, SHA-256 signing capable, with
-   `DigitalSignature` KeyUsage, a non-CA basic constraint, a single dedicated
+   `DigitalSignature` **only** KeyUsage (no `KeyEncipherment` or `KeyCertSign`), a non-CA basic constraint, a single dedicated
    critical EnhancedKeyUsage OID
    `2.25.281124513629607016020108740092472226515` (self-assigned UUID
    purpose under ISO 2.25), and a short explicit expiry. A generic TLS or
    code-signing EKU cannot substitute for this contract-specific purpose.
    Do not reuse an existing private key on speculation. If the owner
    needs to sign off-host, keep the private key off-host entirely.
+
+   **Windows ASN.1 warning (source-only CI finding):** PowerShell
+   `New-SelfSignedCertificate -Type Custom` with
+   `-TextExtension '2.5.29.37={critical}{text}2.25.281124513629607016020108740092472226515'`
+   silently encoded the **wrong** EKU `2.25.9223372036854775807` in the
+   ephemeral Windows runner. The exact single critical EKU was obtained there
+   with `-TextExtension '2.5.29.37={critical}{hex}301606146983A6FECEA99ABA92BCAF8AA4B9BB9BEBD9E553'`.
+   Independently DER-decode and compare the actual critical OID before any
+   future owner-attended procedure; an input string is not extension proof.
+   The ephemeral proof is [PR #321](https://github.com/thebrazenbeard/model-training/pull/321),
+   **not** authority to enroll an owner certificate.
+
+   The contract says `short explicit expiry` but sets **no numerical maximum
+   certificate lifetime**. Do not invent or silently enforce a production
+   lifetime threshold until that policy is specified and independently tested.
 4. Export **only public DER** from that signer after independent inspection;
    compute the full DER SHA-256 out-of-band and record its provenance and owner
    approval in a protected deployment receipt. DER fingerprint is public; it
    is not a bearer secret.
+
+   **Pin format:** the compiled `InstalledOwnerCertificateDerSha256`
+   candidate accepts exactly 64 **lowercase** hexadecimal digits. Windows
+   `[BitConverter]::ToString($sha256Bytes).Replace('-', '')` emits uppercase
+   hex; normalize with `.ToLowerInvariant()` and independently compare to a
+   second full-DER SHA-256 computation before reviewing the compiled pin.
+   An uppercase unnormalized value is rejected as
+   `OWNER_CERTIFICATE_NOT_ENROLLED`; never substitute a request/env-selected pin.
 5. Import **only the DER `.cer`** into `Cert:\\LocalMachine\\My` using an
    owner-attended elevated session. Read it back and verify exact DER digest,
-   certificate validity, 3072–4096-bit RSA key, `DigitalSignature`, non-CA,
+   certificate validity, 3072–4096-bit RSA key, **only** `DigitalSignature` KeyUsage, non-CA,
    exact purpose EKU, no duplicate extension OIDs, one matching certificate
    context, and `HasPrivateKey == false`. A PFX import is prohibited. Do not
    rely on a display-name, SHA-1 thumbprint, or one matching context alone.
@@ -69,7 +92,7 @@ separate public-only DER copy to exercise both branches without host enrollment.
 
 - Any verifier certificate context carrying a private key, duplicate matching
   DER contexts, duplicate/unknown critical extensions, missing dedicated EKU,
-  missing expected DER, key shorter than RSA 3072, invalid time or usage, untrusted
+  missing expected DER, key shorter than RSA 3072, any extra KeyUsage, invalid time or usage, untrusted
   operator/session, mismatched binary hash, absent protected rollback, or
   live shared workloads => **STOP**. Keep existing deny-only broker running.
 - Preserve the pre-maintenance service executable, metadata, ACLs, and full
