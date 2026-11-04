@@ -54,10 +54,19 @@ jobs:
           }
           $source = Get-Content -LiteralPath $path -Raw
           foreach ($required in @('ProtectHigh', 'NonExportable',
-            'VERA-NODE-1\Patrick', '301606146983A6FECEA99ABA92BCAF8AA4B9BB9BEBD9E553',
+            'VERA-NODE-1\Patrick', 'S-1-5-21-784600762-3780420976-2835800593-1001',
+            'WTSGetActiveConsoleSessionId', 'WTSQuerySessionInformationW',
+            '301606146983A6FECEA99ABA92BCAF8AA4B9BB9BEBD9E553',
+            'CngKey]::Exists', '-Container $container',
             'Export-Certificate', '-NoClobber', 'OWNER_PUBLIC_DER_ONLY_PASS')) {
             if (-not $source.Contains($required)) { throw "Missing source-only contract: $required" }
           }
+          # ParseFile does not compile embedded C#; explicitly compile only
+          # the WTS interop here-string in ephemeral runner memory, no call
+          # to the owner key-creation cmdlet.
+          $native = [regex]::Match($source, "(?s)Add-Type -TypeDefinition @'\r?\n(.*?)\r?\n'@ -ErrorAction Stop")
+          if (-not $native.Success) { throw 'Missing guarded native WTS interop' }
+          Add-Type -TypeDefinition $native.Groups[1].Value -ErrorAction Stop
           $subject = 'CN=VERA TrainingDay Tier1 B Owner Patrick v1'
           $before = @(Get-ChildItem -Path 'Cert:\CurrentUser\My' |
             Where-Object { $_.Subject -ceq $subject })
