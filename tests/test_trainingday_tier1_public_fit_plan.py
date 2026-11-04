@@ -18,7 +18,9 @@ class Tier1PublicFitPlanTests(unittest.TestCase):
         plan = fit.build_public_fit_plan(executable_sha256=KERNEL_SHA)
         self.assertEqual(plan["model_id"], "Qwen/Qwen3.5-4B")
         self.assertEqual(plan["model_revision"], "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a")
-        self.assertEqual(len(plan["official_public_file_sha256"]), 4)
+        self.assertEqual(len(plan["official_shard_lfs_oid_sha256"]), 2)
+        self.assertEqual(plan["metadata_sha256_status"], "UNKNOWN_UNAUTHENTICATED")
+        self.assertIs(plan["model_snapshot_authenticated"], False)
         self.assertNotIn("rodrigomt", json.dumps(plan).lower())
         with self.assertRaises(TypeError):
             fit.build_public_fit_plan(executable_sha256=KERNEL_SHA,
@@ -63,14 +65,23 @@ class Tier1PublicFitPlanTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(fit.PublicFitPlanError):
                 fit.build_public_fit_plan(executable_sha256=value)
 
-    def test_fixed_model_shard_hashes(self):
-        hashes = fit.OFFICIAL_FILE_SHA256
-        self.assertEqual(hashes["tokenizer.json"],
-                         "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42")
+    def test_upstream_shard_lfs_oids_are_not_local_byte_attestations(self):
+        hashes = fit.OFFICIAL_SHARD_LFS_OID_SHA256
         self.assertEqual(hashes["model.safetensors-00001-of-00002.safetensors"],
                          "26a93f066e1916adb13453dae5a0c707c0fbc71299ed98779571a907b8e74c61")
         self.assertEqual(hashes["model.safetensors-00002-of-00002.safetensors"],
                          "cb544bd9bfae93dc59b0f22b292f5933573854a7f9b97835c67060d7d910e188")
+        plan = fit.build_public_fit_plan(executable_sha256=KERNEL_SHA)
+        self.assertEqual(set(plan["metadata_files_needing_trusted_byte_pins"]), {
+            "config.json", "tokenizer.json", "tokenizer_config.json",
+            "model.safetensors.index.json",
+        })
+        self.assertNotIn("config.json", hashes)
+        self.assertNotIn("tokenizer.json", hashes)
+        self.assertNotIn("5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
+                         json.dumps(plan))
+        self.assertNotIn("ddc63e1c717afa86c865bb5e01313d89d72bb53b97ad4a8a03ba8510c0621670",
+                         json.dumps(plan))
 
     def test_585_mib_free_wddm_holds_even_at_zero_utilization(self):
         a = fit.assess_observed_vram(total_mib=4096, free_mib=585,
