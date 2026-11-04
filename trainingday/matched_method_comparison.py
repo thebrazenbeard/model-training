@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 
-SCHEMA = "TRAININGDAY_MEZO_QLORA_MATCHED_STUDY_SOURCE_V2"
+SCHEMA = "TRAININGDAY_MEZO_QLORA_MATCHED_STUDY_SOURCE_V3"
 BASE_ID = "Qwen/Qwen3.5-4B"
 BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 METHODS = ("MEZO_LORA", "QLORA_ADAMW")
@@ -100,11 +100,36 @@ def _schedule(seeds: Sequence[int], rows: Sequence[Mapping[str, object]]) -> dic
     return result
 
 
+def _initial_adapters(seeds: Sequence[int],
+                      commitments: Sequence[Mapping[str, object]]) -> dict:
+    """Require an exact initial PEFT adapter digest for every paired seed.
+
+    Hash declarations are **not** host attestation. Under a later qualified
+    launcher, these must come from independently checked initial adapter bytes.
+    """
+    if (type(commitments) not in (tuple, list)
+            or len(commitments) != len(seeds)):
+        raise MatchedStudyError("complete per-seed initial adapter commitments required")
+    result = {}
+    for row in commitments:
+        if (type(row) is not dict
+                or set(row) != {"seed", "initial_adapter_sha256"}
+                or type(row["seed"]) is not int
+                or row["seed"] not in seeds or row["seed"] in result
+                or not _sha(row["initial_adapter_sha256"])):
+            raise MatchedStudyError("invalid seed-specific initial adapter byte digest")
+        result[row["seed"]] = row["initial_adapter_sha256"]
+    if set(result) != set(seeds):
+        raise MatchedStudyError("missing initial adapter seed identity")
+    return result
+
+
 def build_study_plan(*, official_weight_sha256: str,
                      tokenizer_sha256: str, train_sha256: str,
                      private_dev_commitment_sha256: str,
                      lora_target_spec_sha256: str,
                      schedule_commitments: Sequence[Mapping[str, object]],
+                     initial_adapter_commitments: Sequence[Mapping[str, object]],
                      seeds: Sequence[int] = (113, 271, 997),
                      wall_clock_budget_seconds: int = 600,
                      actual_time_tolerance_percent: int = 20,
@@ -136,11 +161,13 @@ def build_study_plan(*, official_weight_sha256: str,
             or not 32 <= candidate_sequence_length <= 2048):
         raise MatchedStudyError("bounded candidate tokenizer sequence length required")
     schedule = _schedule(seeds, schedule_commitments)
+    initial_adapters = _initial_adapters(seeds, initial_adapter_commitments)
 
     arms = [
         {"arm_id": f"{method}:{mode}:{seed}", "method": method,
          "label_mode": mode, "seed": seed,
          "trainable_subspace": "IDENTICAL_PINNED_LORA_TARGETS",
+         "initial_adapter_sha256": initial_adapters[seed],
          "train_order_sha256": (schedule[seed]["train_order_sha256"]
                                 if mode != "zero" else None),
          "label_assignment_sha256": (schedule[seed][f"{mode}_labels_sha256"]
@@ -152,6 +179,7 @@ def build_study_plan(*, official_weight_sha256: str,
         {"arm_id": f"{BASE_REFERENCE}:reference:{seed}",
          "method": BASE_REFERENCE, "label_mode": "reference", "seed": seed,
          "trainable_subspace": "NO_ADAPTER_UNMODIFIED_OFFICIAL_BASE",
+         "initial_adapter_sha256": None,
          "train_order_sha256": None,
          "label_assignment_sha256": None,
          "wall_clock_budget_seconds": wall_clock_budget_seconds}
@@ -167,6 +195,9 @@ def build_study_plan(*, official_weight_sha256: str,
         "private_dev_commitment_sha256": private_dev_commitment_sha256,
         "lora_target_spec_sha256": lora_target_spec_sha256,
         "schedule_commitments": [schedule[seed] for seed in seeds],
+        "initial_adapter_commitments": [
+            {"seed": seed, "initial_adapter_sha256": initial_adapters[seed]}
+            for seed in seeds],
         "seeds": list(seeds),
         "methods": list(METHODS),
         "labels": list(LABEL_MODES),
@@ -180,6 +211,9 @@ def build_study_plan(*, official_weight_sha256: str,
         "require_equal_paired_example_token_exposure": True,
         "require_identical_paired_example_order_sha256": True,
         "require_pinned_mode_specific_label_assignment_sha256": True,
+        "require_same_per_seed_initial_adapter_bytes": True,
+        "require_zero_update_adapter_unchanged": True,
+        "initial_adapter_bytes_independently_attested": False,
         "require_forward_and_backward_count_record": True,
         "require_per_arm_checkpoint_reload": True,
         "require_trained_arm_interruption_resume": True,
@@ -215,6 +249,7 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
         private_dev_commitment_sha256=plan.get("private_dev_commitment_sha256"),
         lora_target_spec_sha256=plan.get("lora_target_spec_sha256"),
         schedule_commitments=plan.get("schedule_commitments"),
+        initial_adapter_commitments=plan.get("initial_adapter_commitments"),
         seeds=plan.get("seeds"),
         wall_clock_budget_seconds=plan.get("equal_wall_clock_budget_seconds"),
         actual_time_tolerance_percent=plan.get("actual_time_tolerance_percent"),
@@ -231,6 +266,7 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
                      "forward_calls", "backward_calls", "peak_vram_bytes",
                      "peak_host_ram_bytes", "checkpoint_reloaded",
                      "adapter_sha256", "loaded_weight_sha256",
+                     "initial_adapter_sha256",
                      "train_order_sha256", "label_assignment_sha256",
                      "truncated_training_rows",
                      "interruption_resumed"}
@@ -265,8 +301,11 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
         if not receipt["checkpoint_reloaded"]:
             raise MatchedStudyError("fresh-process checkpoint reload not demonstrated")
         arm = scheduled[arm_id]
+        if receipt["initial_adapter_sha256"] != arm["initial_adapter_sha256"]:
+            raise MatchedStudyError("initial adapter identity mismatches frozen seed")
         if arm["method"] == BASE_REFERENCE:
             if (receipt["adapter_sha256"] is not None
+                    or receipt["initial_adapter_sha256"] is not None
                     or receipt["train_order_sha256"] is not None
                     or receipt["label_assignment_sha256"] is not None
                     or any(receipt[name] for name in ("optimizer_steps", "examples_seen",
@@ -278,9 +317,10 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
             raise MatchedStudyError("PEFT arm requires adapter byte identity")
         if arm["label_mode"] == "zero":
             if (receipt["optimizer_steps"] != 0 or receipt["backward_calls"] != 0
+                    or receipt["adapter_sha256"] != arm["initial_adapter_sha256"]
                     or receipt["train_order_sha256"] is not None
                     or receipt["label_assignment_sha256"] is not None):
-                raise MatchedStudyError("zero-update control performed updates")
+                raise MatchedStudyError("zero-update control changed adapter or performed updates")
         else:
             if (receipt["train_order_sha256"] != arm["train_order_sha256"]
                     or receipt["label_assignment_sha256"]
