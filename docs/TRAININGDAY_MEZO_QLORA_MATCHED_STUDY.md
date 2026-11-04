@@ -42,9 +42,33 @@ PEFT zero-step arm is **not** an untouched base.
 All true training paths must pass the separate protected physical launch
 authority; these declarations cannot make them runnable.
 
+### Initial adapter identity and the zero-update causal control
+
+The V3 study requires one `initial_adapter_commitments` record **for every
+seed**. Its `initial_adapter_sha256` is frozen into *all six PEFT arms of
+that seed* (both methods × all three label conditions), while the untouched
+`OFFICIAL_BASE` reference has **no adapter** and a null initial commitment.
+The zero-update control's **final** `adapter_sha256` must equal its exact
+predeclared initial commitment; merely claiming zero optimizer steps is not
+enough. One adversarial V2 receipt substituted an unrelated but well-shaped
+final adapter SHA for `MEZO_LORA:zero:11` and was wrongly shape-accepted;
+V3 rejects that exact falsifier and mismatched method/base initial hashes.
+
+To compare methods across different quantization/serialization wrappers, an
+upstream qualified artifact verifier must derive a **canonical tensor-only
+digest of the LoRA initialization**, with fixed target names, order, dtype,
+shapes and raw tensor bytes. Do not hash wrapper-specific optimizer metadata
+and then call two different representations comparable. This canonicalizer
+and its host-owned readback are **not** implemented in this source protocol;
+the current digest remains supplied, untrusted evidence, and the study plan
+explicitly records `initial_adapter_bytes_independently_attested=false`.
+Distinct seeds do not automatically demand distinct initialization hashes:
+seeds may vary data order with identical initial tensors. A changed training
+arm's adapter hash alone never proves reasoning improvement or proper updates.
+
 ### Actual ordered TRAIN content and label-custody commitment
 
-The V2 plan **requires** a distinct `schedule_commitments` entry for every
+The V3 plan **requires** a distinct `schedule_commitments` entry for every
 seed, with exactly three SHA-256 digests: `train_order_sha256`,
 `correct_labels_sha256`, and `corrupted_labels_sha256`. The pure helper
 `commit_training_schedule(seed, ordered_rows)` generates these from the
@@ -83,7 +107,7 @@ the receipt's `truncated_training_rows=0` is only untrusted telemetry.
 ### Wall-clock cap versus measured cost
 
 The two methods receive the same **maximum duration**, not equivalent actual
-compute or guaranteed equal numbers of FLOPs. The V2 plan predeclares a
+compute or guaranteed equal numbers of FLOPs. The V3 plan predeclares a
 0–50% `actual_time_tolerance_percent` (default 20%), then measures the
 relative difference against the larger elapsed time for each seed/label pair.
 Over-tolerance pairs return
