@@ -14,11 +14,14 @@ Fixed request scope:
 * Host `LAPPY`, policy `WDDM_BOUNDED_COEXISTENCE`, foreign GPU clients allowed
   without falsely claiming hardware exclusivity.
 * Official `Qwen/Qwen3.5-4B` revision
-  `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`, and specific SHA-256s for
-  `config.json`, `tokenizer.json`, and the two official model shards. The old
+  `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`, with upstream **Git LFS
+  object IDs** for the two official model shards. These are not verified local
+  weight bytes. `config.json`, `tokenizer.json`, `tokenizer_config.json`, and
+  `model.safetensors.index.json` currently have **UNKNOWN trusted byte hashes**;
+  prior unsubstantiated config/tokenizer SHA claims were withdrawn. The old
   repository catalog's `rodrigomt/*Uncensored-Aggressive*` base is **not**
-  admissible. All remaining snapshot files require separately signed binding
-  and authentic byte readback; no caller hash declaration is sufficient.
+  admissible. All snapshot files require separately authenticated source
+  provenance and exact local-byte readback; no caller hash declaration suffices.
 * Candidate `trainingday.lowmem_experiment.one_step_kernel` already contains
   official NF4/BF16 LoRA synthetic batch 1, sequence length 64 and precisely
   one AdamW optimizer step, but is presently **unreachable** behind its
@@ -46,13 +49,14 @@ expired, replayed, wrong-host, wrong-model, OOM, timeout, PID-reuse and broker
 crash negative cases. Source-only tests cannot establish this host behavior.
 
 This source's `manifest_sha256` is the SHA-256 of canonical ASCII JSON for the
-four-file official **allowlist**, not the independently verified complete local
-snapshot. It is not a substitute for authenticating index, tokenizer config,
-other signed bindings, or current model file bytes. The proposed companion
+two upstream shard-LFS object IDs, missing-metadata list and evidence class;
+it is **not** the independently verified complete local snapshot. It is not a
+substitute for authenticating the config, tokenizer, index, other signed
+bindings, or current model file bytes. The proposed companion
 Tier1 grant validator uses `model_revision`, `vram_target_mib`,
 `protected_access=NONE`, `outputs=UNPROMOTED_ONLY`, and
 `wsl_cleanup=TARGETED_WSL_PIDTREE_REQUIRED`; the host must independently
-compute the expected allowlist digest and file/executable bindings before
+compute the expected source-manifest digest and file/executable bindings before
 accepting an owner signature. Until that integration is implemented and tested,
 both source candidates remain unconnected HOLD contracts.
 
