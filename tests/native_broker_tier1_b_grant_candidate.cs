@@ -94,6 +94,23 @@ internal static class Tier1BGrantCandidateTests {
                 CheckNoLaunch(wrongSigner,"wrong signer");
                 Assert(wrongSigner.Reason=="SIGNATURE_INVALID","wrong signer accepted");
             }
+            using(RSA weak=RSA.Create()) {
+                weak.KeySize=1024;
+                byte[] weakSig=weak.SignData(valid,HashAlgorithmName.SHA256,
+                                            RSASignaturePadding.Pkcs1);
+                var weakReceipt=Tier1BGrantCandidate.VerifyForNativeTestOnly(
+                    valid,weakSig,weak,Host(7,Now));
+                CheckNoLaunch(weakReceipt,"weak RSA 1024");
+                Assert(!weakReceipt.ScopeAndSignatureMatched &&
+                    weakReceipt.Reason=="SIGNATURE_INVALID",
+                    "1024-bit RSA owner scope was accepted");
+            }
+
+            var atExpiry=Tier1BGrantCandidate.VerifyForNativeTestOnly(
+                valid,sig,fixture,Host(7,1800000200L));
+            CheckNoLaunch(atExpiry,"expiry equals admission");
+            Assert(!atExpiry.ScopeAndSignatureMatched,
+                "grant accepted at now==not_after");
             Change(fixture,1,"TIER2_R201","wrong tier");
             Change(fixture,2,"VN1","wrong host");
             Change(fixture,3,"WDDM_PHYSICAL_EXCLUSIVE","wrong policy");
