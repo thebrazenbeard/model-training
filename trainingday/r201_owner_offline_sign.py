@@ -190,22 +190,34 @@ def main(argv: list[str] | None = None) -> int:
                ("status", "claim_sha256", "owner_key_sha256")}
     receipt["all_training_authority"] = False
     outputs[".receipt.json"] = (json.dumps(receipt, sort_keys=True) + "\n").encode("utf-8")
-    written: list[Path] = []
+    # Track file identities, not just names. A different writer could replace a
+    # newly created path before we are interrupted; rollback must not delete it.
+    written: list[tuple[Path, int, int]] = []
     try:
         for suffix, data in outputs.items():
             path = paths[suffix]
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             # The target now belongs to this invocation, including if a write
             # or close fails. Roll back only these newly created paths.
-            written.append(path)
+            identity = os.fstat(fd)
+            written.append((path, identity.st_dev, identity.st_ino))
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
     except BaseException:
         # OSError is not the only way an export can stop: KeyboardInterrupt or
         # SystemExit after an earlier create must not strand partial evidence.
-        # Only remove artifacts created by this invocation.
-        for path in written:
-            path.unlink(missing_ok=True)
+        # Remove only paths which STILL name files created by this invocation.
+        # A shared writable directory remains unsafe against a concurrent
+        # lstat/unlink race; the operator must select a private output directory.
+        for path, device, inode in written:
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == (device, inode):
+                    path.unlink(missing_ok=True)
+            except OSError:
+                # Preserve the original failure and never remove an unverified
+                # replacement, even if a path is inaccessible during cleanup.
+                pass
         raise
     print("R201_OWNER_CLAIM_SIGNED_WITH_SUPPLIED_KEY_SOURCE_ONLY_HOLD")
     print("No owner-key enrollment, evaluator custody, data admission or GPU authorization.")
