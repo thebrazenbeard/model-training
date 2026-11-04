@@ -12,7 +12,7 @@ import unittest
 from trainingday.qwen35_memory_source_admission import (
     MetadataAdmissionError, OFFICIAL_CONFIG_SHA256, OFFICIAL_INDEX_SHA256,
     OFFICIAL_SHARD_SHA256, admit_pinned_official_metadata, audit_metadata,
-    missing_source_report,
+    missing_source_report, _read_bounded_file, MAX_CONFIG_BYTES,
 )
 
 
@@ -187,6 +187,23 @@ class ArchitectureAdmissionTests(unittest.TestCase):
             self.assertEqual(command.returncode, 1)
             self.assertEqual(json.loads(command.stdout)["status"],
                              "SOURCE_METADATA_REJECTED_HARD_HOLD")
+
+    def test_ancestor_directory_symlink_redirect_is_rejected(self):
+        # O_NOFOLLOW on the final file cannot detect a redirected parent.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            trusted = root / "trusted"
+            outside = root / "outside"
+            trusted.mkdir()
+            outside.mkdir()
+            (outside / "config.json").write_bytes(b'{}')
+            alias = trusted / "redirect"
+            try:
+                alias.symlink_to(outside, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            with self.assertRaises(MetadataAdmissionError):
+                _read_bounded_file(alias / "config.json", MAX_CONFIG_BYTES)
 
     @unittest.skipUnless(hasattr(os, "mkfifo") and hasattr(os, "O_NONBLOCK"),
                          "POSIX FIFO nonblocking open only")
