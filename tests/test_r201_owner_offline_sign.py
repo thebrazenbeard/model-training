@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -166,6 +167,42 @@ class OwnerOfflineSignTest(unittest.TestCase):
                 p.read_text(errors="ignore") for p in place.glob("signed-request.*")))
             with self.assertRaises(SystemExit):
                 main(argv + ["--ack-owner-rights"])
+
+    def test_interrupt_during_export_removes_partial_owner_artifacts(self):
+        """An operator interrupt must not strand a misleading partial claim."""
+        with tempfile.TemporaryDirectory() as tmp:
+            place = Path(tmp)
+            selected = place / "dedicated-owner.pem"
+            selected.write_bytes(self.key.private_bytes(
+                Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+            prefix = place / "signed-request"
+            argv = [
+                "--existing-key-pem", str(selected),
+                "--owner-identity", "synthetic-owner",
+                "--private-dev-commitment-sha256", self.dev,
+                "--protected-exclusion-receipt-sha256", self.exclusion,
+                "--owner-key-epoch", "4",
+                "--not-before-utc", "2000-01-01T00:00:00Z",
+                "--expires-utc", "2099-12-31T00:00:00Z",
+                "--decision", "WITHHOLD",
+                "--output-prefix", str(prefix),
+            ]
+            real_open = os.open
+            opened = 0
+
+            def interrupt_second_open(path, flags, mode=0o777):
+                nonlocal opened
+                opened += 1
+                if opened == 2:
+                    raise KeyboardInterrupt("synthetic operator interrupt")
+                return real_open(path, flags, mode)
+
+            with patch("trainingday.r201_owner_offline_sign.os.open",
+                       side_effect=interrupt_second_open):
+                with self.assertRaisesRegex(KeyboardInterrupt, "operator interrupt"):
+                    main(argv)
+            self.assertEqual(opened, 2)
+            self.assertFalse(list(place.glob("signed-request.*")))
 
 
 if __name__ == "__main__":

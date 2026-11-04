@@ -200,8 +200,10 @@ def main(argv: list[str] | None = None) -> int:
             written.append(path)
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
-    except OSError:
-        # Only remove newly created artifacts; never touch pre-existing paths.
+    except BaseException:
+        # OSError is not the only way an export can stop: KeyboardInterrupt or
+        # SystemExit after an earlier create must not strand partial evidence.
+        # Only remove artifacts created by this invocation.
         for path in written:
             path.unlink(missing_ok=True)
         raise
