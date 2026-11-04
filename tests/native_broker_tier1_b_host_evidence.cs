@@ -123,6 +123,54 @@ internal static class Tier1BHostEvidenceNativeTests {
                     "after-close source replacement kept stale digest");
                 Need(!changed.LaunchAuthorized,"changed file authorized training");
             }
+            // TWO-PEER NEGATIVE COUNTEREXAMPLE (test-only, same CI machine).
+            // Two writable local journals are not an independent external Q6
+            // monotonic witness. Saving/restoring BOTH genesis snapshots
+            // rewinds their epochs and permits the same consumed nonce again.
+            // This is deliberate FAIL evidence, not a distributed grant path.
+            string peerOne=Path.Combine(root,"vn1-peer-source-only.log");
+            string peerTwo=Path.Combine(root,"vn2-peer-source-only.log");
+            File.WriteAllBytes(peerOne,new byte[0]);
+            File.WriteAllBytes(peerTwo,new byte[0]);
+            byte[] beforeOne=File.ReadAllBytes(peerOne);
+            byte[] beforeTwo=File.ReadAllBytes(peerTwo);
+            using(var a=HostOwnedProbeReservation.OpenForNativeTestOnly(peerOne)) {
+                using(var b=HostOwnedProbeReservation.OpenForNativeTestOnly(peerTwo)) {
+                    Need(a.Epoch==0 && b.Epoch==0,
+                         "two-peer source fixture did not begin at genesis");
+                    Need(a.Reserve(
+                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                        nonce1)==1 && b.Reserve(
+                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                        nonce1)==1,
+                        "two-peer fixture did not persist initial reservations");
+                }
+            }
+            Need(File.ReadAllBytes(peerOne).Length>beforeOne.Length &&
+                 File.ReadAllBytes(peerTwo).Length>beforeTwo.Length,
+                 "two-peer fixture lacked durable records before rollback");
+            // An administrator with control over both files can restore both
+            // old snapshots. After reopening, each apparently agrees on the
+            // same stale epoch and reaccepts the same nonce.
+            File.WriteAllBytes(peerOne,beforeOne);
+            File.WriteAllBytes(peerTwo,beforeTwo);
+            using(var a=HostOwnedProbeReservation.OpenForNativeTestOnly(peerOne)) {
+                using(var b=HostOwnedProbeReservation.OpenForNativeTestOnly(peerTwo)) {
+                    Need(a.Epoch==0 && b.Epoch==0,
+                         "coordinated rollback not reproduced at both peers");
+                    Need(a.Reserve(
+                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                        nonce1)==1 && b.Reserve(
+                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                        nonce1)==1,
+                        "paired ordinary journals unexpectedly resisted replay");
+                }
+            }
+            using(var sourceOnly=Tier1BHostEvidenceHold.OpenForNativeTestOnly(root)) {
+                Need(sourceOnly.State=="HOLD" && !sourceOnly.LaunchAuthorized &&
+                     !sourceOnly.JournalRollbackResistant && !sourceOnly.GpuLeaseIssued,
+                     "paired source-only journals invented Q6 or training authority");
+            }
             File.WriteAllText(plan,new string('x',32769),Encoding.ASCII);
             Reject<InvalidDataException>(()=>{
                 using(var oversize=Tier1BHostEvidenceHold.OpenForNativeTestOnly(root)) {}
@@ -142,7 +190,8 @@ internal static class Tier1BHostEvidenceNativeTests {
             }
             Console.WriteLine("NATIVE_TIER1_B_HOST_EVIDENCE_HOLD_PASS checks="+checks+
                 " actual_file_hashes=true retained_handles=true host_nonce=true"+
-                " durable_epoch=true crash_hold=true rollback_resistant=false"+
+                " durable_epoch=true crash_hold=true two_peer_rollback_replay=true"+
+                " rollback_resistant=false"+
                 " owner_trust=false gpu=false");
         } finally {
             // Only the new and unique temporary fixture directory is removed.
