@@ -92,6 +92,25 @@ def _free_loopback_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def extract_top_logprobs(response: dict) -> list[dict]:
+    """Parse the exact pinned llama.cpp nonstream completion response schema.
+
+    At upstream 149f5641, ``server-task.cpp`` calls the field
+    ``completion_probabilities``; older README example prose uses ``probs``.
+    Do not silently accept an unknown response format as model evidence.
+    """
+    entries = response.get("completion_probabilities")
+    if not isinstance(entries, list) or len(entries) != 1:
+        raise AssertionError("pinned llama.cpp missing one completion_probabilities "
+                             f"record; keys={sorted(response)}")
+    if not isinstance(entries[0], dict):
+        raise AssertionError("pinned llama.cpp invalid completion probability item")
+    top = entries[0].get("top_logprobs")
+    if not isinstance(top, list):
+        raise AssertionError("llama-server did not return top_logprobs")
+    return top
+
+
 def llama_logprobs(gguf: Path, server_bin: Path) -> tuple[list[dict], dict]:
     if not gguf.is_file() or not server_bin.is_file():
         raise AssertionError("actual GGUF and pinned llama-server binary required")
@@ -127,12 +146,7 @@ def llama_logprobs(gguf: Path, server_bin: Path) -> tuple[list[dict], dict]:
             "cache_prompt": False, "n_probs": SAMPLES,
             "return_tokens": True, "stream": False,
         }, timeout=100)
-        entries = response.get("probs")
-        if not isinstance(entries, list) or len(entries) != 1:
-            raise AssertionError("llama-server missing one completion probability record")
-        top = entries[0].get("top_logprobs")
-        if not isinstance(top, list):
-            raise AssertionError("llama-server did not return top_logprobs")
+        top = extract_top_logprobs(response)
         return top, {"generated_ids": response.get("tokens"),
                      "reported_topk": len(top), "server_exit_before_stop": server.poll()}
     except Exception as exc:

@@ -4,7 +4,9 @@ import unittest
 
 import numpy as np
 
-from trainingday.qwen35_gguf_logprobs_cpu import SAMPLES, assert_sampled_logprobs
+from trainingday.qwen35_gguf_logprobs_cpu import (
+    SAMPLES, assert_sampled_logprobs, extract_top_logprobs,
+)
 
 
 def fixtures():
@@ -48,6 +50,17 @@ class LogprobTests(unittest.TestCase):
         top[4]["logprob"] = float("nan")
         with self.assertRaisesRegex(AssertionError, "invalid"):
             assert_sampled_logprobs(hf, top)
+
+    def test_pinned_completion_probabilities_field_accepted(self):
+        _, top = fixtures()
+        self.assertEqual(extract_top_logprobs(
+            {"completion_probabilities": [{"top_logprobs": top}]}
+        ), top)
+
+    def test_outdated_docs_prose_probs_field_not_silently_accepted(self):
+        _, top = fixtures()
+        with self.assertRaisesRegex(AssertionError, "completion_probabilities"):
+            extract_top_logprobs({"probs": [{"top_logprobs": top}]})
 
 
 if __name__ == "__main__":
