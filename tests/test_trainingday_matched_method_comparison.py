@@ -1,6 +1,8 @@
 """Source-only adversarial contract tests; no model, GPU, or private DEV read."""
 
 import copy
+import hashlib
+import json
 import unittest
 
 from trainingday.matched_method_comparison import (
@@ -25,17 +27,23 @@ def receipts(plan):
     result = []
     for arm in plan["arms"]:
         zero = arm["label_mode"] == "zero"
+        base = arm["method"] == "OFFICIAL_BASE"
         result.append(dict(
             arm_id=arm["arm_id"], plan_sha256=plan["plan_sha256"],
             elapsed_ms=80_000, optimizer_steps=0 if zero else 10,
-            examples_seen=0 if zero else 100,
-            tokens_seen=0 if zero else 1000,
-            forward_calls=0 if zero else 20,
-            backward_calls=0 if zero or arm["method"] == "MEZO_LORA" else 10,
+            examples_seen=0 if zero or base else 100,
+            tokens_seen=0 if zero or base else 1000,
+            forward_calls=1 if base else 0 if zero else 20,
+            backward_calls=0 if zero or base or arm["method"] == "MEZO_LORA" else 10,
             peak_vram_bytes=2_700_000_000,
             peak_host_ram_bytes=3_200_000_000,
-            checkpoint_reloaded=True, interruption_resumed=not zero,
+            checkpoint_reloaded=True, interruption_resumed=not zero and not base,
+            adapter_sha256=None if base else "7" * 64,
+            loaded_weight_sha256=plan["official_weight_sha256"],
+            train_order_sha256=None if zero or base else "6" * 64,
         ))
+        if base:
+            result[-1]["optimizer_steps"] = 0
     return result
 
 
@@ -47,14 +55,20 @@ class MatchedMethodStudyTests(unittest.TestCase):
     def test_plan_has_seed_paired_methods_three_label_controls_and_hard_hold(self):
         a = build_study_plan(**spec())
         self.assertEqual(a, build_study_plan(**spec()))
-        self.assertEqual(len(a["arms"]), 18)
-        self.assertEqual(len({arm["arm_id"] for arm in a["arms"]}), 18)
+        self.assertEqual(len(a["arms"]), 21)
+        self.assertEqual(len({arm["arm_id"] for arm in a["arms"]}), 21)
         for seed in (11, 13, 17):
-            subset = [x for x in a["arms"] if x["seed"] == seed]
+            subset = [x for x in a["arms"] if x["seed"] == seed
+                      and x["method"] != "OFFICIAL_BASE"]
             self.assertEqual({x["method"] for x in subset},
                              {"MEZO_LORA", "QLORA_ADAMW"})
             self.assertEqual({x["label_mode"] for x in subset},
                              {"correct", "corrupted", "zero"})
+            references = [x for x in a["arms"] if x["seed"] == seed
+                          and x["method"] == "OFFICIAL_BASE"]
+            self.assertEqual(len(references), 1)
+            self.assertEqual(references[0]["trainable_subspace"],
+                             "NO_ADAPTER_UNMODIFIED_OFFICIAL_BASE")
         for k in ("source_rights_admitted", "host_owned_lease_verified",
                   "protected_evaluator_custody_verified", "authorizes_training",
                   "authorizes_eval_unseal", "allow_full_parameter_mezo_as_matched_arm"):
@@ -80,7 +94,7 @@ class MatchedMethodStudyTests(unittest.TestCase):
     def test_receipt_shape_covers_all_arms_but_does_not_authenticate(self):
         plan = build_study_plan(**spec())
         result = validate_untrusted_receipts(plan, receipts(plan))
-        self.assertEqual(result["arms_checked"], 18)
+        self.assertEqual(result["arms_checked"], 21)
         self.assertTrue(result["covers_all_declared_arms"])
         for k in ("physical_execution_independently_verified", "data_rights_verified",
                   "protected_eval_verified", "proves_learning"):
@@ -101,6 +115,24 @@ class MatchedMethodStudyTests(unittest.TestCase):
                     MatchedStudyError):
                 validate_untrusted_receipts(p, r)
 
+    def test_rehashed_incomplete_plan_or_forged_positive_authority_is_rejected(self):
+        original = build_study_plan(**spec())
+        for change in ("omit_method", "omit_base", "forge_authority"):
+            plan = copy.deepcopy(original)
+            if change == "omit_method":
+                plan["arms"] = [x for x in plan["arms"] if x["method"] != "MEZO_LORA"]
+            elif change == "omit_base":
+                plan["arms"] = [x for x in plan["arms"] if x["method"] != "OFFICIAL_BASE"]
+            else:
+                plan["authorizes_training"] = True
+                plan["protected_evaluator_custody_verified"] = True
+            plan.pop("plan_sha256")
+            plan["plan_sha256"] = hashlib.sha256(json.dumps(
+                plan, sort_keys=True, separators=(",", ":"),
+                allow_nan=False).encode()).hexdigest()
+            with self.subTest(change=change), self.assertRaises(MatchedStudyError):
+                validate_untrusted_receipts(plan, receipts(original))
+
     def test_untrusted_receipt_does_not_allow_private_data_or_fake_work(self):
         plan = build_study_plan(**spec())
         for field, value in (
@@ -112,6 +144,9 @@ class MatchedMethodStudyTests(unittest.TestCase):
             ("examples_seen", 0),
             ("tokens_seen", 0),
             ("forward_calls", 0),
+            ("peak_host_ram_bytes", 0),
+            ("peak_vram_bytes", 0),
+            ("train_order_sha256", "bad"),
         ):
             r = receipts(plan)
             record = next(x for x in r if ":correct:" in x["arm_id"])
@@ -136,6 +171,21 @@ class MatchedMethodStudyTests(unittest.TestCase):
         r = receipts(plan)
         qlora = next(x for x in r if x["arm_id"].startswith("QLORA_ADAMW:correct:"))
         qlora["backward_calls"] = 1
+        with self.assertRaises(MatchedStudyError):
+            validate_untrusted_receipts(plan, r)
+
+    def test_cross_method_exposure_and_unmodified_base_identity_enforced(self):
+        plan = build_study_plan(**spec())
+        for field, wrong in (("examples_seen", 10000), ("tokens_seen", 42),
+                             ("train_order_sha256", "8" * 64)):
+            r = receipts(plan)
+            m = next(x for x in r if x["arm_id"] == "MEZO_LORA:correct:11")
+            m[field] = wrong
+            with self.subTest(field=field), self.assertRaises(MatchedStudyError):
+                validate_untrusted_receipts(plan, r)
+        r = receipts(plan)
+        base = next(x for x in r if x["arm_id"] == "OFFICIAL_BASE:reference:11")
+        base["adapter_sha256"] = "9" * 64
         with self.assertRaises(MatchedStudyError):
             validate_untrusted_receipts(plan, r)
 
