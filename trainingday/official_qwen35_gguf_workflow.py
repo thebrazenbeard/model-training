@@ -140,7 +140,7 @@ def plan() -> dict:
             "windows_server_exe_sha256": LLAMA_SERVER_SHA256,
             "windows_quantize_exe_sha256": LLAMA_QUANTIZE_SHA256,
             "linux_cpu_tar_sha256": LLAMA_LINUX_TAR_SHA256,
-            "version_execution_qualified": False,
+            "version_execution_qualified_by_this_source": False,
             "model_execution_qualified": False,
             "arbitrary_manifest_executable_accepted": False,
         },

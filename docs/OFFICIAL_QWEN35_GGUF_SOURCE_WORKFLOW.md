@@ -70,9 +70,15 @@ Never relabel the corrupted-label control as trained Vera.
 `llama-server.exe --version` exited `0xC0000005` in `MSVCP140.dll` version
 14.32 before stdout or a listener. The official Windows release used VS2026;
 VN1's installed C++ redistributable was older. A runtime mismatch is a strong
-hypothesis, not proven causation. The separate Ubuntu WSL2 binary had an
-unresolved `libgomp.so.1` dependency on first static inspection. Do not turn
-either failure into automatic permission to install system-wide packages.
+hypothesis, not proven causation. **VN1's** separate Ubuntu WSL2 binary had an
+unresolved `libgomp.so.1` dependency on first static inspection. Conversely,
+a separate agent's **VN2 native Linux** version-only test of official b12098
+reported EXIT0, ELF SHA-256
+`8a6bc4c8e8540f1c063b59ab734477bc93b5cb63b174bda103663b53ad844d16`
+and `build 12098, commit 149f5641b`; that external receipt is not re-probed
+or granted serving authority by this source module. Version-only success
+is not model-load success. Do not turn the VN1 failures into universal
+runtime claims or automatic permission to install system-wide packages.
 
 ## Bounded conversion sequence — illustrative, **not executed**
 

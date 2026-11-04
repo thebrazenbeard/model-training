@@ -61,7 +61,7 @@ class OfficialQwen35WorkflowTests(unittest.TestCase):
         self.assertEqual(runtime["release"], "b12098")
         self.assertEqual(runtime["windows_server_exe_sha256"], LLAMA_SERVER_SHA256)
         self.assertEqual(runtime["windows_quantize_exe_sha256"], LLAMA_QUANTIZE_SHA256)
-        self.assertFalse(runtime["version_execution_qualified"])
+        self.assertFalse(runtime["version_execution_qualified_by_this_source"])
 
     def test_recipe_bf16_excludes_nextn_and_quantizes_q4(self):
         c = plan()["conversion"]
@@ -137,11 +137,11 @@ class OfficialQwen35WorkflowTests(unittest.TestCase):
     def test_plan_is_immutable_between_callers(self):
         a = plan()
         a["ready"] = True
-        a["toolchain"]["version_execution_qualified"] = True
+        a["toolchain"]["version_execution_qualified_by_this_source"] = True
         a["source"]["canonical_files"].clear()
         b = plan()
         self.assertIs(b["ready"], False)
-        self.assertIs(b["toolchain"]["version_execution_qualified"], False)
+        self.assertIs(b["toolchain"]["version_execution_qualified_by_this_source"], False)
         self.assertEqual(len(b["source"]["canonical_files"]), 11)
 
     def test_cli_is_nonzero_hard_hold_and_no_effects(self):
