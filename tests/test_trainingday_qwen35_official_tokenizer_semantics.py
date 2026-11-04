@@ -19,14 +19,15 @@ class FakeEncoding:
 
 class CharTokenizer:
     def token_to_id(self, text):
-        return {"<|im_start|>": 248045, "<|im_end|>": 248046}.get(text)
+        return {"<|endoftext|>": 248044,
+                "<|im_start|>": 248045, "<|im_end|>": 248046}.get(text)
 
     def encode(self, text, *, add_special_tokens):
         assert not add_special_tokens
-        tokens = re.split(r"(<\|im_start\|>|<\|im_end\|>)", text)
+        tokens = re.split(r"(<\|endoftext\|>|<\|im_start\|>|<\|im_end\|>)", text)
         ids = []
         for token in tokens:
-            if token in ("<|im_start|>", "<|im_end|>"):
+            if token in ("<|endoftext|>", "<|im_start|>", "<|im_end|>"):
                 ids.append(self.token_to_id(token))
             else:
                 ids.extend(ord(c) for c in token)
@@ -34,11 +35,36 @@ class CharTokenizer:
 
     def decode(self, ids, *, skip_special_tokens):
         assert not skip_special_tokens
-        return "".join({248045: "<|im_start|>", 248046: "<|im_end|>"}.get(i, chr(i))
+        return "".join({248044: "<|endoftext|>",
+                        248045: "<|im_start|>", 248046: "<|im_end|>"}.get(i, chr(i))
                        for i in ids)
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_official_tokenizer_eos_is_not_model_text_eos_or_chatml_role_boundary(self):
+        # Pinned Qwen3.5-4B@851bf6e... primary config sources:
+        # config.json text_config.eos_token_id=248044;
+        # tokenizer_config.json eos_token="<|im_end|>"=248046,
+        # pad_token="<|endoftext|>"=248044.
+        report = candidate.check_raw_tokenizer(CharTokenizer())
+        self.assertEqual(report["text_model_config_eos_token_id"], 248044)
+        self.assertEqual(report["tokenizer_eos_token_id"], 248046)
+        self.assertEqual(report["endoftext_token_id"], 248044)
+        self.assertEqual(report["im_start_token_id"], 248045)
+        self.assertEqual(report["im_end_token_id"], 248046)
+        self.assertNotEqual(report["text_model_config_eos_token_id"],
+                            report["tokenizer_eos_token_id"])
+        self.assertEqual(report["koboldcpp_stop_policy"], "UNKNOWN")
+
+    def test_tiny_gguf_fixture_special_ids_are_explicitly_synthetic(self):
+        from trainingday.qwen35_tiny_gguf_e2e_cpu import SYNTHETIC_SPECIAL_TOKEN_IDS
+        self.assertEqual(SYNTHETIC_SPECIAL_TOKEN_IDS,
+                         {"bos_token_id": 1, "eos_token_id": 2, "pad_token_id": 0})
+        self.assertNotEqual(SYNTHETIC_SPECIAL_TOKEN_IDS["eos_token_id"],
+                            candidate.TEXT_MODEL_CONFIG_EOS_ID)
+        self.assertNotEqual(SYNTHETIC_SPECIAL_TOKEN_IDS["eos_token_id"],
+                            candidate.TOKENIZER_EOS_ID)
+
     def test_wrong_end_id_fails(self):
         class WrongEnd(CharTokenizer):
             def token_to_id(self, text):
