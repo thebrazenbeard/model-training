@@ -58,33 +58,43 @@ def evaluate_public_fixture(bundle: Mapping) -> dict:
         raise PublicTransferEvaluationError("Cases must be a bounded nonempty list")
     expected = {}
     strata = defaultdict(list)
+    eval_prompts = set()
     for row in cases:
         if not isinstance(row, Mapping):
             raise PublicTransferEvaluationError("Case must be an object")
         case_id = row.get("case_id")
         if not isinstance(case_id, str) or not case_id.strip() or case_id in expected:
             raise PublicTransferEvaluationError("Case IDs must be unique nonempty strings")
-        for field in ("prompt", "expected_semantic", "stratum"):
-            _norm(row.get(field))
+        prompt = _norm(row.get("prompt"))
+        if prompt in eval_prompts:
+            raise PublicTransferEvaluationError("Duplicate eval prompt")
+        eval_prompts.add(prompt)
+        _norm(row.get("expected_semantic"))
+        stratum = _norm(row.get("stratum"))
         for field in ("family_id", "source_group_id", "template_id"):
-            if field not in row or not isinstance(row[field], str):
-                raise PublicTransferEvaluationError(f"Missing case field: {field}")
+            _norm(row.get(field))
         expected[case_id] = row
-        strata[row["stratum"]].append(case_id)
+        strata[stratum].append(case_id)
     if len(strata) < 2:
         raise PublicTransferEvaluationError("At least two transfer strata required")
 
-    training = bundle.get("train_rows", [])
-    if not isinstance(training, list):
-        raise PublicTransferEvaluationError("train_rows must be a list")
+    manifest = bundle.get("train_manifest")
+    if not isinstance(manifest, Mapping):
+        raise PublicTransferEvaluationError("An identified training manifest is required")
+    _norm(manifest.get("manifest_id"))
+    training = bundle.get("train_rows")
+    if not isinstance(training, list) or not 1 <= len(training) <= 10000:
+        raise PublicTransferEvaluationError("Nonempty, bounded train_rows are required")
     for row in training:
         if not isinstance(row, Mapping):
             raise PublicTransferEvaluationError("Training row must be an object")
+        for field in ("prompt", "family_id", "source_group_id", "template_id"):
+            _norm(row.get(field))
         for case in cases:
-            if row.get("prompt") and _norm(row["prompt"]) == _norm(case["prompt"]):
+            if _norm(row["prompt"]) == _norm(case["prompt"]):
                 raise PublicTransferEvaluationError("Train/eval prompt leakage")
             for field in ("family_id", "source_group_id", "template_id"):
-                if row.get(field) and case[field] and _norm(row[field]) == _norm(case[field]):
+                if _norm(row[field]) == _norm(case[field]):
                     raise PublicTransferEvaluationError(f"Train/eval {field} leakage")
 
     predictions = bundle.get("predictions")
@@ -97,7 +107,7 @@ def evaluate_public_fixture(bundle: Mapping) -> dict:
             raise PublicTransferEvaluationError("Prediction arm must be a list")
         observed = {}
         for row in rows:
-            if not isinstance(row, Mapping) or row.get("case_id") not in expected:
+            if not isinstance(row, Mapping) or not isinstance(row.get("case_id"), str) or row["case_id"] not in expected:
                 raise PublicTransferEvaluationError("Unknown prediction case")
             case_id = row["case_id"]
             if case_id in observed:
@@ -136,8 +146,12 @@ def evaluate_public_fixture(bundle: Mapping) -> dict:
         "scorer_version": SCORER_VERSION,
         "evidence_class": "PUBLIC_DEV_TEST",
         "fixture_sha256": _digest(fixture),
+        "train_manifest_sha256": _digest(manifest),
+        "train_rows_sha256": _digest(training),
         "input_sha256": _digest(bundle),
         "target_split": "public_development_transfer",
+        "input_trust": {"gold": "UNVERIFIED_CALLER_INPUT", "predictions": "UNVERIFIED_CALLER_INPUT",
+                        "provenance": "UNVERIFIED_CALLER_INPUT"},
         "control_types": list(ARMS),
         "case_count": len(cases),
         "scores": counts,
@@ -145,8 +159,11 @@ def evaluate_public_fixture(bundle: Mapping) -> dict:
         "result": "PUBLIC_DEV_DIFFERENTIAL_ONLY" if differential else "NO_DIFFERENTIAL_SIGNAL",
         "q6_status": "HOLD",
         "qualifies_q6": False,
-        "provenance": {key: provenance.get(key, "UNKNOWN") for key in PROVENANCE_FIELDS},
-        "limitations": ["Public fixture only", "Not a sealed bank", "No independent human or custodial witness"],
+        "provenance": {key: ("UNKNOWN" if key in ("evaluation_bank_id", "evaluation_custodian")
+                              else provenance.get(key, "UNKNOWN")) for key in PROVENANCE_FIELDS},
+        "limitations": ["Public fixture only", "Caller-supplied gold and predictions are unverified",
+                        "Scores do not establish statistical significance or model execution",
+                        "Not a sealed bank", "No independent human or custodial witness"],
     }
     receipt["receipt_sha256"] = _digest(receipt)
     return receipt

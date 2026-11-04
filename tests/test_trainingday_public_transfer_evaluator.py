@@ -22,7 +22,10 @@ def sample():
             for c in cases
         ]
     return {"fixture": {"visibility": "public", "purpose": "development", "split": "transfer", "cases": cases},
-            "train_rows": [], "predictions": predictions}
+            "train_manifest": {"manifest_id": "public-dev-training-v1"},
+            "train_rows": [{"prompt": "Unrelated public prompt", "family_id": "training-only-family",
+                            "source_group_id": "training-only-source", "template_id": "training-only-template"}],
+            "predictions": predictions}
 
 
 class PublicTransferEvaluatorTest(unittest.TestCase):
@@ -61,14 +64,14 @@ class PublicTransferEvaluatorTest(unittest.TestCase):
 
     def test_exact_prompt_leakage(self):
         b = sample()
-        b["train_rows"] = [{"prompt": "  WHICH   GATE? "}]
+        b["train_rows"][0]["prompt"] = "  WHICH   GATE? "
         with self.assertRaisesRegex(PublicTransferEvaluationError, "prompt leakage"):
             evaluate_public_fixture(b)
 
     def test_template_family_and_source_leakage(self):
         for field, value in (("family_id", "fa1"), ("source_group_id", "gb2"), ("template_id", "ta2")):
             b = sample()
-            b["train_rows"] = [{field: value}]
+            b["train_rows"][0][field] = value
             with self.assertRaisesRegex(PublicTransferEvaluationError, "leakage"):
                 evaluate_public_fixture(b)
 
@@ -93,6 +96,76 @@ class PublicTransferEvaluatorTest(unittest.TestCase):
         self.assertNotIn("Which gate?", str(a))
         self.assertNotIn("gate-a", str(a))
         self.assertEqual(len(a["receipt_sha256"]), 64)
+
+    def test_arbitrary_gold_and_predictions_are_never_qualified(self):
+        b = sample()
+        for case in b["fixture"]["cases"]:
+            case["expected_semantic"] = "arbitrary-caller-label"
+        for row in b["predictions"]["trained"]:
+            row["semantic_answer"] = "arbitrary-caller-label"
+        result = evaluate_public_fixture(b)
+        self.assertEqual(result["result"], "PUBLIC_DEV_DIFFERENTIAL_ONLY")
+        self.assertFalse(result["qualifies_q6"])
+        self.assertEqual(result["q6_status"], "HOLD")
+        for field in ("gold", "predictions", "provenance"):
+            self.assertEqual(result["input_trust"][field], "UNVERIFIED_CALLER_INPUT")
+
+    def test_missing_or_empty_training_manifest_rejected(self):
+        for mutation in ("missing_rows", "empty_rows", "missing_manifest", "blank_manifest"):
+            b = sample()
+            if mutation == "missing_rows":
+                del b["train_rows"]
+            elif mutation == "empty_rows":
+                b["train_rows"] = []
+            elif mutation == "missing_manifest":
+                del b["train_manifest"]
+            else:
+                b["train_manifest"]["manifest_id"] = "  "
+            with self.assertRaises(PublicTransferEvaluationError):
+                evaluate_public_fixture(b)
+
+    def test_blank_case_and_training_group_identifiers_rejected(self):
+        for part in ("fixture", "train_rows"):
+            for field in ("family_id", "source_group_id", "template_id"):
+                b = sample()
+                row = b[part]["cases"][0] if part == "fixture" else b[part][0]
+                row[field] = "  "
+                with self.assertRaises(PublicTransferEvaluationError):
+                    evaluate_public_fixture(b)
+
+    def test_strata_normalize_and_cannot_fake_two_groups(self):
+        b = sample()
+        for case in b["fixture"]["cases"]:
+            case["stratum"] = " TRANSFER-A " if case["case_id"].startswith("a") else "transfer-a"
+        with self.assertRaisesRegex(PublicTransferEvaluationError, "two transfer strata"):
+            evaluate_public_fixture(b)
+
+    def test_duplicate_eval_prompt_after_normalization_rejected(self):
+        b = sample()
+        b["fixture"]["cases"][1]["prompt"] = " WHICH   GATE? "
+        with self.assertRaisesRegex(PublicTransferEvaluationError, "Duplicate eval prompt"):
+            evaluate_public_fixture(b)
+
+    def test_nonstring_case_id_raises_domain_error(self):
+        for invalid in ([], {}, 99, None):
+            b = sample()
+            b["predictions"]["trained"][0]["case_id"] = invalid
+            with self.assertRaises(PublicTransferEvaluationError):
+                evaluate_public_fixture(b)
+            b = sample()
+            b["fixture"]["cases"][0]["case_id"] = invalid
+            with self.assertRaises(PublicTransferEvaluationError):
+                evaluate_public_fixture(b)
+
+    def test_private_custody_claim_is_not_echoed(self):
+        b = sample()
+        b["provenance"] = {"evaluation_bank_id": "SEALED-PRIVATE-FAKE",
+                           "evaluation_custodian": "PRIVATE-CLAIM-NOT-VERIFIED"}
+        result = evaluate_public_fixture(b)
+        self.assertEqual(result["provenance"]["evaluation_bank_id"], "UNKNOWN")
+        self.assertEqual(result["provenance"]["evaluation_custodian"], "UNKNOWN")
+        self.assertNotIn("PRIVATE-CLAIM", str(result))
+        self.assertNotIn("SEALED-PRIVATE-FAKE", str(result))
 
 
 if __name__ == "__main__":
