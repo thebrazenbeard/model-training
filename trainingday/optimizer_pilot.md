@@ -74,6 +74,9 @@ the last readback.** This code assumes an exclusive owner-controlled folder,
 not adversarial same-UID concurrency or a hostile filesystem.
 
 A normal failed partial write unlinks only its own newly created stage.
+The cleanup flag is set **only after** `open(O_CREAT|O_EXCL)` succeeds: even
+if a generated nonce collides with a preexisting same-owner file, the failed
+exclusive open never grants ownership and cleanup leaves that file unchanged.
 An abrupt process crash can leave a named stage before hard-link publication.
 **No automatic crash-orphan deletion or quarantine is implemented**: an old,
 mode-`0600`, single-linked, same-UID file with a correctly shaped staging name

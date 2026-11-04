@@ -347,6 +347,27 @@ class Qwen35OptimizerPilotTests(unittest.TestCase):
             self.assertEqual(first["deletions_performed"], 0)
             self.assertEqual(unrelated_user_file.read_bytes(), b"FORGED_USER_DATA")
 
+    def test_exclusive_temp_nonce_collision_never_deletes_user_file(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "fixture.json"
+            prefix = ".trainingday-fixture-" + hashlib.sha256(
+                target.name.encode("utf-8")).hexdigest()[:16] + "-"
+            sentinel = root / (prefix + "d" * 24)
+            sentinel.write_bytes(b"UNRELATED_USER_CONTENT")
+            sentinel.chmod(0o600)
+            before = sentinel.stat()
+            with patch("trainingday.optimizer_pilot.secrets.token_hex",
+                       return_value="d" * 24):
+                with self.assertRaisesRegex(LowMemoryExperimentError,
+                                            "checkpoint save/reload failed"):
+                    replay(target)
+            after = sentinel.stat()
+            self.assertEqual(sentinel.read_bytes(), b"UNRELATED_USER_CONTENT")
+            self.assertEqual((after.st_dev, after.st_ino),
+                             (before.st_dev, before.st_ino))
+            self.assertFalse(target.exists())
+
     def test_physical_launch_holds_without_reading_model(self):
         with self.assertRaisesRegex(PhysicalLaunchAuthorityUnavailable, "HARD HOLD"):
             physical_optimizer_launch(model="Qwen/Qwen3.5-4B", lease="self-asserted")

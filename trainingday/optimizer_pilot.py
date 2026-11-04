@@ -222,6 +222,7 @@ def persist_reload_fixture(
         raise LowMemoryExperimentError("fixture checkpoint too large")
     dir_fd = file_fd = read_fd = None
     temporary_name = None
+    created_stage = False
     published = False
     try:
         # Parent must be owner-exclusive; keep its FD anchored throughout.
@@ -229,6 +230,7 @@ def persist_reload_fixture(
         temporary_name = _staging_prefix(output.name) + secrets.token_hex(12)
         file_fd = os.open(temporary_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY
                           | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+        created_stage = True  # Only this successful O_EXCL result is ours to unlink.
         cursor = 0
         while cursor < len(serialized):
             written = os.write(file_fd, serialized[cursor:])
@@ -272,7 +274,7 @@ def persist_reload_fixture(
             os.close(read_fd)
         if file_fd is not None:
             os.close(file_fd)
-        if temporary_name is not None and dir_fd is not None:
+        if created_stage and temporary_name is not None and dir_fd is not None:
             try:
                 os.unlink(temporary_name, dir_fd=dir_fd)
             except FileNotFoundError:
