@@ -128,6 +128,13 @@ stdlib unit test uses a deliberately fake word tokenizer and validates only
 aggregation/fail-closed source logic; a real-Qwen profile requires a separately
 observed runtime invocation and its own receipt.
 
+**A real pinned-tokenizer-only run was performed on Lappy on 2026-11-04** and
+is documented separately in
+[`TRAININGDAY_R202_OFFICIAL_TOKENIZER_PROFILE_20261104.md`](TRAININGDAY_R202_OFFICIAL_TOKENIZER_PROFILE_20261104.md).
+Its public prompt+answer measurement found **757/1,536 rows over 64 tokens**,
+zero over 128. This is a concrete **seq64 candidate FAIL**, not a memory or
+end-to-end optimizer qualification; chat-template overhead remains unmeasured.
+
 ## Practical rights admission (owner and steward may be the same person)
 
 It is unnecessary to demand an unrelated third-party human as rights-holder
@@ -183,7 +190,9 @@ hidden grading data invalidates the independence claim.
   even when an earlier entry is wrong; these are not a dependent calculation
   trace. Tests independently validate that either zero or one displayed entry
   differs, with both error polarities represented.
-- No Qwen tokenizer 64-token fit, contamination-free private DEV, independent
+- Qwen tokenizer measurement now **refutes strict seq64 fit** for this R202
+  draft. No chat-template-inclusive 128-token optimizer fit, protected DEV,
+  independent
   oracle custody, copyright permission record, owner signature, authenticated
   base checkpoint, actual optimizer training or inference result has been
   established by this source package.
