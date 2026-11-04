@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 
-SCHEMA = "TRAININGDAY_MEZO_QLORA_MATCHED_STUDY_SOURCE_V3"
+SCHEMA = "TRAININGDAY_MEZO_QLORA_MATCHED_STUDY_SOURCE_V4"
 BASE_ID = "Qwen/Qwen3.5-4B"
 BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 METHODS = ("MEZO_LORA", "QLORA_ADAMW")
@@ -133,13 +133,15 @@ def build_study_plan(*, official_weight_sha256: str,
                      seeds: Sequence[int] = (113, 271, 997),
                      wall_clock_budget_seconds: int = 600,
                      actual_time_tolerance_percent: int = 20,
-                     candidate_sequence_length: int = 128) -> dict:
+                     candidate_sequence_length: int = 128,
+                     mezo_directions_per_step: int | None = None) -> dict:
     """Specify matched *adapter-subspace* trials; deny every physical grant.
 
     MeZO full-parameter training and QLoRA LoRA-only training do not have a
-    matched trainable parameter space. A fair optimizer comparison first uses
-    the same target LoRA parameters. Full-parameter MeZO is a *separate*
-    systems/capability comparison and must not be reported as this experiment.
+    matched trainable parameter space. Both methods use the same declared
+    LoRA targets, but ZO-SGD versus QLoRA/AdamW and possible quantization
+    differences mean this is a RECIPE comparison, not causal isolation of the
+    gradient estimator. Full-parameter MeZO is a separate systems comparison.
     """
     hashes = (official_weight_sha256, tokenizer_sha256, train_sha256,
               private_dev_commitment_sha256, lora_target_spec_sha256)
@@ -160,6 +162,10 @@ def build_study_plan(*, official_weight_sha256: str,
     if (type(candidate_sequence_length) is not int
             or not 32 <= candidate_sequence_length <= 2048):
         raise MatchedStudyError("bounded candidate tokenizer sequence length required")
+    if (mezo_directions_per_step is not None
+            and (type(mezo_directions_per_step) is not int
+                 or not 1 <= mezo_directions_per_step <= 64)):
+        raise MatchedStudyError("MeZO perturbation directions must be 1-64 if declared")
     schedule = _schedule(seeds, schedule_commitments)
     initial_adapters = _initial_adapters(seeds, initial_adapter_commitments)
 
@@ -187,6 +193,8 @@ def build_study_plan(*, official_weight_sha256: str,
     record = {
         "schema": SCHEMA,
         "status": "SOURCE_ONLY_HARD_HOLD",
+        "comparison_scope": "RECIPE_COMPARISON_ONLY",
+        "causal_gradient_estimator_isolated": False,
         "base_id": BASE_ID,
         "base_revision": BASE_REVISION,
         "official_weight_sha256": official_weight_sha256,
@@ -206,6 +214,8 @@ def build_study_plan(*, official_weight_sha256: str,
         "equal_wall_clock_budget_seconds": wall_clock_budget_seconds,
         "actual_time_tolerance_percent": actual_time_tolerance_percent,
         "candidate_sequence_length": candidate_sequence_length,
+        "mezo_directions_per_step": mezo_directions_per_step,
+        "mezo_perturbation_pairing_independently_verified": False,
         "full_chatml_tokenizer_fit_independently_verified": False,
         "require_zero_truncated_training_rows": True,
         "require_equal_paired_example_token_exposure": True,
@@ -253,7 +263,8 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
         seeds=plan.get("seeds"),
         wall_clock_budget_seconds=plan.get("equal_wall_clock_budget_seconds"),
         actual_time_tolerance_percent=plan.get("actual_time_tolerance_percent"),
-        candidate_sequence_length=plan.get("candidate_sequence_length"))
+        candidate_sequence_length=plan.get("candidate_sequence_length"),
+        mezo_directions_per_step=plan.get("mezo_directions_per_step"))
     if canonical != plan:
         raise MatchedStudyError("plan deviates from non-authorizing canonical schedule")
     claimed_sha = plan["plan_sha256"]
@@ -340,11 +351,15 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
         if arm["method"] == "MEZO_LORA" and receipt["backward_calls"]:
             raise MatchedStudyError("MeZO arm used gradient backpropagation")
         if (arm["method"] == "MEZO_LORA" and arm["label_mode"] != "zero"
-                and receipt["forward_calls"] < 2 * receipt["optimizer_steps"]):
-            raise MatchedStudyError("MeZO lacks two-sided forward-call accounting")
+                and receipt["forward_calls"] < 2 * receipt["optimizer_steps"]
+                * (plan["mezo_directions_per_step"] or 1)):
+            raise MatchedStudyError("MeZO lacks declared two-sided forward-call accounting")
         if arm["method"] == "QLORA_ADAMW" and arm["label_mode"] != "zero" \
                 and receipt["backward_calls"] < receipt["optimizer_steps"]:
             raise MatchedStudyError("QLoRA arm lacks backward-pass accounting")
+        if (arm["method"] == "QLORA_ADAMW" and arm["label_mode"] != "zero"
+                and receipt["forward_calls"] < receipt["backward_calls"]):
+            raise MatchedStudyError("standard QLoRA backprop lacks corresponding forward calls")
     elapsed_disparities = 0
     forward_disparities = 0
     backward_disparities = 0
@@ -374,6 +389,10 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
         "backward_count_disparate_pairs": backward_disparities,
         "actual_elapsed_time_within_declared_tolerance": elapsed_disparities == 0,
         "matched_training_exposure_declared": True,
+        "comparison_scope": "RECIPE_COMPARISON_ONLY",
+        "causal_gradient_estimator_isolated": False,
+        "mezo_direction_count_predeclared": plan["mezo_directions_per_step"] is not None,
+        "mezo_perturbation_pairing_independently_verified": False,
         "measured_compute_equivalence_established": False,
         "scientific_cost_comparison_status": (
             "TIME_DISPARITY_REQUIRES_SEPARATE_ANALYSIS" if elapsed_disparities
