@@ -6,12 +6,15 @@ param(
     [Parameter(Mandatory = $true)][string]$ExpectedCandidateSha256,
     [Parameter(Mandatory = $true)][string]$ExpectedInstalledSha256,
     [Parameter(Mandatory = $true)][string]$ExpectedSignerThumbprint,
-    [string]$ServiceName = 'VeraTrainingDayHostBroker',
     [int]$MinimumFreeGpuMiB = 3328
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$serviceName = 'VeraTrainingDayHostBroker'
+$expectedImage = Join-Path $env:ProgramFiles 'VERA\TrainingDayHostBroker\VeraTrainingDayHostBroker.exe'
+$aclHelper = Join-Path $PSScriptRoot 'Test-BrokerMaintenanceAcl.ps1'
+. $aclHelper
 $problems = New-Object 'System.Collections.Generic.List[string]'
 $facts = [ordered]@{
     candidate_sha256 = $null
@@ -69,6 +72,9 @@ try {
             $problems.Add('INSTALLED_SERVICE_PATH_UNQUOTED_OR_AMBIGUOUS')
         } else {
             $installedPath = [Environment]::ExpandEnvironmentVariables($quoted.Groups[1].Value)
+            if ([IO.Path]::GetFullPath($installedPath) -ine [IO.Path]::GetFullPath($expectedImage)) {
+                $problems.Add('INSTALLED_SERVICE_IMAGE_PATH_CHANGED')
+            }
             $installed = Get-Item -LiteralPath $installedPath -ErrorAction Stop
             if ($installed.PSIsContainer -or (($installed.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
                 $problems.Add('INSTALLED_BINARY_NOT_REGULAR_FILE')
@@ -76,19 +82,20 @@ try {
                 $installedSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $installed.FullName).Hash
                 $facts.installed_sha256 = $installedSha
                 if ($installedSha -ine $ExpectedInstalledSha256) { $problems.Add('INSTALLED_HASH_CHANGED_SINCE_BASELINE') }
-                $acl = Get-Acl -LiteralPath $installed.DirectoryName
-                foreach ($ace in $acl.Access) {
-                    if ($ace.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
-                    $writer = [Security.AccessControl.FileSystemRights]::Write -bor
-                              [Security.AccessControl.FileSystemRights]::Modify -bor
-                              [Security.AccessControl.FileSystemRights]::FullControl
-                    if (($ace.FileSystemRights -band $writer) -eq 0) { continue }
-                    $sid = try { $ace.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { '' }
-                    $trusted = @('S-1-5-18', 'S-1-5-32-544')
-                    if ($sid -notin $trusted -and $ace.IdentityReference.Value -notmatch '^NT SERVICE\\TrustedInstaller$') {
-                        $problems.Add('INSTALL_DIRECTORY_HAS_OTHER_WRITER')
+                if (-not (Test-TrainingDayNoUnexpectedWriters (Get-Acl -LiteralPath $installed.DirectoryName))) {
+                    $problems.Add('INSTALL_DIRECTORY_HAS_OTHER_WRITER')
+                }
+                if (-not (Test-TrainingDayNoUnexpectedWriters (Get-Acl -LiteralPath $installed.FullName))) {
+                    $problems.Add('INSTALL_BINARY_HAS_OTHER_WRITER')
+                }
+                $ancestor = Get-Item -LiteralPath $installed.DirectoryName
+                while ($ancestor) {
+                    if (($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                        $problems.Add('INSTALL_PATH_ANCESTOR_IS_REPARSE_POINT')
                         break
                     }
+                    if (-not $ancestor.Parent) { break }
+                    $ancestor = $ancestor.Parent
                 }
             }
         }
@@ -96,7 +103,17 @@ try {
 } catch { $problems.Add('INSTALLED_SERVICE_OR_ACL_INSPECTION_FAILED') }
 
 try {
-    $raw = & nvidia-smi --query-gpu=memory.total,memory.free --format=csv,noheader,nounits 2>$null
+    $gpuExecutables = @(
+        (Join-Path $env:WINDIR 'System32\nvidia-smi.exe'),
+        (Join-Path $env:ProgramFiles 'NVIDIA Corporation\NVSMI\nvidia-smi.exe')
+    )
+    $gpuExecutable = @($gpuExecutables | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1)
+    if ($gpuExecutable.Count -ne 1) { throw 'No trusted installed nvidia-smi path' }
+    $gpuSignature = Get-AuthenticodeSignature -LiteralPath $gpuExecutable[0]
+    if ($gpuSignature.Status -ne 'Valid' -or $gpuSignature.SignerCertificate.Subject -notmatch 'NVIDIA') {
+        throw 'NVIDIA observer executable signer is unqualified'
+    }
+    $raw = & $gpuExecutable[0] --query-gpu=memory.total,memory.free --format=csv,noheader,nounits 2>$null
     if ($LASTEXITCODE -ne 0 -or @($raw).Count -ne 1 -or [string]$raw -notmatch '^\s*(\d+)\s*,\s*(\d+)\s*$') {
         $problems.Add('GPU_OBSERVATION_UNAVAILABLE_OR_AMBIGUOUS')
     } else {
