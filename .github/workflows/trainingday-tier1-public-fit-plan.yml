@@ -36,7 +36,7 @@ jobs:
           assert record['plan']['broker_owner_signed_grant_required'] is True
           assert record['plan']['model_id'] == 'Qwen/Qwen3.5-4B'
           assert record['plan']['max_seconds'] == 1800
-          assert record['plan']['max_vram_mib'] == 3072
+          assert record['plan']['vram_target_mib'] == 3072
           assert record['plan'] == build_public_fit_plan(
               executable_sha256=record['plan']['executable_sha256'])
           print('TIER1_SOURCE_PLAN_ONLY_NO_AUTHORITY', record['plan_sha256'])
