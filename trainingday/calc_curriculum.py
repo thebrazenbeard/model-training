@@ -103,22 +103,28 @@ def _load_verified_symbolic():
     previous = sys.modules.get(name)
     sys.modules[name] = symbolic
     try:
-        # Compile the exact checked bytes, rather than loading a .pyc that may
-        # have a valid timestamp and size but entirely different instructions.
-        exec(compile(raw, str(path), "exec", dont_inherit=True), symbolic.__dict__)
-    except Exception as exc:
-        if previous is None:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = previous
-        raise CalcCurriculumError("verified Calc symbolic execution failed") from exc
+        try:
+            # Compile the exact checked bytes, never a timestamp-valid .pyc.
+            exec(compile(raw, str(path), "exec", dont_inherit=True), symbolic.__dict__)
+        except Exception as exc:
+            raise CalcCurriculumError("verified Calc symbolic execution failed") from exc
 
-    if (hashlib.sha256(path.read_bytes()).hexdigest() != CALC_SYMBOLIC_SHA256
-            or hashlib.sha256(init_path.read_bytes()).hexdigest() != CALC_INIT_SHA256):
-        raise CalcCurriculumError("Calc source changed during execution")
-    for required in ("Const", "Var"):
-        if not hasattr(symbolic, required):
-            raise CalcCurriculumError(f"Calc symbolic oracle missing {required}")
+        if (hashlib.sha256(path.read_bytes()).hexdigest() != CALC_SYMBOLIC_SHA256
+                or hashlib.sha256(init_path.read_bytes()).hexdigest() != CALC_INIT_SHA256):
+            raise CalcCurriculumError("Calc source changed during execution")
+        for required in ("Const", "Var"):
+            if not hasattr(symbolic, required):
+                raise CalcCurriculumError(f"Calc symbolic oracle missing {required}")
+    except BaseException:
+        # An interruption or failed post-exec check must not leave a private
+        # module behind after the oracle itself was rejected.  Do not clobber
+        # another concurrent publisher's replacement module, if any.
+        if sys.modules.get(name) is symbolic:
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+        raise
     return symbolic
 
 
