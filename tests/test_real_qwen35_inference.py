@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from contextlib import redirect_stderr
 
 from trainingday.real_qwen35_inference import (
     BASE_ID, BASE_REVISION, OFFICIAL_SHARD_SHA256, SCHEMA,
-    InferenceHold, build_command, main, probe, require_probe_resources,
+    InferenceHold, main, probe, require_probe_resources,
     verify_manifest,
 )
 
@@ -50,27 +52,33 @@ class RealQwenInferenceContractTests(unittest.TestCase):
         self.assertEqual(trained["adapter_gguf_sha256"], record(self.adapter)["sha256"])
         self.assertFalse(trained["conversion_lineage_independently_verified"])
         self.assertFalse(trained["official_shards_freshly_checked"])
-        self.assertEqual(build_command(base, port=18888)[-2:], ["--n-gpu-layers", "0"])
-        self.assertEqual(build_command(trained, port=18888)[-2:],
-                         ["--lora", str(self.adapter)])
-        self.assertIn("127.0.0.1", build_command(base, port=18888))
-        self.assertEqual(build_command(base, port=18888).count("--threads"), 1)
-        self.assertEqual(build_command(base, port=18888).count("--threads-batch"), 1)
+        self.assertFalse(trained["runtime_probe_qualified"])
+        self.assertFalse(trained["server_binary_identity_independently_verified"])
+        self.assertFalse(trained["host_file_immutability_verified"])
+        self.assertFalse(trained["listener_process_binding_verified"])
 
-    def test_probe_refuses_without_owner_idle_ack_before_process_launch(self):
+    def test_probe_always_refuses_even_with_owner_idle_ack_and_enough_ram(self):
         preflight = verify_manifest(self.manifest, "base")
-        with patch("trainingday.real_qwen35_inference.subprocess.Popen") as launch:
-            with self.assertRaisesRegex(InferenceHold, "owner confirmation"):
-                probe(preflight)
-            launch.assert_not_called()
-
-    def test_probe_refuses_low_available_ram_before_process_launch(self):
-        preflight = verify_manifest(self.manifest, "base")
-        with patch("trainingday.real_qwen35_inference.available_ram_bytes", return_value=2 * 1024**3):
-            with patch("trainingday.real_qwen35_inference.subprocess.Popen") as launch:
-                with self.assertRaisesRegex(InferenceHold, "insufficient available physical RAM"):
+        with patch("subprocess.Popen") as launch:
+            with patch("trainingday.real_qwen35_inference.available_ram_bytes", return_value=64 * 1024**3):
+                with self.assertRaisesRegex(InferenceHold, "independent binary identity"):
                     probe(preflight, host_idle_acknowledged=True)
                 launch.assert_not_called()
+
+    def test_probe_cannot_execute_arbitrary_manifest_binary(self):
+        preflight = verify_manifest(self.manifest, "base")
+        with patch("subprocess.Popen") as launch:
+            with self.assertRaisesRegex(InferenceHold, "runtime probe disabled"):
+                probe(preflight, host_idle_acknowledged=True)
+            launch.assert_not_called()
+
+    def test_probe_cannot_trust_post_preflight_mutated_gguf(self):
+        preflight = verify_manifest(self.manifest, "base")
+        self.base.write_bytes(b"GGUF" + b"\x99" * 64)
+        with patch("subprocess.Popen") as launch:
+            with self.assertRaisesRegex(InferenceHold, "runtime probe disabled"):
+                probe(preflight, host_idle_acknowledged=True)
+            launch.assert_not_called()
 
     def test_preflight_ram_floor_scales_with_actual_model_size(self):
         preflight = verify_manifest(self.manifest, "base")
@@ -125,6 +133,14 @@ class RealQwenInferenceContractTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
         self.assertEqual(main(["preflight", "--manifest", str(manifest_path),
                                "--mode", "base"]), 0)
+
+    def test_cli_probe_holds_even_if_manifest_is_absent(self):
+        missing = Path(self.temp.name) / "missing.json"
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code = main(["probe", "--manifest", str(missing), "--mode", "trained"])
+        self.assertEqual(exit_code, 1)
+        self.assertIn("runtime probe disabled", err.getvalue())
 
 
 if __name__ == "__main__":

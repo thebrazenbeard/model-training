@@ -1,9 +1,9 @@
-"""Fail-closed local GGUF conversation probe for official Qwen3.5-4B.
+"""Fail-closed offline GGUF preflight for Qwen3.5-4B (no model launch).
 
-This does not train, convert, authenticate a caller-provided provenance claim,
-or grant a physical GPU lease. It only verifies named local GGUF bytes and
-starts an explicitly selected, pinned llama-server *on loopback* for one prompt.
-Run `preflight` first. `probe` must be invoked separately for base and R16.
+An untrusted manifest and a matching SHA do not authenticate a server binary,
+conversion ancestry, listener ownership, process custody, or GPU lease.
+Therefore the `probe` action is deliberately disabled until those boundaries
+are independently implemented and qualified by a trusted host-owned launcher.
 """
 
 from __future__ import annotations
@@ -14,13 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import socket
-import subprocess
 import sys
-import tempfile
-import time
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 
 SCHEMA = "TRAININGDAY_QWEN35_REAL_GGUF_PROBE_V1"
@@ -118,35 +112,12 @@ def verify_manifest(manifest: dict, mode: str) -> dict:
                   "server": str(server)},
         "official_shards_freshly_checked": False,
         "conversion_lineage_independently_verified": False,
+        "server_binary_identity_independently_verified": False,
+        "host_file_immutability_verified": False,
+        "listener_process_binding_verified": False,
+        "runtime_probe_qualified": False,
         "runtime_started": False,
     }
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
-def _http_json(url: str, body: dict | None = None, *, timeout: int = 5) -> dict:
-    data = None if body is None else json.dumps(body).encode("utf-8")
-    with urlopen(Request(url, data=data,
-                         headers={"Content-Type": "application/json"}),
-                 timeout=timeout) as result:
-        doc = json.load(result)
-    _require(type(doc) is dict, "runtime returned non-object JSON")
-    return doc
-
-
-def build_command(preflight: dict, *, port: int) -> list[str]:
-    _require(1 <= port <= 65535, "invalid loopback port")
-    p = preflight["paths"]
-    cmd = [p["server"], "--model", p["base"], "--host", "127.0.0.1",
-           "--port", str(port), "--ctx-size", "512", "--parallel", "1",
-           "--threads", "2", "--threads-batch", "2", "--n-gpu-layers", "0"]
-    if p["adapter"] is not None:
-        cmd += ["--lora", p["adapter"]]
-    return cmd
 
 
 def available_ram_bytes() -> int:
@@ -194,67 +165,11 @@ def require_probe_resources(preflight: dict, *, host_idle_acknowledged: bool) ->
     return available
 
 
-def probe(preflight: dict, *, host_idle_acknowledged: bool = False,
-          timeout: int = 150) -> dict:
-    """One bounded fresh-process CPU conversation; never touch existing services."""
-    available_before = require_probe_resources(
-        preflight, host_idle_acknowledged=host_idle_acknowledged)
-    port = _free_port()
-    command = build_command(preflight, port=port)
-    # Keep noisy loader logs private to this owned temporary process.
-    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as log:
-        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
-                                   text=True)
-        started = time.monotonic()
-        try:
-            while True:
-                _require(process.poll() is None, "llama-server quit before ready")
-                try:
-                    h = _http_json(f"http://127.0.0.1:{port}/health", timeout=2)
-                    if h.get("status") == "ok":
-                        break
-                except (HTTPError, URLError, OSError, TimeoutError, ValueError):
-                    pass
-                _require(time.monotonic() - started < timeout,
-                         "llama-server readiness exceeded timeout")
-                time.sleep(0.5)
-            ready_sec = time.monotonic() - started
-            response = _http_json(f"http://127.0.0.1:{port}/v1/chat/completions", {
-                "messages": [{"role": "user", "content": PROMPT}],
-                "temperature": 0, "max_tokens": 16, "stream": False,
-                "seed": 20261104,
-            }, timeout=timeout)
-            elapsed = time.monotonic() - started
-            choices = response.get("choices")
-            _require(type(choices) is list and len(choices) == 1 and
-                     type(choices[0]) is dict, "missing single completion choice")
-            message = choices[0].get("message")
-            _require(type(message) is dict and type(message.get("content")) is str,
-                     "missing generated message")
-            _require(process.poll() is None, "server exited during generation")
-            return {**preflight,
-                    "status": "ACTUAL_LOCAL_LLAMA_SERVER_GENERATION",
-                    "runtime_started": True,
-                    "runtime": "llama.cpp /v1/chat/completions, fresh process, CPU",
-                    "readiness_seconds": round(ready_sec, 3),
-                    "prelaunch_available_ram_bytes": available_before,
-                    "host_idle_status": "OPERATOR_ACKNOWLEDGED_NOT_INDEPENDENTLY_VERIFIED",
-                    "elapsed_seconds": round(elapsed, 3),
-                    "prompt_sha256": hashlib.sha256(PROMPT.encode()).hexdigest(),
-                    "generated_text": message["content"],
-                    "finish_reason": choices[0].get("finish_reason"),
-                    "usage": response.get("usage"),
-                    "peak_ram_bytes": None,
-                    "peak_vram_bytes": None,
-                    "response_quality_verified": False}
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=10)
+def probe(*_args, **_kwargs) -> dict:
+    """Hard HOLD: no self-attested server execution or HTTP receipt accepted."""
+    raise InferenceHold(
+        "runtime probe disabled: independent binary identity, immutable file "
+        "custody, bound listener ownership and process-tree cleanup not qualified")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -262,16 +177,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("action", choices=["preflight", "probe"])
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--mode", choices=["base", "trained"], required=True)
-    parser.add_argument("--acknowledge-host-idle", action="store_true",
-                        help="required for probe; operator confirms the host is not busy")
     args = parser.parse_args(argv)
     try:
+        if args.action == "probe":
+            probe()
         _require(args.manifest.is_file() and not args.manifest.is_symlink(),
                  "manifest path unavailable")
         manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-        bound = verify_manifest(manifest, args.mode)
-        report = (probe(bound, host_idle_acknowledged=args.acknowledge_host_idle)
-                  if args.action == "probe" else bound)
+        report = verify_manifest(manifest, args.mode)
     except (InferenceHold, OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"REAL QWEN INFERENCE HOLD: {exc}", file=sys.stderr)
         return 1
