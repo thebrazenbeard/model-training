@@ -5,6 +5,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from trainingday.lowmem_experiment import LowMemoryExperimentError
 from trainingday.official_public_base import expected_source_record
@@ -74,10 +75,31 @@ class Qwen35OptimizerPilotTests(unittest.TestCase):
             ("model.layers.3.self_attn.q_proj", "model.layers.4.self_attn.v_proj"),
             (TARGETS[0], TARGETS[0]),
             ("model.layers.3.mlp.gate_proj", TARGETS[1]),
+            ("model.layers.999.self_attn.q_proj", "model.layers.999.self_attn.v_proj"),
+            ("model.layers.32.self_attn.q_proj", "model.layers.32.self_attn.v_proj"),
+            ("model.layers.2.self_attn.q_proj", "model.layers.2.self_attn.v_proj"),
             (TARGETS[0],),
         ):
             with self.subTest(targets=targets), self.assertRaises(LowMemoryExperimentError):
                 validate_official_plan(declaration(), expected_source_record(), targets)
+        self.assertEqual(validate_official_plan(
+            declaration(), expected_source_record(),
+            ("model.layers.31.self_attn.q_proj", "model.layers.31.self_attn.v_proj")),
+            ("model.layers.31.self_attn.q_proj", "model.layers.31.self_attn.v_proj"))
+
+    def test_arbitrary_hex_digest_does_not_become_trusted_tokenizer(self):
+        candidate = declaration()
+        candidate["files"]["tokenizer.json"] = "f" * 64
+        with TemporaryDirectory() as tmp:
+            result = replay(Path(tmp) / "fixture.json", declaration=candidate)
+        self.assertEqual(result["identity"]["tokenizer_sha256_declared_unverified"],
+                         "f" * 64)
+        self.assertEqual(result["identity"]["tokenizer_digest_trust"],
+                         "UNVERIFIED_DECLARATION")
+        self.assertFalse(result["identity"]["trusted_tokenizer_pin_matched"])
+        self.assertEqual(result["source_identity_trust"], "UNVERIFIED_DECLARATION")
+        self.assertEqual(result["module_inventory_trust"], "UNVERIFIED_DECLARATION")
+        self.assertFalse(result["tokenizer_bytes_verified"])
 
     def test_rank_sequence_steps_memory_and_flags_are_bounded(self):
         for field, value in (
@@ -102,6 +124,7 @@ class Qwen35OptimizerPilotTests(unittest.TestCase):
         self.assertTrue(fit["estimated_fit_from_untrusted_inputs"])
         self.assertFalse(fit["physical_headroom_measured"])
         self.assertFalse(fit["physical_training_authorized"])
+        self.assertEqual(fit["input_trust"], "UNVERIFIED_DECLARATION")
         self.assertFalse(memory_preflight(bounds=PilotBounds(), free_mib=4096,
                                           estimated_peak_mib=3800)
                          ["estimated_fit_from_untrusted_inputs"])
@@ -112,6 +135,8 @@ class Qwen35OptimizerPilotTests(unittest.TestCase):
             b = replay(Path(second) / "fixture.json")
             self.assertEqual(a, b)
             self.assertEqual(a["synthetic_updates"], 3)
+            self.assertEqual(a["gradient_source"], "SYNTHETIC_PRNG_NOT_MODEL_AUTOGRAD")
+            self.assertEqual(a["loss_source"], "SYNTHETIC_SCHEDULE_NOT_MODEL_FORWARD")
             self.assertEqual(a["physical_pretrained_optimizer_steps"], 0)
             self.assertEqual(a["status"], "SOURCE_ONLY_HARD_HOLD")
             self.assertNotEqual(a["initial_adapter_sha256"], a["final_adapter_sha256"])
@@ -157,9 +182,33 @@ class Qwen35OptimizerPilotTests(unittest.TestCase):
             victim.write_text("SAFE", encoding="utf-8")
             alias = Path(tmp) / "alias"
             alias.symlink_to(victim)
-            with self.assertRaisesRegex(LowMemoryExperimentError, "symlink"):
+            with self.assertRaisesRegex(LowMemoryExperimentError, "checkpoint"):
                 replay(alias)
             self.assertEqual(victim.read_text(encoding="utf-8"), "SAFE")
+
+    def test_checkpoint_ancestor_symlink_refused_and_no_orphan(self):
+        with TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            alias = Path(tmp) / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            with self.assertRaisesRegex(LowMemoryExperimentError, "checkpoint"):
+                replay(alias / "fixture.json")
+            self.assertEqual(list(real.iterdir()), [])
+
+    def test_checkpoint_partial_write_failure_rolls_back_owned_temp_only(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "fixture.json"
+            user_file = root / "owned.txt"
+            user_file.write_text("KEEP", encoding="utf-8")
+            with patch("trainingday.optimizer_pilot.os.write",
+                       side_effect=[10, OSError("injected partial write")]):
+                with self.assertRaisesRegex(LowMemoryExperimentError, "checkpoint"):
+                    replay(target)
+            self.assertFalse(target.exists())
+            self.assertEqual(user_file.read_text(encoding="utf-8"), "KEEP")
+            self.assertEqual(list(root.glob(".trainingday-fixture-*")), [])
 
     def test_physical_launch_holds_without_reading_model(self):
         with self.assertRaisesRegex(PhysicalLaunchAuthorityUnavailable, "HARD HOLD"):

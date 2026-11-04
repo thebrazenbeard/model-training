@@ -20,6 +20,12 @@ host broker grant. Physical pretrained optimizer steps observed: **zero**.
   context 64, three steps, with activation checkpointing. `one_step_kernel`
   remains the protected *unexecuted* one-step GPU candidate. This source-only
   replay deliberately uses tiny CPU float32 tensors and toy SGD, not QLoRA.
+- The pinned upstream revision's `config.json` declares **32** text layers,
+  with `full_attention` at indices **3, 7, 11, 15, 19, 23, 27, 31** and
+  `linear_attention` elsewhere. The source-only target validator refuses
+  nonexistent indices and `self_attn` on linear-attention layers. The
+  [official immutable config](https://huggingface.co/Qwen/Qwen3.5-4B/blob/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/config.json)
+  is the metadata source; no local config bytes/model modules were verified.
 - With 4 GiB total GPU VRAM, a 512 MiB reserve leaves only 3584 MiB
   *hypothetical* headroom. This is **not** evidence that Qwen3.5 quantized
   model load or optimizer step fits; observed free VRAM, allocator load/step
@@ -28,10 +34,14 @@ host broker grant. Physical pretrained optimizer steps observed: **zero**.
   runnable fallback.
 
 `validate_official_plan` rejects a mismatched official source manifest,
-revision, tokenization hash declaration, text loader, architecture, foreign
+revision, malformed tokenization hash declaration, text loader, architecture, foreign
 visual/MTP module paths, or unpaired attention targets. **These checks operate
 on caller-supplied source declarations**: they cannot authenticate local file
 bytes, actual module structure, frozen base, signer, data rights, or lease.
+**Any syntactically valid 64-digit tokenizer digest remains untrusted.**
+The receipt records `tokenizer_digest_trust = UNVERIFIED_DECLARATION` and
+`trusted_tokenizer_pin_matched = false`; there is no tokenizer verification
+without an independently held trusted pin and actual byte comparison.
 Before any future launch, the independent host gate and actual pinned snapshot
 validator must verify these facts; simply passing a source validator cannot
 qualify a model or start training.
@@ -43,7 +53,12 @@ fixtures and three CPU-only toy SGD updates. It checks finite positive
 gradient norms, nonzero byte changes per step, ordered before/after SHA-256,
 exclusive checkpoint creation, readback byte equality, and a distinct final
 adapter SHA-256. The fixture file is created only after the memory declaration
-passes; existing paths and symlinks are refused. Callers should use an
+passes. Every path ancestor is opened with `O_NOFOLLOW`, and a random
+exclusive temporary file is fully written and fsynced before atomic
+no-clobber hard-link publication; the directory is fsynced, then the new
+checkpoint is reloaded and inode/byte-checked. A failed partial write removes
+only its own temporary file; existing destinations and symlink ancestors are
+refused. Callers should use an
 isolated temporary directory for disposable fixtures; the code never deletes
 or overwrites caller files.
 
@@ -51,7 +66,9 @@ Receipt distinguishes `synthetic_updates = 3` from
 `physical_pretrained_optimizer_steps = 0`; records source revision,
 checkpoint/text architecture, *unverified declared* tokenizer SHA, seed,
 synthetic provenance, rank/context, adapter hashes, save/reload and expected
-resource estimate. `gpu_lease_id = null`, `rights_verified = false`,
+resource estimate marked `UNVERIFIED_DECLARATION`. Fake gradients are fixed
+PRNG values (not autograd); the falling toy loss is an assigned schedule
+(not a model forward pass). `gpu_lease_id = null`, `rights_verified = false`,
 `base_bytes_verified = false`, `tokenizer_bytes_verified = false`,
 `official_graph_verified = false`, `physical_training_authorized = false`,
 `model_quality_proved = false`. Never promote these records to physical

@@ -11,9 +11,12 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import random
 import re
+import secrets
+import stat
 import struct
 from typing import Mapping
 
@@ -29,6 +32,11 @@ from trainingday.physical_launch_authority import require_physical_launch_author
 SCHEMA = "TRAININGDAY_QWEN35_QLORA_SYNTHETIC_REPLAY_V1"
 LAYER = re.compile(r"model\.layers\.([0-9]{1,3})\.self_attn\.(q_proj|v_proj)\Z")
 CHECKPOINT_LIMIT = 16 * 1024
+# Pinned upstream config.json at BASE_REVISION: text_config.num_hidden_layers=32,
+# layer_types=(linear, linear, linear, full_attention) * 8. This is SOURCE
+# METADATA, not locally authenticated config bytes or an inspected model graph.
+SOURCE_TEXT_LAYER_TYPES = ("linear_attention", "linear_attention",
+                           "linear_attention", "full_attention") * 8
 
 
 @dataclass(frozen=True)
@@ -80,6 +88,10 @@ def validate_official_plan(
         match = LAYER.fullmatch(name)
         if match is None:
             raise LowMemoryExperimentError("LoRA target outside official text attention")
+        index = int(match[1])
+        if (index >= len(SOURCE_TEXT_LAYER_TYPES)
+                or SOURCE_TEXT_LAYER_TYPES[index] != "full_attention"):
+            raise LowMemoryExperimentError("target has no source-declared full-attention layer")
         layers.setdefault(match[1], set()).add(match[2])
     if any(targets != {"q_proj", "v_proj"} for targets in layers.values()):
         raise LowMemoryExperimentError("unpaired text attention LoRA targets")
@@ -101,6 +113,7 @@ def memory_preflight(
         "estimated_peak_mib": estimated_peak_mib,
         "declared_free_mib": free_mib,
         "reserve_mib": bounds.reserve_mib,
+        "input_trust": "UNVERIFIED_DECLARATION",
         "physical_headroom_measured": False,
         "load_and_optimizer_peak_measured": False,
         "gpu_lease_issued": False,
@@ -137,8 +150,9 @@ def persist_reload_fixture(
     """
     _validate_fixture_tensors(tensors, targets)
     output = Path(path)
-    if output.is_symlink():
-        raise LowMemoryExperimentError("symlink checkpoint target forbidden")
+    if any(part == ".." for part in output.parts) or not output.name:
+        raise LowMemoryExperimentError("unsafe checkpoint path")
+    output = Path(os.path.abspath(output))
     document = {
         "schema": SCHEMA,
         "tensors": {key: value.hex() for key, value in sorted(tensors.items())},
@@ -148,11 +162,37 @@ def persist_reload_fixture(
                   + "\n").encode("utf-8")
     if len(serialized) > CHECKPOINT_LIMIT:
         raise LowMemoryExperimentError("fixture checkpoint too large")
+    dir_fd = file_fd = read_fd = None
+    temporary_name = None
     try:
-        with output.open("xb") as stream:
-            stream.write(serialized)
-        with output.open("rb") as stream:
-            raw = stream.read(CHECKPOINT_LIMIT + 1)
+        # Traverse *each* ancestor with O_NOFOLLOW. Keep the final directory
+        # FD throughout creation/publish/reload to prevent ancestor swaps.
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        dir_fd = os.open("/", flags)
+        for component in output.parent.parts[1:]:
+            next_fd = os.open(component, flags, dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        temporary_name = ".trainingday-fixture-" + secrets.token_hex(12)
+        file_fd = os.open(temporary_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                          | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+        cursor = 0
+        while cursor < len(serialized):
+            written = os.write(file_fd, serialized[cursor:])
+            if written <= 0:
+                raise OSError("short checkpoint write")
+            cursor += written
+        os.fsync(file_fd)
+        # Atomic no-clobber publication: hard-link refuses any existing name.
+        # Unlike os.replace/rename, this cannot overwrite a user file.
+        os.link(temporary_name, output.name, src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd, follow_symlinks=False)
+        os.fsync(dir_fd)
+        read_fd = os.open(output.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        if (not stat.S_ISREG(os.fstat(read_fd).st_mode)
+                or os.fstat(read_fd).st_ino != os.fstat(file_fd).st_ino):
+            raise LowMemoryExperimentError("checkpoint inode changed on reload")
+        raw = os.read(read_fd, CHECKPOINT_LIMIT + 1)
         if len(raw) > CHECKPOINT_LIMIT:
             raise LowMemoryExperimentError("reloaded checkpoint too large")
         loaded = json.loads(raw.decode("utf-8"))
@@ -166,6 +206,18 @@ def persist_reload_fixture(
         return restored
     except (OSError, ValueError, TypeError, UnicodeError) as exc:
         raise LowMemoryExperimentError("checkpoint save/reload failed") from exc
+    finally:
+        if read_fd is not None:
+            os.close(read_fd)
+        if file_fd is not None:
+            os.close(file_fd)
+        if temporary_name is not None and dir_fd is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 def replay_synthetic_adapter(
@@ -210,7 +262,11 @@ def replay_synthetic_adapter(
         "identity": {"base_id": source["repository"], "base_revision": source["revision"],
                      "checkpoint_architecture": source["checkpoint_architecture"],
                      "text_loader": source["text_loader"],
-                     "tokenizer_sha256_declared_unverified": declaration["files"]["tokenizer.json"]},
+                     "tokenizer_sha256_declared_unverified": declaration["files"]["tokenizer.json"],
+                     "tokenizer_digest_trust": "UNVERIFIED_DECLARATION",
+                     "trusted_tokenizer_pin_matched": False},
+        "source_identity_trust": "UNVERIFIED_DECLARATION",
+        "module_inventory_trust": "UNVERIFIED_DECLARATION",
         "adapter_targets": list(targets),
         "rank": bounds.rank,
         "sequence_length": bounds.sequence_length,
@@ -218,6 +274,8 @@ def replay_synthetic_adapter(
         "seed": bounds.seed,
         "data_provenance": "SYNTHETIC_FIXED_SEED_NO_PROTECTED_DATA",
         "control_type": "CPU_TOY_SGD_NOT_QWEN_PRETRAINED_OPTIMIZER",
+        "gradient_source": "SYNTHETIC_PRNG_NOT_MODEL_AUTOGRAD",
+        "loss_source": "SYNTHETIC_SCHEDULE_NOT_MODEL_FORWARD",
         "synthetic_updates": len(witnesses),
         "physical_pretrained_optimizer_steps": 0,
         "initial_adapter_sha256": initial_hash,
