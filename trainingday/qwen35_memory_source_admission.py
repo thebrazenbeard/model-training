@@ -81,9 +81,38 @@ def _strict_json(raw: bytes) -> dict:
     return obj
 
 
+def _reject_redirected_path(path: Path) -> None:
+    """Reject static ancestor symlinks and Windows junction/reparse redirects.
+
+    This is a path preflight, not race-proof host custody: an adversary with
+    permission to swap ancestors between lstat and open could still redirect
+    the final open. Such custody must be supplied by a separate host owner.
+    """
+    _require(".." not in path.parts, "metadata parent traversal rejected")
+    # absolute() preserves the lexical ancestor components unlike resolve(),
+    # which would follow a malicious symlink before we can detect it.
+    candidate = path.absolute()
+    for component in (candidate, *candidate.parents):
+        try:
+            st = component.lstat()
+        except OSError as exc:
+            raise MetadataAdmissionError("metadata path ancestor inaccessible") from exc
+        _require(not stat.S_ISLNK(st.st_mode),
+                 "metadata path or ancestor must not be symlink")
+        if os.name == "nt":
+            # A Windows junction may be a directory reparse point rather than
+            # a Python symlink. Missing attrs are UNKNOWN and fail closed.
+            attributes = getattr(st, "st_file_attributes", None)
+            reparse_bit = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", None)
+            _require(type(attributes) is int and type(reparse_bit) is int,
+                     "Windows reparse-point detection unavailable")
+            _require((attributes & reparse_bit) == 0,
+                     "metadata path or ancestor is a Windows reparse point")
+
+
 def _read_bounded_file(path: Path, max_bytes: int) -> bytes:
     path = Path(path)
-    _require(not path.is_symlink(), "metadata path must not be symlink")
+    _reject_redirected_path(path)
     # A FIFO can block indefinitely in os.open() *before* fstat rejects it.
     # O_NONBLOCK makes nonregular path rejection bounded on POSIX; regular
     # file reads are unaffected. No GPU or model weights are touched.
