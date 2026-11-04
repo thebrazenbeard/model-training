@@ -79,6 +79,17 @@ internal static class Tier1BGrantCandidateTests {
               matched.Reason=="SIGNATURE_AND_SCOPE_MATCHED_SOURCE_ONLY_NO_LAUNCH",
               "scoped crypto fixture should match without launch");
 
+            Assert(matched.AbortByUnix==1800000200L &&
+                matched.AbortByUnix<Now+1800,
+                "midrun expiry must dominate 1800-second ceiling");
+            var oneSecondLeft=Tier1BGrantCandidate.VerifyForNativeTestOnly(
+                valid,sig,fixture,Host(7,1800000199L));
+            CheckNoLaunch(oneSecondLeft,"expiry mid-run");
+            Assert(oneSecondLeft.ScopeAndSignatureMatched &&
+                oneSecondLeft.AbortByUnix==1800000200L &&
+                oneSecondLeft.AbortByUnix<1800000199L+1800,
+                "midrun expiry does not provide an earlier abort deadline");
+
             byte[] forged=(byte[])sig.Clone();forged[forged.Length/2]^=1;
             Tier1BCandidateObservation badSig=Tier1BGrantCandidate
                 .VerifyForNativeTestOnly(valid,forged,fixture,Host(7,Now));
@@ -109,8 +120,14 @@ internal static class Tier1BGrantCandidateTests {
             var atExpiry=Tier1BGrantCandidate.VerifyForNativeTestOnly(
                 valid,sig,fixture,Host(7,1800000200L));
             CheckNoLaunch(atExpiry,"expiry equals admission");
-            Assert(!atExpiry.ScopeAndSignatureMatched,
-                "grant accepted at now==not_after");
+            Assert(!atExpiry.ScopeAndSignatureMatched && atExpiry.AbortByUnix==0,
+                "grant accepted at now==not_after or leaked deadline");
+            var clockOverflow=Tier1BGrantCandidate.VerifyForNativeTestOnly(
+                valid,sig,fixture,Host(7,Int64.MaxValue-1));
+            CheckNoLaunch(clockOverflow,"clock arithmetic overflow");
+            Assert(!clockOverflow.ScopeAndSignatureMatched &&
+                clockOverflow.AbortByUnix==0,
+                "clock overflow matched");
             Change(fixture,1,"TIER2_R201","wrong tier");
             Change(fixture,2,"VN1","wrong host");
             Change(fixture,3,"WDDM_PHYSICAL_EXCLUSIVE","wrong policy");
