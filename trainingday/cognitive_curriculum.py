@@ -54,11 +54,25 @@ def _math_logic(seed: bytes) -> tuple[str, str]:
     multiplier = 2 + seed[4] % 8
     subtract = 1 + seed[5] % 37
     divisor = 2 + seed[6] % 8
-    result = (start + add) * multiplier - subtract
-    prompt = (f"Start at {start}; add {add}; multiply the result by {multiplier}; "
-              f"subtract {subtract}. Is the final integer divisible by {divisor}? "
-              "Answer YES or NO only.")
-    return prompt, "YES" if result % divisor == 0 else "NO"
+    variant = seed[10] % 3
+    if variant == 0:
+        result = (start + add) * multiplier - subtract
+        prompt = (f"Start at {start}; add {add}; multiply the result by {multiplier}; "
+                  f"subtract {subtract}. Is the final integer divisible by {divisor}? "
+                  "Answer YES or NO only.")
+        holds = result % divisor == 0
+    elif variant == 1:
+        threshold = seed[11] % 91 - 45
+        result = 2 * (start + add) - subtract
+        prompt = (f"Let x={start}. Replace x by 2*(x+{add})-{subtract}. "
+                  f"Is x strictly greater than {threshold}? Answer YES or NO only.")
+        holds = result > threshold
+    else:
+        result = start + add - subtract
+        prompt = (f"Begin with {start}; increase it by {add}, then decrease it "
+                  f"by {subtract}. Is the answer even? Answer YES or NO only.")
+        holds = result % 2 == 0
+    return prompt, "YES" if holds else "NO"
 
 
 def _language_tracking(seed: bytes) -> tuple[str, str]:
@@ -113,23 +127,23 @@ def _dependency_planning(seed: bytes) -> tuple[str, str]:
     for n, name in enumerate(names):
         deps = tuple(names[k] for k in range(n) if seed[4 + n] & (1 << k))
         prereqs[name] = deps
-    spec = "; ".join(f"{name} requires {','.join(prereqs[name]) or 'none'} "
-                     f"and takes {durations[name]} unit(s)"
+    policy = "shortest" if seed[18] & 1 else "longest"
+    spec = "; ".join(f"{name}:[{','.join(prereqs[name])}]/{durations[name]}"
                      for name in sorted(names))
     ready: list[str] = []
     pending = set(names)
     while pending:
         available = sorted((name for name in pending if all(d in ready for d in prereqs[name])),
-                           key=lambda name: (durations[name], name))
+                           key=lambda name: ((durations[name] if policy == "shortest"
+                                              else -durations[name]), name))
         if not available:
             raise CognitiveCurriculumError("cyclic planning input")
         chosen = available[0]
         ready.append(chosen)
         pending.remove(chosen)
-    prompt = ("Order tasks V,W,X,Y,Z so all prerequisites come first; at each step "
-              "choose the currently available task with shortest duration, "
-              "breaking ties alphabetically. "
-              f"Dependencies: {spec}. Answer as comma-separated task letters only.")
+    prompt = ("Schedule tasks V,W,X,Y,Z after dependencies; pick the currently "
+              f"available task with {policy} duration (alphabetical ties). "
+              f"Each task:[prerequisites]/duration: {spec}. Reply comma-separated order.")
     return prompt, ",".join(ready)
 
 
@@ -138,16 +152,24 @@ def _error_correction(seed: bytes) -> tuple[str, str]:
     add = 2 + seed[3] % 13
     mult = 2 + seed[4] % 7
     sub = 1 + seed[5] % 19
-    correct = (start + add, (start + add) * mult,
-               (start + add) * mult - sub)
+    variant = seed[10] % 2
+    if variant == 0:
+        operations = f"+{add}, *{mult}, -{sub}"
+        correct = (start + add, (start + add) * mult,
+                   (start + add) * mult - sub)
+    else:
+        operations = f"*{mult}, -{sub}, +{add}"
+        correct = (start * mult, start * mult - sub,
+                   start * mult - sub + add)
     error_step = 1 + seed[6] % 3
     wrong = correct[error_step - 1] + (1 + seed[7] % 7)
     shown = list(correct)
     shown[error_step - 1] = wrong
-    prompt = (f"Starting value {start}, operations in order are +{add}, *{mult}, -{sub}. "
-              f"A work log claims step1={shown[0]}, step2={shown[1]}, "
-              f"step3={shown[2]}. Identify the earliest incorrect step "
-              "and its correct value. Answer 'STEP N: VALUE' only.")
+    prompt = (f"Starting value {start}; independent arithmetic checks are "
+              f"{operations}. A log lists step1={shown[0]}, step2={shown[1]}, "
+              f"step3={shown[2]} (each step computed from the intended correct "
+              "prior value). Identify the first wrong entry and its correct value. "
+              "Reply 'STEP N: VALUE'.")
     return prompt, f"STEP {error_step}: {correct[error_step - 1]}"
 
 
@@ -171,12 +193,11 @@ def _evidence_uncertainty(seed: bytes) -> tuple[str, str]:
         answer = "ACCEPT"
     else:
         answer = "INSUFFICIENT"
-    prompt = (f"Access requires ALL: level >= {threshold}, completed {module} training, "
-              f"and open_orders <= {max_orders}. An explicitly "
-              "failed condition means REJECT even if the other field is missing; if "
-              "neither fails but information is missing, answer INSUFFICIENT. "
+    prompt = (f"Access requires level>={threshold}, completed {module} training, "
+              f"and open_orders<={max_orders}. A known failure means REJECT; "
+              "otherwise missing data means INSUFFICIENT. "
               f"Record: level={level}; training={training}; open_orders={orders}. "
-              "Answer ACCEPT, REJECT, or INSUFFICIENT only.")
+              "Reply ACCEPT/REJECT/INSUFFICIENT.")
     return prompt, answer
 
 
@@ -193,7 +214,20 @@ _GENERATORS = {
 def train_row(family: str, index: int) -> dict[str, str]:
     """Return one bounded, reproducible public TRAIN row, never DEV data."""
     seed = _seed(family, index)
-    prompt, answer = _GENERATORS[family](seed)
+    # Source-label balance prevents a majority-class shortcut from scoring
+    # 76% on divisibility or >69% on three-valued access. The public rejection
+    # loop is deterministic, bounded, and NOT a protected evaluation sampler.
+    target = ("YES" if index % 2 else "NO") if family == "math_logic" else None
+    if family == "evidence_uncertainty":
+        target = ("ACCEPT", "REJECT", "INSUFFICIENT")[index % 3]
+    for attempt in range(8192):
+        proposed = (hashlib.sha256(seed + attempt.to_bytes(4, "big")).digest()
+                    if target is not None else seed)
+        prompt, answer = _GENERATORS[family](proposed)
+        if target is None or answer == target:
+            break
+    else:
+        raise CognitiveCurriculumError("bounded class-balanced generation exhausted")
     if (type(prompt) is not str or type(answer) is not str or not prompt or not answer
             or len(prompt) > _LIMIT or len(answer) > _LIMIT):
         raise CognitiveCurriculumError("invalid or overlong generated row")

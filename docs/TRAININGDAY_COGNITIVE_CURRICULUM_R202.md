@@ -13,11 +13,11 @@ machine-checked task families:
 
 | Family | Rows | Narrow capability and independent test |
 | --- | ---: | --- |
-| `math_logic` | 256 | Sequence of integer operations and divisibility; arithmetic recomputed from prompt |
+| `math_logic` | 256 | Divisibility, parity, or inequality after integer operations; recomputed from prompt |
 | `language_tracking` | 256 | Follow ownership through two natural-language transfers; test replays each transfer |
 | `tool_selection` | 256 | Select typed integer tool, JSON arguments, or abstain when no weather tool exists; test parses intent and arguments |
-| `dependency_planning` | 256 | Order a five-task DAG by available shortest duration and alphabetical tie-break; test independently validates legal predecessors and greedy choice |
-| `error_correction` | 256 | Find first wrong intermediate arithmetic value and correct it; test recalculates every step |
+| `dependency_planning` | 256 | Order a five-task DAG by available shortest or longest duration with alphabetical tie-break; test independently validates legal predecessors and greedy choice |
+| `error_correction` | 256 | Find first wrong intermediate arithmetic value under two operator orderings; test recalculates every step |
 | `evidence_uncertainty` | 256 | Three-valued decisions with missing, failed and satisfied conditions; test independently applies open-world decision rule |
 
 Total **1,536 TRAIN rows**, not 1,536 independent reasoning demonstrations.
@@ -49,15 +49,39 @@ order. This output SHA-256 pins the exact generated TRAIN data:
 schema=VERA_TRAININGDAY_R202_COGNITIVE_CURRICULUM_V1
 corpus_id=R202_NEW_ORIGINAL_COGNITIVE_TRAIN
 train_count=1536
-train_sha256=e95563a1672d531b884b5b6003f4f38412e42a09e7aa4685adec50338c294bd1
+train_sha256=771471a6524410a99b14e8988ef6e0cdd7515a5756c4376a07319b439f58b80a
 private_dev_included=false
 authorizes_training=false
 ```
 
 The test suite independently reconstructs each answer using only each row's
-public prompt, verifies row uniqueness and an exact corpus commitment,
-rejects invalid generator indices, and checks that every authority flag
-remains false. It is a SOURCE test, not model evaluation or host attestation.
+public prompt, verifies row uniqueness, structural/answer-class coverage and
+an exact corpus commitment, rejects invalid generator indices, and checks
+that every authority flag remains false. It is a SOURCE test, not model
+evaluation or host attestation.
+
+### Cheap shortcut baselines / source bias checks
+
+Raw deterministic random sampling initially produced a **FAIL for curriculum
+adequacy**: 194/256 divisibility answers were NO, while 178/256 access
+decisions were REJECT. A constant-majority prediction would score 75.8% and
+69.5% on those source rows without solving any task. This does not prove the
+model would exploit those shortcuts, but it is a clear, measurable training
+bias. R202 now applies a bounded, reproducible per-class rejection sampler:
+
+| Family | Frozen answer counts | Constant-class TRAIN baseline |
+| --- | --- | ---: |
+| `math_logic` | YES 128 / NO 128 | 50.0% |
+| `evidence_uncertainty` | ACCEPT 86 / REJECT 85 / INSUFFICIENT 85 | 33.6% |
+| `tool_selection` | Three supported/no-tool intents, each below 42% of rows | Below 42% |
+
+The other families contain structured output targets rather than small
+enumerated answer classes; their answer frequencies alone are not a meaningful
+measure of shortcut resistance. The generator checks distinct prompt surfaces
+and tests structural varieties but does **not** certify semantic independence.
+Labels are generated after public deterministic rejection, not by protected
+private evaluator sampling. The public class stratification and exact TRAIN
+SHA can still be memorized and must not be used as hidden qualification data.
 
 ## Practical rights admission (owner and steward may be the same person)
 
@@ -102,11 +126,17 @@ hidden grading data invalidates the independence claim.
 
 ## Negative findings / limits
 
-- These examples are structurally templated. High performance can be template
-  recognition rather than generalization, and 256 variants per family are not
-  a substitute for a broad, human-reviewed curriculum.
+- These examples are structurally templated (two or three forms for some
+  families). High performance can be template recognition rather than
+  generalization, and 256 samples per family do not amount to a broad,
+  human-reviewed curriculum. Even balanced classes have trivial structural
+  shortcuts; a blinded, distribution-shifted evaluator must challenge them.
 - The task set omits long-context discourse, robust code execution, real tool
   side effects, adversarial dialogue, and genuinely open-ended writing.
+- Logged error-correction steps are **independent checks against intended
+  correct prior values**. Therefore a later displayed entry can be correct
+  even when an earlier entry is wrong; these are not a dependent calculation
+  trace. Tests independently validate that exactly one displayed entry differs.
 - No Qwen tokenizer 64-token fit, contamination-free private DEV, independent
   oracle custody, copyright permission record, owner signature, authenticated
   base checkpoint, actual optimizer training or inference result has been
