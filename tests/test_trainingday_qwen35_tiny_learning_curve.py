@@ -50,6 +50,42 @@ class TinyQwenLearningCurveTests(unittest.TestCase):
             self.assertGreater(len(set(assigned)), curve.CHECKPOINT_STEPS[1] * curve.BATCH_SIZE)
             self.assertEqual(len(set(assigned)), len(train))
 
+    def test_optimizer_exposure_partitions_each_fixed_checkpoint(self):
+        for seed in curve.SEEDS:
+            train, heldout = baseline._pairs(seed)
+            assigned = curve._assigned_pairs(seed, train)
+            scheduled = set(assigned)
+            prev_exposed = set()
+            for steps in curve.CHECKPOINT_STEPS:
+                exposed, unexposed = curve._exposure_domain(assigned, steps)
+                self.assertFalse(set(exposed) & set(unexposed))
+                self.assertEqual(set(exposed) | set(unexposed), scheduled)
+                self.assertTrue(prev_exposed <= set(exposed))
+                self.assertFalse(set(exposed) & set(heldout))
+                self.assertFalse(set(unexposed) & set(heldout))
+                self.assertEqual(set(exposed), set(assigned[:steps * curve.BATCH_SIZE]))
+                self.assertEqual(set(unexposed),
+                                 scheduled - set(assigned[:steps * curve.BATCH_SIZE]))
+                if steps == 0:
+                    self.assertEqual(exposed, [])
+                    self.assertEqual(len(unexposed), len(train))
+                if steps == 4:
+                    self.assertEqual(len(exposed), 16)
+                    self.assertGreater(len(unexposed), 0)
+                if steps == 16:
+                    self.assertEqual(len(exposed), len(train))
+                    self.assertEqual(unexposed, [])
+                prev_exposed = set(exposed)
+
+    def test_optimizer_exposure_rejects_undefined_or_broken_schedule(self):
+        train, _ = baseline._pairs(curve.SEEDS[0])
+        assigned = curve._assigned_pairs(curve.SEEDS[0], train)
+        for bad_step in (-1, 5, 17, None, 0.0, True):
+            with self.assertRaises(AssertionError):
+                curve._exposure_domain(assigned, bad_step)
+        with self.assertRaises(AssertionError):
+            curve._exposure_domain(assigned[:-1], 4)
+
     def test_invalid_training_source_fails_closed(self):
         with self.assertRaises(AssertionError):
             curve._assigned_pairs(35060, [(1, 2)] * 30)
