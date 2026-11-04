@@ -112,6 +112,30 @@ def text_key_mapping(snapshot: Path, *, expected_index_sha256: str,
     return mapping
 
 
+def anchored_weight_key_mapping(mapping: dict[str, str]) -> dict[str, str]:
+    """Adapt validated literal checkpoint names to Transformers regex keys.
+
+    Transformers 5.22.1 turns user `key_mapping` entries into WeightRenaming
+    regular expressions. Raw dotted checkpoint names are *not* safe patterns:
+    `.` would match arbitrary characters and `.search()` need not start at 0.
+    """
+    if type(mapping) is not dict or not mapping:
+        raise TextCheckpointProjectionError("text loader mapping absent")
+    escaped = {}
+    for source, target in mapping.items():
+        if (type(source) is not str or not source.startswith(TEXT_PREFIX)
+                or type(target) is not str
+                or target != "model." + source[len(TEXT_PREFIX):]):
+            raise TextCheckpointProjectionError("unsafe text loader source/target pair")
+        # Python '$' also matches *before* a final newline. WeightRenaming
+        # calls re.search(), so use the unconditional end-of-string anchor.
+        pattern = "^" + re.escape(source) + r"\Z"
+        if pattern in escaped:
+            raise TextCheckpointProjectionError("ambiguous escaped text loader key")
+        escaped[pattern] = target
+    return escaped
+
+
 def prepare_text_loader(snapshot: Path, *, expected_index_sha256: str,
                         expected_shards: set[str]):
     """Build a meta-only language-model inventory before real tensor loading."""
@@ -137,7 +161,7 @@ def prepare_text_loader(snapshot: Path, *, expected_index_sha256: str,
     expected = set(skeleton.state_dict()) - {"lm_head.weight"}
     if set(mapping.values()) != expected:
         raise TextCheckpointProjectionError("indexed text weights do not cover model parameters")
-    return full.text_config, mapping
+    return full.text_config, anchored_weight_key_mapping(mapping)
 
 
 def verify_text_load(model, loading_info: dict) -> None:

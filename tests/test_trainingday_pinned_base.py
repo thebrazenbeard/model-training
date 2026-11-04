@@ -8,6 +8,7 @@ import unittest
 
 from trainingday.pinned_base import (
     BASE_ID, BASE_REVISION, BaseBindingError, require_official_base,
+    inspect_untrusted_base_binding_for_native_test_only,
 )
 
 
@@ -44,10 +45,33 @@ class PinnedBaseTests(unittest.TestCase):
         self.binding.write_text(json.dumps(self.manifest), encoding="utf-8")
 
     def test_hashes_are_checked_but_no_authority_is_issued(self):
-        binding, snapshot = require_official_base(self.binding)
+        binding, snapshot = inspect_untrusted_base_binding_for_native_test_only(self.binding)
         self.assertEqual(binding, self.manifest)
         self.assertEqual(snapshot, self.snapshot)
         self.assertNotIn("training_authorized", binding)
+
+    def test_production_official_admission_rejects_hash_consistent_partial_fake_weights(self):
+        # These synthetic bytes are internally consistent with the caller
+        # declaration, but not either whole official shard. A verifier that
+        # accepts them can never establish authenticated official training.
+        with self.assertRaises(BaseBindingError):
+            require_official_base(self.binding)
+
+    def test_production_official_admission_rejects_two_fake_shards(self):
+        self.shard = "model.safetensors-00001-of-00002.safetensors"
+        first = b"fake-first-shard"
+        second = b"fake-second-shard"
+        for name in list(self.manifest["files"]):
+            if name.endswith(".safetensors"):
+                del self.manifest["files"][name]
+        for name, data in ((self.shard, first),
+                ("model.safetensors-00002-of-00002.safetensors", second)):
+            (self.snapshot / name).write_bytes(data)
+            self.manifest["files"][name] = sha(data)
+        (self.snapshot / "model.safetensors-00001-of-00001.safetensors").unlink()
+        self.write_binding()
+        with self.assertRaises(BaseBindingError):
+            require_official_base(self.binding)
 
     def test_wrong_model_family_or_revision_is_rejected(self):
         for field, value in (("model_id", "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive"),
@@ -57,18 +81,18 @@ class PinnedBaseTests(unittest.TestCase):
                 self.manifest[field] = value
                 self.write_binding()
                 with self.assertRaises(BaseBindingError):
-                    require_official_base(self.binding)
+                    inspect_untrusted_base_binding_for_native_test_only(self.binding)
                 self.manifest[field] = original
         self.write_binding()
 
     def test_rejects_corrupt_or_unbound_weights(self):
         (self.snapshot / self.shard).write_bytes(b"tampered")
         with self.assertRaises(BaseBindingError):
-            require_official_base(self.binding)
+            inspect_untrusted_base_binding_for_native_test_only(self.binding)
         (self.snapshot / self.shard).write_bytes(self.files[self.shard])
         (self.snapshot / "model.safetensors-00002-of-00002.safetensors").write_bytes(b"foreign")
         with self.assertRaises(BaseBindingError):
-            require_official_base(self.binding)
+            inspect_untrusted_base_binding_for_native_test_only(self.binding)
 
     def test_rejects_duplicate_identity_keys_and_nonfinite(self):
         original = self.binding.read_text(encoding="utf-8")
@@ -77,18 +101,18 @@ class PinnedBaseTests(unittest.TestCase):
             with self.subTest(raw=raw[:80]):
                 self.binding.write_text(raw, encoding="utf-8")
                 with self.assertRaises(BaseBindingError):
-                    require_official_base(self.binding)
+                    inspect_untrusted_base_binding_for_native_test_only(self.binding)
 
     def test_rejects_symlink_binding_snapshot_or_shard(self):
         alias = self.root / "alias.json"
         alias.symlink_to(self.binding)
         with self.assertRaises(BaseBindingError):
-            require_official_base(alias)
+            inspect_untrusted_base_binding_for_native_test_only(alias)
         shard = self.snapshot / self.shard
         shard.unlink()
         shard.symlink_to(self.snapshot / "config.json")
         with self.assertRaises(BaseBindingError):
-            require_official_base(self.binding)
+            inspect_untrusted_base_binding_for_native_test_only(self.binding)
 
 
 if __name__ == "__main__":
