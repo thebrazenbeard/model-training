@@ -62,13 +62,14 @@ internal static class Tier1BGrantCandidateTests {
         }
     }
     static CertificateRequest OwnerRequest(RSA key,bool includePurpose,
-                                           bool isCa=false,bool purposeCritical=true) {
+                                           bool isCa=false,bool purposeCritical=true,
+                                           X509KeyUsageFlags keyUsage=X509KeyUsageFlags.DigitalSignature) {
         var request=new CertificateRequest("CN=VERA TrainingDay Tier1 Owner TEST",
             key,HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(
             isCa,isCa,0,true));
         request.CertificateExtensions.Add(new X509KeyUsageExtension(
-            X509KeyUsageFlags.DigitalSignature,true));
+            keyUsage,true));
         if(includePurpose) {
             var eku=new OidCollection();
             eku.Add(new Oid(OwnerPurposeOid));
@@ -163,6 +164,28 @@ internal static class Tier1BGrantCandidateTests {
                     Assert(!noncritical.ScopeAndSignatureMatched &&
                         noncritical.Reason=="OWNER_CERTIFICATE_PURPOSE_MUST_BE_CRITICAL",
                         "noncritical Tier1 B EKU bypassed critical-purpose requirement");
+                }
+                foreach(X509KeyUsageFlags extra in new X509KeyUsageFlags[] {
+                    X509KeyUsageFlags.KeyEncipherment,
+                    X509KeyUsageFlags.KeyCertSign
+                }) {
+                    // Exact-purpose certs that also authorize encryption or
+                    // CA signing must never satisfy signing-only owner policy.
+                    var dualUseRequest=OwnerRequest(ownerKey,true,false,true,
+                        X509KeyUsageFlags.DigitalSignature | extra);
+                    using(var dualUseWithKey=dualUseRequest.CreateSelfSigned(
+                        DateTimeOffset.UtcNow.AddMinutes(-5),DateTimeOffset.UtcNow.AddDays(1)))
+                    using(var dualUsePublic=new X509Certificate2(
+                        dualUseWithKey.Export(X509ContentType.Cert))) {
+                        var dualUse=Tier1BGrantCandidate.VerifyPublicCertForNativeTestOnly(
+                            dualUsePublic,Sha(dualUsePublic.RawData),payload,signature,
+                            Host(7,Now));
+                        CheckNoLaunch(dualUse,"dual-use owner key usage "+extra);
+                        Assert(!dualUse.ScopeAndSignatureMatched &&
+                            dualUse.Reason=="OWNER_CERTIFICATE_KEY_USAGE_NOT_SIGNING_ONLY",
+                            "owner certificate with extra "+extra+
+                            " KeyUsage was accepted by signing-only verifier");
+                    }
                 }
                 var caRequest=OwnerRequest(ownerKey,true,true);
                 using(var caWithKey=caRequest.CreateSelfSigned(
