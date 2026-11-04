@@ -37,7 +37,8 @@ class WeightMappingEscapeTests(unittest.TestCase):
         self.assertTrue(re.search(pattern, next(iter(raw))))
         for foreign in ("modelXlanguage_model.layers.1.mlp.down_proj.weight",
                         "model.language_model.layers.1.mlp.down_proj.weight.foreign",
-                        "foreign.model.language_model.layers.1.mlp.down_proj.weight"):
+                        "foreign.model.language_model.layers.1.mlp.down_proj.weight",
+                        "model.language_model.layers.1.mlp.down_proj.weight\n"):
             with self.subTest(foreign=foreign):
                 self.assertIsNone(re.search(pattern, foreign))
 
@@ -115,7 +116,8 @@ class OfficialMetadataBridgeTests(unittest.TestCase):
 
             # All mapping sources are regexes in Transformers 5.22.1.
             # A '.' in a raw key must not match arbitrary characters.
-            for forged in (source.replace(".", "X", 1), source + ".foreign"):
+            for forged in (source.replace(".", "X", 1), source + ".foreign",
+                           source + "\n"):
                 self.assertFalse(any(transform.rename_source_key(forged)[1] is not None
                                      for transform in direct),
                                  f"foreign key was accidentally remapped: {forged}")

@@ -127,7 +127,9 @@ def anchored_weight_key_mapping(mapping: dict[str, str]) -> dict[str, str]:
                 or type(target) is not str
                 or target != "model." + source[len(TEXT_PREFIX):]):
             raise TextCheckpointProjectionError("unsafe text loader source/target pair")
-        pattern = "^" + re.escape(source) + "$"
+        # Python '$' also matches *before* a final newline. WeightRenaming
+        # calls re.search(), so use the unconditional end-of-string anchor.
+        pattern = "^" + re.escape(source) + r"\Z"
         if pattern in escaped:
             raise TextCheckpointProjectionError("ambiguous escaped text loader key")
         escaped[pattern] = target
