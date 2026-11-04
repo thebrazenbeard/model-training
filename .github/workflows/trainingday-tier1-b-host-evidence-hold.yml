@@ -1,0 +1,65 @@
+name: TRAININGDAY Tier1 B host input evidence (HOLD only)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/trainingday-tier1-b-host-evidence-hold.yml"
+      - "trainingday/windows_host_broker/Tier1BHostEvidenceHold.cs"
+      - "tests/native_broker_tier1_b_host_evidence.cs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-native-source-negative:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require canonical public source context
+        shell: pwsh
+        env:
+          REPO: ${{ github.repository }}
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if ($env:REPO -ne 'thebrazenbeard/model-training' -or $env:PRIVATE -ne 'false') {
+            throw 'Unknown source trust context'
+          }
+
+      - name: Checkout exact immutable candidate HEAD
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact HEAD
+        shell: pwsh
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $actual = (git rev-parse --verify HEAD).Trim()
+          if ($actual -ne $env:EXPECTED) { throw "Head mismatch: $actual" }
+          Write-Output "SOURCE_ONLY_HEAD=$actual"
+
+      - name: Compile and run .NET Framework 4.8 host-owned file/replay negative witnesses
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { throw 'Native C# compiler missing' }
+          $base = Join-Path $PWD 'trainingday/windows_host_broker'
+          $hold = Join-Path $base 'Tier1BHostEvidenceHold.cs'
+          $journal = Join-Path $base 'HostOwnedProbeReservation.cs'
+          $job = Join-Path $base 'JobObjectChildCustody.cs'
+          $test = Join-Path $PWD 'tests/native_broker_tier1_b_host_evidence.cs'
+          $exe = Join-Path $env:RUNNER_TEMP 'Tier1BHostEvidenceHold.exe'
+          & $csc /nologo /target:exe ('/out:'+$exe) /r:System.Core.dll /r:System.Security.dll $hold $journal $job $test
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) {
+            throw 'Host evidence source failed native compilation'
+          }
+          $output = & $exe
+          Write-Output $output
+          if ($LASTEXITCODE -ne 0 -or
+              ($output | Out-String) -notmatch 'NATIVE_TIER1_B_HOST_EVIDENCE_HOLD_PASS') {
+            throw 'Host evidence native negatives failed'
+          }
+          Write-Output 'PASS source-only negatives; NO host enrollment, service install or GPU effect'
