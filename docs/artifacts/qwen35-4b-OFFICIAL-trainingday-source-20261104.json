@@ -37,7 +37,10 @@
       "config.json",
       "tokenizer_config.json",
       "tokenizer.json",
-      "model.safetensors.index.json"
+      "model.safetensors.index.json",
+      "chat_template.jinja",
+      "merges.txt",
+      "vocab.json"
     ],
     "signature": null,
     "physical_launch_allowed": false,
