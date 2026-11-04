@@ -88,6 +88,32 @@ def _exposure_domain(assigned: list[tuple[int, int]], steps: int
     return exposed, unexposed
 
 
+def _prefix_feedback_histogram(labels: list[int], steps: int) -> dict[str, int]:
+    """Count targets consumed *so far*; whole-schedule balance is insufficient."""
+    if (not isinstance(steps, int) or steps not in CHECKPOINT_STEPS or
+            len(labels) != CHECKPOINT_STEPS[-1] * BATCH_SIZE):
+        raise AssertionError("invalid optimizer feedback histogram source")
+    if any(not isinstance(x, int) or isinstance(x, bool) or not 0 <= x <= 18
+           for x in labels):
+        raise AssertionError("invalid optimizer feedback label")
+    return {str(answer): count for answer, count in
+            sorted(Counter(labels[:steps * BATCH_SIZE]).items())}
+
+
+def _histogram_l1(correct: dict[str, int], shuffled: dict[str, int],
+                  expected_count: int) -> int:
+    """L1 count distance of cumulative optimizer target frequencies."""
+    for histogram in (correct, shuffled):
+        if (not isinstance(histogram, dict) or
+                any(not isinstance(k, str) or not k.isdecimal() or
+                    not isinstance(v, int) or isinstance(v, bool) or v <= 0
+                    for k, v in histogram.items()) or
+                sum(histogram.values()) != expected_count):
+            raise AssertionError("invalid optimizer prefix histogram")
+    return sum(abs(correct.get(key, 0) - shuffled.get(key, 0))
+               for key in correct.keys() | shuffled.keys())
+
+
 def _arm(torch, seed: int, train_pairs: list[tuple[int, int]],
          withheld_pairs: list[tuple[int, int]], *, shuffled: bool) -> dict:
     model = baseline._model(torch, seed)
@@ -122,6 +148,8 @@ def _arm(torch, seed: int, train_pairs: list[tuple[int, int]],
                     baseline._answer_nll(model, exposed, torch) if exposed else None),
                 "unexposed_train_domain_true_answer_nll": (
                     baseline._answer_nll(model, unexposed, torch) if unexposed else None),
+                "optimizer_consumed_feedback_histogram": _prefix_feedback_histogram(
+                    labels, step),
             })
         if step == CHECKPOINT_STEPS[-1]:
             break
@@ -177,6 +205,12 @@ def run() -> dict:
                    "scheduled_train_domain_advantage_nats": (
                        b["scheduled_train_domain_true_answer_nll"] -
                        a["scheduled_train_domain_true_answer_nll"])}
+            frequency_l1 = _histogram_l1(
+                a["optimizer_consumed_feedback_histogram"],
+                b["optimizer_consumed_feedback_histogram"],
+                a["steps"] * BATCH_SIZE)
+            row["optimizer_prefix_feedback_frequency_l1_count"] = frequency_l1
+            row["optimizer_prefix_feedback_marginals_matched"] = frequency_l1 == 0
             for domain in ("exposed", "unexposed"):
                 if a[f"{domain}_train_pair_count"] != b[f"{domain}_train_pair_count"]:
                     raise AssertionError("paired arms differ in exposure partition")
@@ -212,7 +246,11 @@ def run() -> dict:
                 "Separate exposed/unexposed training-domain NLL partitions the "
                 "schedule by actual optimizer exposure at each checkpoint. "
                 "Unexposed scheduled examples are not independently heldout, "
-                "and both empty-domain NLLs are null rather than zero."
+                "and both empty-domain NLLs are null rather than zero. "
+                "Shuffled feedback preserves the full 64-example target "
+                "frequency multiset, NOT necessarily the first 4 or 16 "
+                "consumed labels; the reported prefix L1 count distance "
+                "exposes this early-checkpoint frequency confound."
             )}
 
 
