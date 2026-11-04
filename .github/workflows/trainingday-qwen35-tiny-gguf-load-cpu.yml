@@ -33,6 +33,13 @@ jobs:
           ref: 149f5641b931aaf33697d70f9abc90c3e5300247
           path: llama-cpp
           persist-credentials: false
+      - name: Check out pinned upstream KoboldCPP v1.124.2 source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LostRuins/koboldcpp
+          ref: 6d2fedf8624e5f05926af3191f9efdcb13c4133c
+          path: koboldcpp
+          persist-credentials: false
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -83,3 +90,71 @@ jobs:
           python -m trainingday.qwen35_tiny_gguf_e2e_cpu load \
             "$RUNNER_TEMP/qwen35tiny/merged-f16.gguf" \
             "$GITHUB_WORKSPACE/llama-cpp/build/bin/llama-cli"
+      - name: Verify pinned KoboldCPP source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C koboldcpp rev-parse HEAD)" = "6d2fedf8624e5f05926af3191f9efdcb13c4133c"
+          test -f koboldcpp/src/models/qwen35.cpp
+          test -f koboldcpp/src/llama-vocab.cpp
+      - name: Build actual pinned KoboldCPP CPU backend from source
+        shell: bash
+        run: |
+          set -euo pipefail
+          make -C koboldcpp LLAMA_PORTABLE=1 koboldcpp_default -j2
+          test -s koboldcpp/koboldcpp_default.so
+      - name: Load GGUF and generate through actual KoboldCPP CPU API
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RUNNER_TEMP/qwen35tiny/merged-f16.gguf"
+          python -u koboldcpp/koboldcpp.py \
+            --model "$RUNNER_TEMP/qwen35tiny/merged-f16.gguf" \
+            --port 51273 --contextsize 512 --threads 2 --usecpu --skiplauncher \
+            > "$RUNNER_TEMP/koboldcpp-load.log" 2>&1 &
+          kcpp_pid=$!
+          trap 'kill "$kcpp_pid" 2>/dev/null || true; wait "$kcpp_pid" 2>/dev/null || true' EXIT
+          ready=0
+          for attempt in $(seq 1 120); do
+            if ! kill -0 "$kcpp_pid" 2>/dev/null; then
+              echo "KoboldCPP exited before model-load HTTP readiness"
+              tail -100 "$RUNNER_TEMP/koboldcpp-load.log"
+              exit 1
+            fi
+            if curl --silent --show-error --fail --max-time 3 \
+              http://127.0.0.1:51273/api/v1/model \
+              > "$RUNNER_TEMP/koboldcpp-model.json" 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != 1 ]; then
+            echo "KoboldCPP model-load readiness was not reached in 120 seconds"
+            tail -100 "$RUNNER_TEMP/koboldcpp-load.log"
+            exit 1
+          fi
+          python - "$RUNNER_TEMP/koboldcpp-model.json" <<'PY'
+          import json
+          import sys
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert isinstance(result.get("result"), str) and result["result"], result
+          print("KoboldCPP model-load HTTP response:", result)
+          PY
+          curl --silent --show-error --fail --max-time 120 \
+            -H 'Content-Type: application/json' \
+            --data '{"prompt":"hello","max_length":1,"temperature":0,"top_p":1}' \
+            http://127.0.0.1:51273/api/v1/generate \
+            > "$RUNNER_TEMP/koboldcpp-generate.json"
+          python - "$RUNNER_TEMP/koboldcpp-generate.json" <<'PY'
+          import json
+          import sys
+          result = json.load(open(sys.argv[1], encoding="utf-8"))
+          entries = result.get("results", [])
+          assert isinstance(entries, list) and entries, result
+          output = entries[0].get("text")
+          assert isinstance(output, str) and output != "", result
+          print("KoboldCPP generated one token; repr:", repr(output))
+          PY
+          sha256sum "$RUNNER_TEMP/qwen35tiny/merged-f16.gguf"
+          tail -35 "$RUNNER_TEMP/koboldcpp-load.log"
