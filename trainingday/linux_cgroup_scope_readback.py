@@ -25,8 +25,14 @@ class RetainedProcess:
     start_ticks: int
 
 
-def _proc_stat_start_ticks(data: str) -> int:
+def _proc_stat_start_ticks(data: str, *, expected_pid: int | None = None) -> int:
     # /proc/<pid>/stat's comm may include spaces or parentheses.
+    try:
+        embedded_pid = int(data.split(" ", 1)[0])
+    except ValueError as exc:
+        raise CgroupReadbackError("invalid kernel PID in /proc stat") from exc
+    if expected_pid is not None and embedded_pid != expected_pid:
+        raise CgroupReadbackError("mismatched kernel PID in /proc stat")
     close = data.rfind(")")
     if close < 2 or data[close + 1 : close + 2] != " ":
         raise CgroupReadbackError("invalid /proc stat framing")
@@ -105,7 +111,8 @@ def inspect_read_only(
     cgroup_root = Path(cgroup_root)
     try:
         observed_ticks = _proc_stat_start_ticks(
-            (proc_root / str(retained.pid) / "stat").read_text(encoding="utf-8")
+            (proc_root / str(retained.pid) / "stat").read_text(encoding="utf-8"),
+            expected_pid=retained.pid,
         )
         observed_scope = _unified_path(
             (proc_root / str(retained.pid) / "cgroup").read_text(encoding="utf-8")
@@ -135,6 +142,7 @@ def inspect_read_only(
         "observed_pid": retained.pid,
         "observed_start_ticks": observed_ticks,
         "observed_scope": observed_scope,
+        "readback_origin": "DEFAULT_LINUX_PATHS" if proc_root == Path("/proc") and cgroup_root == Path("/sys/fs/cgroup") else "CALLER_SUPPLIED_TEST_PATHS",
         "populated_at_observation": populated == 1,
         "direct_process_count": len(direct_pids),
         "exclusive_cgroup_delegation_verified": False,
@@ -166,6 +174,7 @@ def scope_empty_readback(
         "schema": SCHEMA,
         "status": "SOURCE_OBSERVATION_ONLY_TRAINING_HOLD",
         "scope": expected_scope,
+        "readback_origin": "DEFAULT_LINUX_PATHS" if Path(cgroup_root) == Path("/sys/fs/cgroup") else "CALLER_SUPPLIED_TEST_PATHS",
         "scope_empty_at_observation": populated == 0 and len(direct_pids) == 0,
         "all_prior_descendants_proven_dead": False,
         "windows_wsl2_crash_qualified": False,
