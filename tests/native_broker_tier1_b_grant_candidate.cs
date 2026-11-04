@@ -7,6 +7,7 @@ using System.Text;
 using Vera.TrainingDay.HostBroker;
 
 internal static class Tier1BGrantCandidateTests {
+    const string OwnerPurposeOid="2.25.281124513629607016020108740092472226515";
     static readonly string Plan=new string('a',64);
     static readonly string Manifest=new string('b',64);
     static readonly string Executable=new string('c',64);
@@ -60,16 +61,26 @@ internal static class Tier1BGrantCandidateTests {
             return BitConverter.ToString(digest).Replace("-","").ToLowerInvariant();
         }
     }
+    static CertificateRequest OwnerRequest(RSA key,bool includePurpose,bool isCa=false) {
+        var request=new CertificateRequest("CN=VERA TrainingDay Tier1 Owner TEST",
+            key,HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(
+            isCa,isCa,0,true));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.DigitalSignature,true));
+        if(includePurpose) {
+            var eku=new OidCollection();
+            eku.Add(new Oid(OwnerPurposeOid));
+            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+                eku,true));
+        }
+        return request;
+    }
     static void PublicOnlyMachineCertRegressions() {
         // Fixtures never touch CurrentUser/LocalMachine certificate stores.
         // Only short-lived in-memory keys are created, then disposed.
-        using(RSACng ownerKey=new RSACng(2048)) {
-            var request=new CertificateRequest("CN=VERA TrainingDay Tier1 Owner TEST",
-                ownerKey,HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
-            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(
-                false,false,0,true));
-            request.CertificateExtensions.Add(new X509KeyUsageExtension(
-                X509KeyUsageFlags.DigitalSignature,true));
+        using(RSACng ownerKey=new RSACng(3072)) {
+            var request=OwnerRequest(ownerKey,true);
             using(X509Certificate2 ownerWithPrivate=request.CreateSelfSigned(
                 DateTimeOffset.UtcNow.AddMinutes(-5),DateTimeOffset.UtcNow.AddDays(1))) {
                 byte[] payload=Payload(Fields());
@@ -94,12 +105,62 @@ internal static class Tier1BGrantCandidateTests {
                         publicOnly.Reason==
                           "SIGNATURE_AND_SCOPE_MATCHED_SOURCE_ONLY_NO_LAUNCH",
                         "valid public-only certificate failed source-only observation");
+                    var singleton=new X509Certificate2Collection();
+                    singleton.Add(machinePublicOnly);
+                    var one=Tier1BGrantCandidate.VerifyStoreSnapshotForNativeTestOnly(
+                        singleton,pin,payload,signature,Host(7,Now));
+                    CheckNoLaunch(one,"single pinned public cert context");
+                    Assert(one.ScopeAndSignatureMatched,
+                        "unique public-only store context rejected");
+                    using(var secondPublicContext=new X509Certificate2(
+                        ownerWithPrivate.Export(X509ContentType.Cert))) {
+                        var duplicates=new X509Certificate2Collection();
+                        duplicates.Add(machinePublicOnly);
+                        duplicates.Add(secondPublicContext);
+                        var ambiguous=Tier1BGrantCandidate.VerifyStoreSnapshotForNativeTestOnly(
+                            duplicates,pin,payload,signature,Host(7,Now));
+                        CheckNoLaunch(ambiguous,"duplicate matching public cert contexts");
+                        Assert(!ambiguous.ScopeAndSignatureMatched &&
+                            ambiguous.Reason=="OWNER_CERTIFICATE_AMBIGUOUS_MACHINE_STORE",
+                            "duplicate DER contexts accepted by first-match lookup");
+                    }
+                    var mixed=new X509Certificate2Collection();
+                    mixed.Add(machinePublicOnly);
+                    mixed.Add(ownerWithPrivate);
+                    var ambiguousSecret=Tier1BGrantCandidate.VerifyStoreSnapshotForNativeTestOnly(
+                        mixed,pin,payload,signature,Host(7,Now));
+                    CheckNoLaunch(ambiguousSecret,"mixed public/private duplicate contexts");
+                    Assert(ambiguousSecret.Reason==
+                        "OWNER_CERTIFICATE_AMBIGUOUS_MACHINE_STORE",
+                        "duplicate public/private context accepted by first match");
                     var swapped=Tier1BGrantCandidate.VerifyPublicCertForNativeTestOnly(
                         machinePublicOnly,new string('0',64),payload,signature,Host(7,Now));
                     CheckNoLaunch(swapped,"swapped DER trust anchor");
                     Assert(!swapped.ScopeAndSignatureMatched &&
                         swapped.Reason=="OWNER_CERTIFICATE_DER_MISMATCH",
                         "different compiled DER pin was accepted");
+                }
+                var withoutPurpose=OwnerRequest(ownerKey,false);
+                using(var noEkuWithKey=withoutPurpose.CreateSelfSigned(
+                    DateTimeOffset.UtcNow.AddMinutes(-5),DateTimeOffset.UtcNow.AddDays(1)))
+                using(var noEku=new X509Certificate2(
+                    noEkuWithKey.Export(X509ContentType.Cert))) {
+                    var noPurpose=Tier1BGrantCandidate.VerifyPublicCertForNativeTestOnly(
+                        noEku,Sha(noEku.RawData),payload,signature,Host(7,Now));
+                    CheckNoLaunch(noPurpose,"unscoped owner cert purpose");
+                    Assert(noPurpose.Reason=="OWNER_CERTIFICATE_PURPOSE_REQUIRED",
+                        "ordinary RSA certificate without owner EKU accepted");
+                }
+                var caRequest=OwnerRequest(ownerKey,true,true);
+                using(var caWithKey=caRequest.CreateSelfSigned(
+                    DateTimeOffset.UtcNow.AddMinutes(-5),DateTimeOffset.UtcNow.AddDays(1)))
+                using(var caPublic=new X509Certificate2(
+                    caWithKey.Export(X509ContentType.Cert))) {
+                    var ca=Tier1BGrantCandidate.VerifyPublicCertForNativeTestOnly(
+                        caPublic,Sha(caPublic.RawData),payload,signature,Host(7,Now));
+                    CheckNoLaunch(ca,"owner CA certificate");
+                    Assert(ca.Reason=="OWNER_CERTIFICATE_MUST_NOT_BE_CA",
+                        "CA certificate accepted for owner-signed launch scope");
                 }
             }
         }
@@ -119,9 +180,9 @@ internal static class Tier1BGrantCandidateTests {
     }
     static void Main() {
         PublicOnlyMachineCertRegressions();
-        using(RSACryptoServiceProvider fixture=new RSACryptoServiceProvider(2048)) {
+        using(RSACryptoServiceProvider fixture=new RSACryptoServiceProvider(3072)) {
             fixture.PersistKeyInCsp=false;
-            Assert(fixture.KeySize==2048,"2048-bit fixture unavailable");
+            Assert(fixture.KeySize==3072,"3072-bit fixture unavailable");
             byte[] valid=Payload(Fields());
             byte[] sig=fixture.SignData(valid,HashAlgorithmName.SHA256,
                                          RSASignaturePadding.Pkcs1);
@@ -150,9 +211,9 @@ internal static class Tier1BGrantCandidateTests {
             CheckNoLaunch(badSig,"tampered signature");
             Assert(!badSig.ScopeAndSignatureMatched &&
                 badSig.Reason=="SIGNATURE_INVALID","forged signature admitted");
-            using(RSACryptoServiceProvider attacker=new RSACryptoServiceProvider(2048)) {
+            using(RSACryptoServiceProvider attacker=new RSACryptoServiceProvider(3072)) {
                 attacker.PersistKeyInCsp=false;
-                Assert(attacker.KeySize==2048,"2048-bit attack fixture unavailable");
+                Assert(attacker.KeySize==3072,"3072-bit attack fixture unavailable");
                 byte[] attackerSig=attacker.SignData(valid,HashAlgorithmName.SHA256,
                                                       RSASignaturePadding.Pkcs1);
                 var wrongSigner=Tier1BGrantCandidate.VerifyForNativeTestOnly(
@@ -171,6 +232,17 @@ internal static class Tier1BGrantCandidateTests {
                 Assert(!weakReceipt.ScopeAndSignatureMatched &&
                     weakReceipt.Reason=="SIGNATURE_INVALID",
                     "1024-bit RSA owner scope was accepted");
+            }
+            using(RSACryptoServiceProvider insufficient=new RSACryptoServiceProvider(2048)) {
+                insufficient.PersistKeyInCsp=false;
+                byte[] weakSignature=insufficient.SignData(valid,HashAlgorithmName.SHA256,
+                                                          RSASignaturePadding.Pkcs1);
+                var insufficientReceipt=Tier1BGrantCandidate.VerifyForNativeTestOnly(
+                    valid,weakSignature,insufficient,Host(7,Now));
+                CheckNoLaunch(insufficientReceipt,"RSA 2048 now below owner policy");
+                Assert(!insufficientReceipt.ScopeAndSignatureMatched &&
+                    insufficientReceipt.Reason=="SIGNATURE_INVALID",
+                    "RSA 2048 was admitted despite 3072-bit owner minimum");
             }
 
             var atExpiry=Tier1BGrantCandidate.VerifyForNativeTestOnly(
