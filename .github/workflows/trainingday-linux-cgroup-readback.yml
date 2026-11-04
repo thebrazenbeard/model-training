@@ -1,0 +1,34 @@
+name: TrainingDay Linux cgroup-v2 readback source tests (no GPU)
+
+on:
+  pull_request:
+    paths:
+      - "trainingday/linux_cgroup_scope_readback.py"
+      - "tests/test_trainingday_linux_cgroup_scope_readback.py"
+      - ".github/workflows/trainingday-linux-cgroup-readback.yml"
+  push:
+    paths:
+      - "trainingday/linux_cgroup_scope_readback.py"
+      - "tests/test_trainingday_linux_cgroup_scope_readback.py"
+      - ".github/workflows/trainingday-linux-cgroup-readback.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-observer-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Check out exact PR source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Exercise cgroup-v2 readback without touching host cgroups
+        run: python3 -m unittest discover -s tests -p test_trainingday_linux_cgroup_scope_readback.py -v
