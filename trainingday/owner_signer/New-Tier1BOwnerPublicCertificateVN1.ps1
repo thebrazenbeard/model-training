@@ -24,6 +24,41 @@ $commonName = 'VERA TrainingDay Tier1 B Owner Patrick v1'
 $subject = 'CN=' + $commonName
 $store = 'Cert:\CurrentUser\My'
 
+# Reparse-point ancestry is checked from the volume root, not just the
+# LocalApplicationData leaf. An ordinary "Local" beneath an "AppData" junction
+# otherwise looks safe to Get-Item while redirecting the eventual public .cer.
+# The function is pure preflight: no CNG operations, prompts, or filesystem writes.
+function Assert-OwnerLocalAppDataOrdinaryDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$UserProfilePath,
+        [Parameter(Mandatory=$true)][string]$LocalAppDataPath
+    )
+
+    $userFull = [IO.Path]::GetFullPath($UserProfilePath).TrimEnd('\')
+    $localFull = [IO.Path]::GetFullPath($LocalAppDataPath).TrimEnd('\')
+    if (-not $localFull.StartsWith(($userFull + '\'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'HOLD: owner LocalApplicationData is outside owner profile'
+    }
+    $root = [IO.Path]::GetPathRoot($localFull)
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        throw 'HOLD: owner LocalApplicationData has no filesystem root'
+    }
+
+    $part = $root
+    foreach ($segment in $localFull.Substring($root.Length).Split('\')) {
+        if ([string]::IsNullOrWhiteSpace($segment)) {
+            throw 'HOLD: owner LocalApplicationData has an invalid path segment'
+        }
+        $part = Join-Path -Path $part -ChildPath $segment
+        $item = Get-Item -LiteralPath $part -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer -or
+            (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw ('HOLD: owner LocalApplicationData ancestor is redirected/non-directory: {0}' -f $part)
+        }
+    }
+}
+
 # This validation deliberately comes BEFORE any filesystem/cert-store write
 # and cannot be bypassed with a script parameter.
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -100,19 +135,16 @@ try {
 }
 if (-not $mutexOwned) { throw 'HOLD: another owner enrollment is currently running' }
 
-# Resolve the Windows known folder, not a caller-supplied LOCALAPPDATA value.
+# Resolve Windows known folders, not a caller-supplied LOCALAPPDATA variable,
+# then reject junctions/reparse points in *every* existing ancestor.
 $localBase = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 $userBase = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
 if ([string]::IsNullOrWhiteSpace($localBase) -or [string]::IsNullOrWhiteSpace($userBase) -or
     -not [IO.Path]::IsPathRooted($localBase) -or
-    -not $localBase.StartsWith(($userBase.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'HOLD: owner LocalApplicationData is missing or outside owner profile'
+    -not [IO.Path]::IsPathRooted($userBase)) {
+    throw 'HOLD: owner LocalApplicationData or profile is missing/unrooted'
 }
-$localItem = Get-Item -LiteralPath $localBase -Force -ErrorAction Stop
-if (-not $localItem.PSIsContainer -or
-    (($localItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-    throw 'HOLD: owner profile LocalApplicationData is not an ordinary directory'
-}
+Assert-OwnerLocalAppDataOrdinaryDirectory -UserProfilePath $userBase -LocalAppDataPath $localBase
 $directory = Join-Path $localBase 'Vera\TrainingDay'
 $publicDerPath = Join-Path $directory 'Tier1B-Patrick-Owner-PUBLIC.cer'
 if (Test-Path -LiteralPath $publicDerPath) {
