@@ -50,15 +50,8 @@ namespace Vera.TrainingDay.HostBroker {
               string request=BoundedPipeRequest.Read(pipe,stopSignal);
               bool authenticated=false;
               try { authenticated=VerifiedAdminClient(pipe); } catch { }
-              string reason=!authenticated ? "CLIENT_TOKEN_NOT_ADMIN" :
-                request=="STATUS_V1" ? "HOST_COMPONENT_PRESENT_BUT_UNQUALIFIED" :
-                "NO_INDEPENDENT_GPU_ROUTE_RIGHTS_WITNESS";
-              writer.WriteLine("{\"schema\":\"VERA_HOST_BROKER_STATUS_V1\",\"state\":\"HOLD\","+
-                "\"reason\":\""+reason+"\",\"client_authenticated\":"+(authenticated?"true":"false")+","+
-                "\"service_pid\":"+Process.GetCurrentProcess().Id+","+
-                "\"service_boot_id\":\""+bootId+"\","+
-                "\"authorized_launches\":0,\"gpu_lease_issued\":false,"+
-                "\"data_rights_verified\":false,\"nas_witness_verified\":false,\"training_observed\":false}");
+              writer.WriteLine(BrokerHoldResponse.Format(request,authenticated,
+                Process.GetCurrentProcess().Id,bootId));
             }
           }
         } catch(Exception ex) {
