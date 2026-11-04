@@ -11,8 +11,9 @@ is not the signed Contract B broker; its currently observed file is unsigned.
    commit and prints the Git tree, source SHA-256 digests and candidate binary
    SHA-256. The installed broker is **not** thereby rebuilt or attested.
 2. The read-only script checks candidate hash and Authenticode signer pin,
-   service identity, installed SHA against a separately observed baseline,
-   installation-directory write ACL, available GPU memory, and a conservative
+   service identity and exact installed ImagePath, installed SHA against a
+   separately observed baseline, installation-directory and file write ACLs,
+   a signed NVIDIA observer at a known system path, available GPU memory, and a conservative
    inventory of processes whose disruption could affect other work.
 3. It returns `maintenance_state: HOLD`, even when no individual blocker is
    detected. No result is installation approval, a signed owner grant, an
