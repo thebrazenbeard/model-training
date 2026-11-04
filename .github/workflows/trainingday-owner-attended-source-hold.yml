@@ -91,6 +91,50 @@ jobs:
           }
           Write-Output "OWNER_SIGNER_SOURCE_HOLD_PASS head=$head wrong_host_refused=true private_key_generated=false"
 
+      - name: Prove owner LocalApplicationData ancestor junction is refused (Windows PowerShell 5.1, no keys)
+        shell: powershell
+        run: |
+          $path = Join-Path $PWD 'trainingday/owner_signer/New-Tier1BOwnerPublicCertificateVN1.ps1'
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) { throw 'Cannot parse owner script for path preflight test' }
+          $guard = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+              $node.Name -eq 'Assert-OwnerLocalAppDataOrdinaryDirectory'
+          }, $true)
+          if (-not $guard) { throw 'SECURITY FAILURE: owner LocalApplicationData ancestry guard is missing' }
+          . ([scriptblock]::Create($guard.Extent.Text))
+
+          # Work entirely in ephemeral GitHub runner temp, never in a user profile,
+          # certificate store, CNG provider or owner host.
+          $scratch = Join-Path $env:RUNNER_TEMP ('owner-ancestry-' + [guid]::NewGuid().ToString('N'))
+          $goodProfile = Join-Path $scratch 'good\owner'
+          $goodLocal = Join-Path $goodProfile 'AppData\Local'
+          $null = [IO.Directory]::CreateDirectory($goodLocal)
+          Assert-OwnerLocalAppDataOrdinaryDirectory -UserProfilePath $goodProfile -LocalAppDataPath $goodLocal
+
+          $badProfile = Join-Path $scratch 'bad\owner'
+          $outside = Join-Path $scratch 'elsewhere'
+          $null = [IO.Directory]::CreateDirectory($badProfile)
+          $null = [IO.Directory]::CreateDirectory((Join-Path $outside 'Local'))
+          $junction = Join-Path $badProfile 'AppData'
+          $null = New-Item -Path $junction -ItemType Junction -Target $outside -ErrorAction Stop
+          if (-not (Test-Path -LiteralPath (Join-Path $badProfile 'AppData\Local'))) {
+            throw 'Synthetic ancestor junction fixture is not traversable'
+          }
+          $refused = $false
+          try {
+            Assert-OwnerLocalAppDataOrdinaryDirectory -UserProfilePath $badProfile -LocalAppDataPath (Join-Path $badProfile 'AppData\Local')
+          } catch {
+            if ($_.Exception.Message -match 'HOLD: owner LocalApplicationData ancestor is redirected/non-directory') {
+              $refused = $true
+            } else { throw }
+          }
+          if (-not $refused) { throw 'SECURITY FAILURE: ancestor AppData junction escaped owner path confinement' }
+          Write-Output 'OWNER_LOCALAPPDATA_ANCESTRY_HOLD_PASS normal_dir_allowed=true ancestor_junction_refused=true no_keys=true'
+
       - name: Verify Windows PowerShell 5.1 syntax and fail-closed owner gate
         shell: powershell
         env:
