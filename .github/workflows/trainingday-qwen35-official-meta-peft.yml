@@ -42,6 +42,7 @@ jobs:
           python -m unittest -v
           tests.test_trainingday_qwen35_meta_skeleton_probe
           tests.test_trainingday_qwen35_hybrid_rank4_meta_budget
+          tests.test_trainingday_qwen35_adapter_inventory
           tests.test_trainingday_qwen35_adapter_cpu_step
       - name: Fetch only official pinned config metadata (64 KiB cap)
         shell: bash

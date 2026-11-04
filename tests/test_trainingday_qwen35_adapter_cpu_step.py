@@ -5,6 +5,7 @@ import unittest
 
 from trainingday.qwen35_hybrid_rank4_meta_budget import (
     HybridMetaBudgetError,
+    hybrid_projection_targets,
     rehearse_adapter_only_cpu_adamw,
 )
 
@@ -15,13 +16,21 @@ class AdapterOnlyCPURehearsalTests(unittest.TestCase):
     def tiny_meta_adapters():
         import torch
 
-        return {f"model.layers.{idx}.lora_A.default.weight": torch.nn.Parameter(
-            torch.empty((2, 3), device="meta", dtype=torch.float32))
-            for idx in range(304)}
+        targets = hybrid_projection_targets(["linear_attention"] * 24 +
+                                            ["full_attention"] * 8)
+        base_shapes = {target: (2, 3) for target in targets}
+        adapters = {}
+        for target in targets:
+            adapters[f"base_model.model.{target}.lora_A.default.weight"] = (
+                torch.nn.Parameter(torch.empty((4, 3), device="meta", dtype=torch.float32)))
+            adapters[f"base_model.model.{target}.lora_B.default.weight"] = (
+                torch.nn.Parameter(torch.empty((2, 4), device="meta", dtype=torch.float32)))
+        return adapters, base_shapes
 
     def test_true_cpu_adamw_allocations_are_differentiated_from_official_training(self):
-        report = rehearse_adapter_only_cpu_adamw(self.tiny_meta_adapters())
-        elements = 304 * 6
+        meta, shapes = self.tiny_meta_adapters()
+        report = rehearse_adapter_only_cpu_adamw(meta, base_target_shapes=shapes)
+        elements = 152 * (4 * 3 + 2 * 4)
         self.assertEqual(report["adapter_parameter_elements"], elements)
         for key in ("adapter_weight_allocated_tensor_bytes",
                     "adapter_gradient_allocated_tensor_bytes",
@@ -39,17 +48,17 @@ class AdapterOnlyCPURehearsalTests(unittest.TestCase):
     def test_incomplete_or_untrusted_meta_shape_inventory_fails_closed(self):
         import torch
 
-        good = self.tiny_meta_adapters()
+        good, shapes = self.tiny_meta_adapters()
         for bad in (
             dict(list(good.items())[:-1]),
             {**dict(list(good.items())[1:]), "foreign_tensor": next(iter(good.values()))},
-            {**good, "model.layers.0.lora_A.default.weight": torch.nn.Parameter(
-                torch.zeros((2, 3), device="cpu"))},
-            {**good, "model.layers.0.lora_A.default.weight": torch.nn.Parameter(
-                torch.empty((2, 3), device="meta", dtype=torch.bfloat16))},
+            {**good, next(iter(good)): torch.nn.Parameter(
+                torch.zeros((4, 3), device="cpu"))},
+            {**good, next(iter(good)): torch.nn.Parameter(
+                torch.empty((4, 3), device="meta", dtype=torch.bfloat16))},
         ):
             with self.subTest(bad_count=len(bad)), self.assertRaises(HybridMetaBudgetError):
-                rehearse_adapter_only_cpu_adamw(bad)
+                rehearse_adapter_only_cpu_adamw(bad, base_target_shapes=shapes)
 
 
 if __name__ == "__main__":
