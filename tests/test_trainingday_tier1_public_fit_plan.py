@@ -17,7 +17,7 @@ class Tier1PublicFitPlanTests(unittest.TestCase):
     def test_official_base_only_and_no_caller_model_choice(self):
         plan = fit.build_public_fit_plan(executable_sha256=KERNEL_SHA)
         self.assertEqual(plan["model_id"], "Qwen/Qwen3.5-4B")
-        self.assertEqual(plan["revision"], "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a")
+        self.assertEqual(plan["model_revision"], "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a")
         self.assertEqual(len(plan["official_public_file_sha256"]), 4)
         self.assertNotIn("rodrigomt", json.dumps(plan).lower())
         with self.assertRaises(TypeError):
@@ -37,7 +37,7 @@ class Tier1PublicFitPlanTests(unittest.TestCase):
         p = fit.build_public_fit_plan(executable_sha256=KERNEL_SHA)
         self.assertEqual((p["host"], p["tier"], p["policy"]),
                          ("LAPPY", "TIER1_PUBLIC_SYNTHETIC", "WDDM_BOUNDED_COEXISTENCE"))
-        self.assertEqual((p["max_seconds"], p["max_vram_mib"]), (1800, 3072))
+        self.assertEqual((p["max_seconds"], p["vram_target_mib"]), (1800, 3072))
         self.assertEqual(p["vram_limit_semantics"],
                          "OBSERVATIONAL_TARGET_NOT_HARD_WDDM_QUOTA")
         with self.assertRaises(TypeError):
@@ -53,6 +53,9 @@ class Tier1PublicFitPlanTests(unittest.TestCase):
         self.assertTrue(p["broker_owner_signed_grant_required"])
         self.assertTrue(p["targeted_wsl_orphan_kill_and_readback_required"])
         self.assertEqual(p["one_optimizer_step_max"], 1)
+        self.assertEqual(p["wsl_cleanup"], "TARGETED_WSL_PIDTREE_REQUIRED")
+        self.assertEqual(p["protected_access"], "NONE")
+        self.assertEqual(p["outputs"], "UNPROMOTED_ONLY")
 
     def test_bad_kernel_hash_rejected(self):
         for value in (None, True, b"a" * 64, "a" * 63, "A" * 64,
