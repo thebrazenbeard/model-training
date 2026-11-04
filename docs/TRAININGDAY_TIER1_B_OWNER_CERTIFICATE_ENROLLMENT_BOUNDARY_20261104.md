@@ -14,8 +14,12 @@ maintenance procedure, **not** an instruction to execute it unattended.
 
 The private signing key must **not** be present in the Windows service's
 LocalSystem identity or `LocalMachine\\My` store. A certificate with
-`HasPrivateKey == true` in the machine verifier store is now a hard source
-candidate `HOLD` (`OWNER_PRIVATE_KEY_IN_MACHINE_STORE`), even if its DER matches.
+`HasPrivateKey == true` in the matched machine verifier certificate context is
+a hard source candidate `HOLD` (`OWNER_PRIVATE_KEY_IN_MACHINE_STORE`), even if
+its DER matches. This property is **context-local**; `HasPrivateKey == false`
+cannot prove that the private key does not exist elsewhere in the machine or
+in another Windows key provider. Host-wide key custody remains **UNKNOWN**
+until independently inspected and attested.
 The native test uses an in-memory certificate carrying a private key and a
 separate public-only DER copy to exercise both branches without host enrollment.
 
@@ -32,8 +36,12 @@ separate public-only DER copy to exercise both branches without host enrollment.
    it does not imply adequate VRAM or grant authority to interrupt users.
 3. Verify that a *newly generated* owner key is non-exportable, independently
    user-/hardware-controlled, RSA 3072 or 4096, SHA-256 signing capable, with
-   `DigitalSignature` KeyUsage, a non-CA basic constraint, and a short explicit
-   expiry. Do not reuse an existing private key on speculation. If the owner
+   `DigitalSignature` KeyUsage, a non-CA basic constraint, a single dedicated
+   critical EnhancedKeyUsage OID
+   `2.25.281124513629607016020108740092472226515` (self-assigned UUID
+   purpose under ISO 2.25), and a short explicit expiry. A generic TLS or
+   code-signing EKU cannot substitute for this contract-specific purpose.
+   Do not reuse an existing private key on speculation. If the owner
    needs to sign off-host, keep the private key off-host entirely.
 4. Export **only public DER** from that signer after independent inspection;
    compute the full DER SHA-256 out-of-band and record its provenance and owner
@@ -41,9 +49,10 @@ separate public-only DER copy to exercise both branches without host enrollment.
    is not a bearer secret.
 5. Import **only the DER `.cer`** into `Cert:\\LocalMachine\\My` using an
    owner-attended elevated session. Read it back and verify exact DER digest,
-   certificate validity, key algorithm/size, `DigitalSignature`, non-CA, and
-   `HasPrivateKey == false`. A PFX import is prohibited. Do not rely on a
-   display-name or thumbprint alone.
+   certificate validity, 3072–4096-bit RSA key, `DigitalSignature`, non-CA,
+   exact purpose EKU, no duplicate extension OIDs, one matching certificate
+   context, and `HasPrivateKey == false`. A PFX import is prohibited. Do not
+   rely on a display-name, SHA-1 thumbprint, or one matching context alone.
 6. Independently review a candidate broker build with the **compiled** DER
    SHA-256 anchor, SHA-256 of every source/build input, Authenticode signer,
    protected installed binary path, unchanged ACLs, and exact service identity.
@@ -58,8 +67,9 @@ separate public-only DER copy to exercise both branches without host enrollment.
 
 ## Stop conditions and rollback
 
-- Any store with a private key where only a verifier copy belongs, missing
-  expected DER, key shorter than RSA 2048, invalid time or usage, untrusted
+- Any verifier certificate context carrying a private key, duplicate matching
+  DER contexts, duplicate/unknown critical extensions, missing dedicated EKU,
+  missing expected DER, key shorter than RSA 3072, invalid time or usage, untrusted
   operator/session, mismatched binary hash, absent protected rollback, or
   live shared workloads => **STOP**. Keep existing deny-only broker running.
 - Preserve the pre-maintenance service executable, metadata, ACLs, and full
@@ -69,6 +79,11 @@ separate public-only DER copy to exercise both branches without host enrollment.
 - Enrollment must not be construed as a GPU lease, protected corpus admission,
   NAS grant, evaluator authority, or a checkpoint. No positive run is authorized
   by this source-only change.
+
+**Host proof limitation:** LocalMachine/My enumeration can reject ambiguous
+certificate contexts in that store; it does not enumerate all CNG/CAPI keys,
+user certificates, TPM slots, other stores or provider aliases. A clean result
+is not proof of global secret absence and must not be reported as such.
 
 **Evidence limit:** This document and the hosted native test can prove a
 source-level rejection of the private-in-machine-store mistake. They cannot
