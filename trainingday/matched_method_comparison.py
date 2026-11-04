@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping, Sequence
 
 
-SCHEMA = "TRAININGDAY_MEZO_QLORA_MATCHED_STUDY_SOURCE_V1"
+SCHEMA = "TRAININGDAY_MEZO_QLORA_MATCHED_STUDY_SOURCE_V2"
 BASE_ID = "Qwen/Qwen3.5-4B"
 BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
 METHODS = ("MEZO_LORA", "QLORA_ADAMW")
@@ -37,12 +37,78 @@ def _canonical_bytes(value: dict) -> bytes:
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
+def commit_training_schedule(seed: int, ordered_rows: Sequence[Mapping[str, str]]) -> dict:
+    """Commit ordered example inputs and seed-specific assigned labels.
+
+    The caller MUST derive these from the actual admitted TRAIN rows and the
+    deterministic corruption transform. This helper emits digests only: it
+    cannot independently attest that the supplied rows were used by a host.
+    Neither raw rows nor protected DEV examples belong in committed receipts.
+    """
+    if type(seed) is not int or not 0 <= seed <= 2**31 - 1:
+        raise MatchedStudyError("invalid corruption seed")
+    if (type(ordered_rows) not in (list, tuple)
+            or not 1 <= len(ordered_rows) <= 1_000_000):
+        raise MatchedStudyError("nonempty bounded ordered TRAIN rows required")
+    input_rows = []
+    correct = []
+    corrupted = []
+    seen = set()
+    required = {"row_id", "input", "correct_label", "corrupted_label"}
+    for item in ordered_rows:
+        if (type(item) is not dict or set(item) != required
+                or any(type(item[key]) is not str or not item[key]
+                       for key in required)
+                or item["row_id"] in seen):
+            raise MatchedStudyError("invalid or duplicate full TRAIN row")
+        seen.add(item["row_id"])
+        input_rows.append([item["row_id"], item["input"]])
+        correct.append([item["row_id"], item["correct_label"]])
+        corrupted.append([item["row_id"], item["corrupted_label"]])
+    if correct == corrupted:
+        raise MatchedStudyError("corrupted label schedule identical to correct schedule")
+
+    def digest(domain: str, values: list) -> str:
+        payload = {"domain": domain, "seed": seed, "ordered_values": values}
+        return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+
+    return {"seed": seed,
+            "train_order_sha256": digest("training-input-order-v1", input_rows),
+            "correct_labels_sha256": digest("correct-label-assignment-v1", correct),
+            "corrupted_labels_sha256": digest("corrupted-label-assignment-v1", corrupted)}
+
+
+def _schedule(seeds: Sequence[int], rows: Sequence[Mapping[str, object]]) -> dict:
+    """Demand precommitted ordered rows and both label schedules per seed."""
+    required = {"seed", "train_order_sha256", "correct_labels_sha256",
+                "corrupted_labels_sha256"}
+    if type(rows) not in (tuple, list) or len(rows) != len(seeds):
+        raise MatchedStudyError("complete predeclared per-seed label schedule required")
+    result = {}
+    for row in rows:
+        if (type(row) is not dict or set(row) != required
+                or type(row["seed"]) is not int
+                or row["seed"] not in seeds or row["seed"] in result
+                or any(not _sha(row[key]) for key in required - {"seed"})
+                or row["correct_labels_sha256"] == row["corrupted_labels_sha256"]):
+            raise MatchedStudyError("invalid TRAIN order or correct/corrupt label digest")
+        result[row["seed"]] = dict(row)
+    if (set(result) != set(seeds)
+            or len({x["corrupted_labels_sha256"] for x in result.values()})
+            != len(seeds)):
+        raise MatchedStudyError("reused or missing seed-specific corruption schedule")
+    return result
+
+
 def build_study_plan(*, official_weight_sha256: str,
                      tokenizer_sha256: str, train_sha256: str,
                      private_dev_commitment_sha256: str,
                      lora_target_spec_sha256: str,
+                     schedule_commitments: Sequence[Mapping[str, object]],
                      seeds: Sequence[int] = (113, 271, 997),
-                     wall_clock_budget_seconds: int = 600) -> dict:
+                     wall_clock_budget_seconds: int = 600,
+                     actual_time_tolerance_percent: int = 20,
+                     candidate_sequence_length: int = 128) -> dict:
     """Specify matched *adapter-subspace* trials; deny every physical grant.
 
     MeZO full-parameter training and QLoRA LoRA-only training do not have a
@@ -62,12 +128,23 @@ def build_study_plan(*, official_weight_sha256: str,
         raise MatchedStudyError("3-32 distinct bounded integer seeds required")
     if (type(wall_clock_budget_seconds) is not int
             or not 60 <= wall_clock_budget_seconds <= 86_400):
-        raise MatchedStudyError("bounded equal wall-clock budget required")
+        raise MatchedStudyError("bounded equal wall-clock ceiling required")
+    if (type(actual_time_tolerance_percent) is not int
+            or not 0 <= actual_time_tolerance_percent <= 50):
+        raise MatchedStudyError("predeclared actual elapsed-time diagnostic tolerance required")
+    if (type(candidate_sequence_length) is not int
+            or not 32 <= candidate_sequence_length <= 2048):
+        raise MatchedStudyError("bounded candidate tokenizer sequence length required")
+    schedule = _schedule(seeds, schedule_commitments)
 
     arms = [
         {"arm_id": f"{method}:{mode}:{seed}", "method": method,
          "label_mode": mode, "seed": seed,
          "trainable_subspace": "IDENTICAL_PINNED_LORA_TARGETS",
+         "train_order_sha256": (schedule[seed]["train_order_sha256"]
+                                if mode != "zero" else None),
+         "label_assignment_sha256": (schedule[seed][f"{mode}_labels_sha256"]
+                                     if mode != "zero" else None),
          "wall_clock_budget_seconds": wall_clock_budget_seconds}
         for seed in seeds for method in METHODS for mode in LABEL_MODES
     ]
@@ -75,6 +152,8 @@ def build_study_plan(*, official_weight_sha256: str,
         {"arm_id": f"{BASE_REFERENCE}:reference:{seed}",
          "method": BASE_REFERENCE, "label_mode": "reference", "seed": seed,
          "trainable_subspace": "NO_ADAPTER_UNMODIFIED_OFFICIAL_BASE",
+         "train_order_sha256": None,
+         "label_assignment_sha256": None,
          "wall_clock_budget_seconds": wall_clock_budget_seconds}
         for seed in seeds)
     record = {
@@ -87,14 +166,20 @@ def build_study_plan(*, official_weight_sha256: str,
         "train_sha256": train_sha256,
         "private_dev_commitment_sha256": private_dev_commitment_sha256,
         "lora_target_spec_sha256": lora_target_spec_sha256,
+        "schedule_commitments": [schedule[seed] for seed in seeds],
         "seeds": list(seeds),
         "methods": list(METHODS),
         "labels": list(LABEL_MODES),
         "arms": arms,
         "base_zero_update_reference_required": True,
         "equal_wall_clock_budget_seconds": wall_clock_budget_seconds,
+        "actual_time_tolerance_percent": actual_time_tolerance_percent,
+        "candidate_sequence_length": candidate_sequence_length,
+        "full_chatml_tokenizer_fit_independently_verified": False,
+        "require_zero_truncated_training_rows": True,
         "require_equal_paired_example_token_exposure": True,
         "require_identical_paired_example_order_sha256": True,
+        "require_pinned_mode_specific_label_assignment_sha256": True,
         "require_forward_and_backward_count_record": True,
         "require_per_arm_checkpoint_reload": True,
         "require_trained_arm_interruption_resume": True,
@@ -129,8 +214,11 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
         train_sha256=plan.get("train_sha256"),
         private_dev_commitment_sha256=plan.get("private_dev_commitment_sha256"),
         lora_target_spec_sha256=plan.get("lora_target_spec_sha256"),
+        schedule_commitments=plan.get("schedule_commitments"),
         seeds=plan.get("seeds"),
-        wall_clock_budget_seconds=plan.get("equal_wall_clock_budget_seconds"))
+        wall_clock_budget_seconds=plan.get("equal_wall_clock_budget_seconds"),
+        actual_time_tolerance_percent=plan.get("actual_time_tolerance_percent"),
+        candidate_sequence_length=plan.get("candidate_sequence_length"))
     if canonical != plan:
         raise MatchedStudyError("plan deviates from non-authorizing canonical schedule")
     claimed_sha = plan["plan_sha256"]
@@ -143,10 +231,12 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
                      "forward_calls", "backward_calls", "peak_vram_bytes",
                      "peak_host_ram_bytes", "checkpoint_reloaded",
                      "adapter_sha256", "loaded_weight_sha256",
-                     "train_order_sha256",
+                     "train_order_sha256", "label_assignment_sha256",
+                     "truncated_training_rows",
                      "interruption_resumed"}
     seen = set()
     comparable = {}
+    receipt_by_arm = {}
     for receipt in receipts:
         if type(receipt) is not dict or set(receipt) != expected_keys:
             raise MatchedStudyError("unexpected public receipt field or omitted telemetry")
@@ -155,12 +245,14 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
                 or arm_id in seen or receipt["plan_sha256"] != claimed_sha):
             raise MatchedStudyError("unknown, duplicate, or replayed arm")
         seen.add(arm_id)
+        receipt_by_arm[arm_id] = receipt
         if (receipt["loaded_weight_sha256"] != plan["official_weight_sha256"]
                 or type(receipt["loaded_weight_sha256"]) is not str):
             raise MatchedStudyError("model byte-manifest identity mismatch")
         for field in ("elapsed_ms", "optimizer_steps", "examples_seen",
                       "tokens_seen", "forward_calls", "backward_calls",
-                      "peak_vram_bytes", "peak_host_ram_bytes"):
+                      "peak_vram_bytes", "peak_host_ram_bytes",
+                      "truncated_training_rows"):
             if type(receipt[field]) is not int or receipt[field] < 0:
                 raise MatchedStudyError("invalid nonnegative integer telemetry")
         if not 0 < receipt["elapsed_ms"] <= plan["equal_wall_clock_budget_seconds"] * 1_000:
@@ -176,6 +268,7 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
         if arm["method"] == BASE_REFERENCE:
             if (receipt["adapter_sha256"] is not None
                     or receipt["train_order_sha256"] is not None
+                    or receipt["label_assignment_sha256"] is not None
                     or any(receipt[name] for name in ("optimizer_steps", "examples_seen",
                                                        "tokens_seen", "backward_calls"))
                     or receipt["interruption_resumed"]):
@@ -185,20 +278,25 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
             raise MatchedStudyError("PEFT arm requires adapter byte identity")
         if arm["label_mode"] == "zero":
             if (receipt["optimizer_steps"] != 0 or receipt["backward_calls"] != 0
-                    or receipt["train_order_sha256"] is not None):
+                    or receipt["train_order_sha256"] is not None
+                    or receipt["label_assignment_sha256"] is not None):
                 raise MatchedStudyError("zero-update control performed updates")
         else:
-            if not _sha(receipt["train_order_sha256"]):
-                raise MatchedStudyError("training-example order commitment missing")
+            if (receipt["train_order_sha256"] != arm["train_order_sha256"]
+                    or receipt["label_assignment_sha256"]
+                    != arm["label_assignment_sha256"]):
+                raise MatchedStudyError("ordered TRAIN rows or assigned labels differ from plan")
             if (receipt["optimizer_steps"] < 1 or receipt["examples_seen"] < 1
                     or receipt["tokens_seen"] < 1
                     or receipt["forward_calls"] < 1):
                 raise MatchedStudyError("training arm lacks work accounting")
+            if receipt["truncated_training_rows"]:
+                raise MatchedStudyError("truncated TRAIN labels invalidate matched learning")
             if not receipt["interruption_resumed"]:
                 raise MatchedStudyError("training-arm recovery not demonstrated")
             comparable[(arm["seed"], arm["label_mode"], arm["method"])] = (
                 receipt["examples_seen"], receipt["tokens_seen"],
-                receipt["train_order_sha256"])
+                receipt["train_order_sha256"], receipt["label_assignment_sha256"])
         if arm["method"] == "MEZO_LORA" and receipt["backward_calls"]:
             raise MatchedStudyError("MeZO arm used gradient backpropagation")
         if (arm["method"] == "MEZO_LORA" and arm["label_mode"] != "zero"
@@ -207,16 +305,39 @@ def validate_untrusted_receipts(plan: Mapping[str, object],
         if arm["method"] == "QLORA_ADAMW" and arm["label_mode"] != "zero" \
                 and receipt["backward_calls"] < receipt["optimizer_steps"]:
             raise MatchedStudyError("QLoRA arm lacks backward-pass accounting")
+    elapsed_disparities = 0
+    forward_disparities = 0
+    backward_disparities = 0
+    max_elapsed_difference_percent = 0.0
     for seed in plan["seeds"]:
         for mode in ("correct", "corrupted"):
             if comparable[(seed, mode, METHODS[0])] != comparable[(seed, mode, METHODS[1])]:
-                raise MatchedStudyError("methods saw different example/token exposure or order")
+                raise MatchedStudyError("methods saw different examples, order or assigned labels")
+            first = receipt_by_arm[f"{METHODS[0]}:{mode}:{seed}"]
+            second = receipt_by_arm[f"{METHODS[1]}:{mode}:{seed}"]
+            high = max(first["elapsed_ms"], second["elapsed_ms"])
+            difference = 100 * abs(first["elapsed_ms"] - second["elapsed_ms"]) / high
+            max_elapsed_difference_percent = max(max_elapsed_difference_percent,
+                                                  difference)
+            elapsed_disparities += difference > plan["actual_time_tolerance_percent"]
+            forward_disparities += first["forward_calls"] != second["forward_calls"]
+            backward_disparities += first["backward_calls"] != second["backward_calls"]
     return {
         "schema": SCHEMA,
         "status": "SHAPE_VALIDATED_UNAUTHENTICATED_RECEIPTS",
         "plan_sha256": claimed_sha,
         "arms_checked": len(seen),
         "covers_all_declared_arms": seen == set(scheduled),
+        "actual_elapsed_time_pairs_over_tolerance": elapsed_disparities,
+        "maximum_paired_elapsed_difference_percent": round(max_elapsed_difference_percent, 3),
+        "forward_count_disparate_pairs": forward_disparities,
+        "backward_count_disparate_pairs": backward_disparities,
+        "actual_elapsed_time_within_declared_tolerance": elapsed_disparities == 0,
+        "matched_training_exposure_declared": True,
+        "measured_compute_equivalence_established": False,
+        "scientific_cost_comparison_status": (
+            "TIME_DISPARITY_REQUIRES_SEPARATE_ANALYSIS" if elapsed_disparities
+            else "EQUAL_TIME_CEILING_ONLY_COMPUTE_UNQUALIFIED"),
         "physical_execution_independently_verified": False,
         "data_rights_verified": False,
         "protected_eval_verified": False,
