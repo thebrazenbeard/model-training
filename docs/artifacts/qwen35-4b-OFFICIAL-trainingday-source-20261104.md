@@ -44,8 +44,8 @@ trusted source. A physical broker must independently verify:
 
 1. Immutable reviewed code and manifest digest, trusted owner/signature trust
    root and unique non-replayable grant, bound to the exact host/job/expiry.
-2. Official pinned config, tokenizer, tokenizer_config, index SHA-256 byte
-   values from independently authenticated custody (not caller assertions),
+2. Official pinned config, tokenizer, tokenizer_config, index, chat template,
+   BPE merges and vocab SHA-256 byte values from independently authenticated custody (not caller assertions),
    then exact local byte hashes/sizes of every shard immediately before use.
 3. Complete text checkpoint projection and tensor-load evidence, with no
    fallback to a shape-compatible fork or a GGUF inference artifact.
@@ -57,3 +57,27 @@ Until those gates are independently satisfied this is **SOURCE ONLY / NOT
 SIGNED / NOT BROKER ADMITTED / NO PHYSICAL LAUNCH**. No weights belong in Git;
 VN1/VN2 may restore artifacts on demand under separately verified worker
 authority, preserving Patrick's no-permanent-Lappy-weight policy.
+
+## 2026-11-04 partial-weight hostile counterexample
+
+On the source main branch, the earlier `require_official_base()` accepted a
+caller-provided 5-file binding with one tiny fake safetensors shard. Both a
+one-shard and a two-shard fake fixture reproduced this defect in red-first
+Linux CI. The proposed production-facing function now demands the **exact two**
+upstream shard names, independently reviewed full-byte SHA-256 OIDs, official
+physical byte lengths, a structural two-shard index, and every required
+config/tokenizer/index/ChatML template/vocabulary artifact. Synthetic hash
+fixtures remain testable only by
+`inspect_untrusted_base_binding_for_native_test_only`—a deliberately
+non-authoritative inspection function.
+
+The seven small metadata artifacts (`config.json`, `tokenizer_config.json`,
+`tokenizer.json`, `model.safetensors.index.json`, `chat_template.jinja`,
+`merges.txt`, and `vocab.json`) still lack **independently admitted full-byte
+SHA-256 anchors**. Production `require_official_base()` has an empty trusted
+metadata pin set and therefore **HOLDs all candidates**, even if both real
+weight shards are present. The official repo uses Xet backing for the two
+weight objects; pointer text and declared sizes are metadata, never the
+physical tensors. No trusted tokenizer/chat-template equivalence, full tensor
+header integrity, owner signer, WDDM fit, GPU lease or optimizer step is
+implied by this source work.
