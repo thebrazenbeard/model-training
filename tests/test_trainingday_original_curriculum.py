@@ -193,6 +193,53 @@ class OriginalCurriculumTests(unittest.TestCase):
             self.assertFalse((moved / "manifest.json").exists())
             self.assertEqual(list(moved.iterdir()), [])
 
+    def test_mutation_after_manifest_link_cannot_claim_success(self):
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "candidate"
+            real_link = original_curriculum.os.link
+
+            def corrupt_train_after_manifest(src, dst, **kwargs):
+                result = real_link(src, dst, **kwargs)
+                if dst == "manifest.json":
+                    fd = original_curriculum.os.open(
+                        "train.jsonl", original_curriculum.os.O_WRONLY | original_curriculum.os.O_TRUNC,
+                        dir_fd=kwargs["dst_dir_fd"])
+                    try:
+                        original_curriculum.os.write(fd, b"tampered after manifest")
+                    finally:
+                        original_curriculum.os.close(fd)
+                return result
+
+            with mock.patch.object(original_curriculum.os, "link", side_effect=corrupt_train_after_manifest):
+                with self.assertRaisesRegex(RuntimeError, "train.jsonl hash changed"):
+                    write_candidate(output)
+            self.assertEqual(list(output.iterdir()), [])
+
+    def test_final_name_swap_after_manifest_is_detected(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            output = root / "candidate"
+            outside = root / "external-data"
+            outside.write_bytes(b"untouched")
+            real_link = original_curriculum.os.link
+
+            def swap_final_after_manifest(src, dst, **kwargs):
+                result = real_link(src, dst, **kwargs)
+                if dst == "manifest.json":
+                    dir_fd = kwargs["dst_dir_fd"]
+                    original_curriculum.os.rename("train.jsonl", "train.jsonl.held",
+                                                  src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                    original_curriculum.os.symlink(outside, "train.jsonl", dir_fd=dir_fd)
+                return result
+
+            with mock.patch.object(original_curriculum.os, "link", side_effect=swap_final_after_manifest):
+                with self.assertRaisesRegex(RuntimeError, "train.jsonl unsafe|incomplete publication"):
+                    write_candidate(output)
+            self.assertEqual(outside.read_bytes(), b"untouched")
+            # Unsafe replacements survive deliberately for manual inspection.
+            self.assertTrue((output / "train.jsonl").is_symlink())
+            self.assertFalse((output / "manifest.json").exists())
+
     def test_deterministic_files_and_manifest_hashes(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             one, two = Path(first), Path(second)
