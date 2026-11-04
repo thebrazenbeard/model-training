@@ -61,4 +61,7 @@ jobs:
         run: |
           export TRAININGDAY_OFFICIAL_META_DIR="$RUNNER_TEMP/qwen35-metadata-only"
           timeout --signal=TERM 150s python -m unittest -v \
-            tests.test_trainingday_qwen35_official_bridge
+            tests.test_trainingday_qwen35_official_bridge \
+            | tee "$RUNNER_TEMP/qwen35-bridge-evidence.log"
+          grep --quiet '^OFFICIAL_QWEN35_TEXT_BRIDGE_EVIDENCE=' \
+            "$RUNNER_TEMP/qwen35-bridge-evidence.log"

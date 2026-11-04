@@ -49,6 +49,8 @@ class WeightMappingEscapeTests(unittest.TestCase):
             })
 
 
+@unittest.skipUnless(os.environ.get("TRAININGDAY_OFFICIAL_META_DIR"),
+                     "dedicated pinned-metadata workflow owns full bridge test")
 class OfficialMetadataBridgeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
