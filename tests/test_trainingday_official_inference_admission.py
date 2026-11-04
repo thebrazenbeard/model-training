@@ -94,6 +94,70 @@ class OfficialInferenceAdmissionTests(unittest.TestCase):
         self.assertEqual(exit_code, 2, stderr.getvalue())
         self.assertIn('"status": "HOLD"', stderr.getvalue())
 
+    def test_late_snapshot_ancestor_swap_holds_lexical_path_audit(self):
+        """W30: retained snapshot dir stays valid after its parent path escapes."""
+        parent = self.root / "snapshot-parent"
+        snapshot = parent / "official"
+        snapshot.mkdir(parents=True)
+        bogus_parent = self.root / "bogus-parent"
+        bogus = bogus_parent / "official"
+        bogus.mkdir(parents=True)
+        tiny = []
+        for letter, (name, _, _) in zip((b"A", b"B"), impl.SHARDS):
+            (snapshot / name).write_bytes(letter)
+            (bogus / name).write_bytes(b"X")
+            tiny.append((name, 1, hashlib.sha256(letter).hexdigest()))
+        for name in impl.METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS:
+            (snapshot / name).write_bytes(b"official-metadata")
+            (bogus / name).write_bytes(b"bogus-metadata")
+        actual_measure = impl._measure_fd
+        calls = [0]
+
+        def swap_after_first_hash(fd, **kwargs):
+            result = actual_measure(fd, **kwargs)
+            calls[0] += 1
+            if calls[0] == 1:
+                parent.rename(self.root / "snapshot-parent-original")
+                parent.symlink_to(bogus_parent, target_is_directory=True)
+            return result
+
+        with (patch.object(impl, "SHARDS", tuple(tiny)),
+              patch.object(impl, "_measure_fd", side_effect=swap_after_first_hash),
+              contextlib.redirect_stdout(io.StringIO()),
+              contextlib.redirect_stderr(io.StringIO()) as stderr):
+            exit_code = impl.main(["hash-audit", "--snapshot", str(snapshot)])
+        self.assertGreaterEqual(calls[0], 1)
+        self.assertEqual(exit_code, 2, stderr.getvalue())
+        self.assertIn('"status": "HOLD"', stderr.getvalue())
+
+    def test_late_snapshot_ancestor_plain_directory_replacement_holds(self):
+        """Final absolute rewalk checks inode, not merely absence of symlinks."""
+        parent = self.root / "parent"
+        snapshot = parent / "official"
+        snapshot.mkdir(parents=True)
+        tiny = []
+        for letter, (name, _, _) in zip((b"A", b"B"), impl.SHARDS):
+            (snapshot / name).write_bytes(letter)
+            tiny.append((name, 1, hashlib.sha256(letter).hexdigest()))
+        for name in impl.METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS:
+            (snapshot / name).write_bytes(b"metadata")
+        actual_measure = impl._measure_fd
+        swapped = [False]
+
+        def replace_parent(fd, **kwargs):
+            result = actual_measure(fd, **kwargs)
+            if not swapped[0]:
+                swapped[0] = True
+                parent.rename(self.root / "old-parent")
+                (parent / "official").mkdir(parents=True)
+            return result
+
+        with (patch.object(impl, "SHARDS", tuple(tiny)),
+              patch.object(impl, "_measure_fd", side_effect=replace_parent)):
+            with self.assertRaisesRegex(impl.AdmissionError, "absolute snapshot pathname"):
+                impl.verify_snapshot(snapshot)
+        self.assertTrue(swapped[0])
+
     def test_late_metadata_path_replacement_holds_entire_hash_audit(self):
         """Metadata names are revalidated too, not merely the two shards."""
         tiny = []
@@ -157,6 +221,7 @@ class OfficialInferenceAdmissionTests(unittest.TestCase):
             receipt = impl.verify_snapshot(self.root)
         self.assertTrue(receipt["shards_verified"])
         self.assertTrue(receipt["all_snapshot_entries_revalidated"])
+        self.assertTrue(receipt["absolute_snapshot_directory_revalidated"])
         self.assertFalse(receipt["official_checkpoint_admitted"])
         self.assertIn("non-atomic", receipt["file_identity_limit"])
 

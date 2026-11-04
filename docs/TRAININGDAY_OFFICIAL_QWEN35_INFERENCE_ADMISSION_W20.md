@@ -131,6 +131,17 @@ per-name checks are sequential, **not atomic**, and do not prevent a later
 rename after the last check. Physical use still requires host-owned immutable
 custody and a process-bound independent receipt.
 
+**W31 ancestor-replacement repair:** The retained directory FD alone could
+still point to a valid old snapshot after an *ancestor* was renamed and its
+original lexical path redirected to a bogus tree. After all nine per-file
+checks, the verifier now also rewalks the snapshot's full absolute path from
+the filesystem root, enforcing `O_NOFOLLOW` on every component, and compares
+the newly reached snapshot directory's `(device, inode)` with the original
+retained handle. A symlinked ancestor or replacement plain directory now
+causes `HOLD`/exit 2, rather than a false stable-path receipt. This remains a
+point-in-time **non-atomic** path check, not a guarantee against post-return
+changes or privileged mount namespace manipulation.
+
 ### Exact physical VN1 authority request
 
 Patrick or his authorized VN1 host steward must explicitly approve **one
