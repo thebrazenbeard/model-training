@@ -10,7 +10,7 @@ Run offline: `python -m unittest tests.test_trainingday_matched_method_compariso
 
 1. **Causal optimizer comparison:** MeZO applied only to the **same pinned
    trainable LoRA targets** as QLoRA/AdamW, on the exact same authenticated
-   Qwen3.5-4B base, tokenizer, training split and seed list. This isolates the
+   Qwen3.5-4B baseline checkpoint, tokenizer, training split and seed list. This isolates the
    algorithmic choice more effectively than full-parameter MeZO versus
    adapter-only QLoRA. Still record forward/backward counts and actual token
    exposure; matching a time cap alone cannot equate compute or examples.
@@ -41,6 +41,59 @@ steps; they still require fresh snapshot reload. The untouched base requires
 PEFT zero-step arm is **not** an untouched base.
 All true training paths must pass the separate protected physical launch
 authority; these declarations cannot make them runnable.
+
+### Actual ordered TRAIN content and label-custody commitment
+
+The V2 plan **requires** a distinct `schedule_commitments` entry for every
+seed, with exactly three SHA-256 digests: `train_order_sha256`,
+`correct_labels_sha256`, and `corrupted_labels_sha256`. The pure helper
+`commit_training_schedule(seed, ordered_rows)` generates these from the
+full ordered `(row_id, input)` sequence and, separately, the ordered
+`(row_id, assigned_label)` pairs for each correct/corrupted condition. It
+canonicalizes UTF-8 JSON with sorted object keys, no insignificant spaces,
+domain labels, and the seed. Each input row must carry distinct `row_id`,
+`input`, `correct_label`, and `corrupted_label` strings. The model adapter
+must build these *from the actual admitted TRAIN rows after the corruption
+transform* and independently re-hash the data at read time: a made-up digest
+is not authentication. Never log or commit raw private training examples,
+private evaluation cases, or the corruption seed's secret material.
+
+Every trained arm must return the **precommitted** order and assigned-label
+digests; a pair of method receipts that colludes on a different digest is
+rejected against the frozen plan. No cross-seed corrupted-label schedule reuse
+is permitted. For public R202 as a future input, canonicalization of actual
+row payloads (including chat template, tokenizer and special tokens) would
+need an explicit adapter and verified data lineage; none has been built here.
+
+The `candidate_sequence_length=128` field is a planning candidate, **not**
+a certified context limit. A separate source-only R202 check using the pinned
+official Qwen3.5-4B tokenizer found **757 of 1,536** simple
+`prompt + newline + answer` rows above 64 tokens; the longest was 91 and
+none exceeded 128 *without chat template/BOS/EOS overhead*. Thus seq64
+silently truncates many source examples, while seq128 does **not** prove the
+real template, activations, or VRAM fit. Physical launch qualification must
+recheck all examples after actual templating and reject any truncated labels;
+the receipt's `truncated_training_rows=0` is only untrusted telemetry.
+
+### Wall-clock cap versus measured cost
+
+The two methods receive the same **maximum duration**, not equivalent actual
+compute or guaranteed equal numbers of FLOPs. The V2 plan predeclares a
+0–50% `actual_time_tolerance_percent` (default 20%), then measures the
+relative difference against the larger elapsed time for each seed/label pair.
+Over-tolerance pairs return
+`TIME_DISPARITY_REQUIRES_SEPARATE_ANALYSIS`, never an equal-cost claim.
+Unequal forward/backward counts are reported separately; those counts
+have different semantics for zeroth-order MeZO and backpropagation QLoRA,
+so even equal counts or equal seconds cannot prove matched compute.
+`measured_compute_equivalence_established` remains **false** by construction.
+Independent accelerator time/energy/FLOP profiling and separate quality-vs-
+cost plots are required for an actual resource-efficiency comparison.
+
+The pinned model ID `Qwen/Qwen3.5-4B` is the official **post-trained**
+checkpoint. `Qwen/Qwen3.5-4B-Base` is a different pretraining-only model.
+`OFFICIAL_BASE` in this study means the untouched, no-adapter version of the
+pinned **post-trained** checkpoint, not the distinct `-Base` release.
 
 The private evaluator must hold an independently protected test set unseen by
 trainers, disjoint from TRAIN in both surface and equivalent problem families.
