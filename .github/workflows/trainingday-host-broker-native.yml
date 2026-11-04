@@ -58,9 +58,16 @@ jobs:
           $broker = Join-Path $root 'TrainingDayHostBroker.cs'
           $reader = Join-Path $root 'BoundedPipeRequest.cs'
           $transport = Join-Path $root 'BrokerPipeTransport.cs'
+          $hold = Join-Path $root 'BrokerHoldResponse.cs'
           $exe = Join-Path $env:RUNNER_TEMP 'VeraTrainingDayBrokerSource.exe'
-          & $csc /nologo /target:exe /optimize+ ('/out:'+$exe) /r:System.ServiceProcess.dll /r:System.Core.dll /r:System.Security.dll $broker $reader $transport
+          & $csc /nologo /target:exe /optimize+ ('/out:'+$exe) /r:System.ServiceProcess.dll /r:System.Core.dll /r:System.Security.dll $broker $reader $transport $hold
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) { throw 'Broker source compile failed' }
+          $holdExe = Join-Path $env:RUNNER_TEMP 'BrokerHoldResponseTests.exe'
+          & $csc /nologo /target:exe ('/out:'+$holdExe) /r:System.Web.Extensions.dll $hold (Join-Path $PWD 'tests/native_broker_hold_response.cs')
+          if ($LASTEXITCODE -ne 0) { throw 'Deny-only response tests compile failed' }
+          $holdOutput = & $holdExe
+          Write-Output $holdOutput
+          if ($LASTEXITCODE -ne 0 -or ($holdOutput -join "`n") -notmatch 'NATIVE_BROKER_DENY_ONLY_PASS') { throw 'Deny-only response tests failed' }
           $readerExe = Join-Path $env:RUNNER_TEMP 'BrokerBoundedRequestTests.exe'
           & $csc /nologo /target:exe ('/out:'+$readerExe) $reader (Join-Path $PWD 'tests/native_broker_request_contract.cs')
           if ($LASTEXITCODE -ne 0) { throw 'Request tests compile failed' }
