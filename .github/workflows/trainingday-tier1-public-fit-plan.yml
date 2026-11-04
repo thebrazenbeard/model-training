@@ -1,0 +1,43 @@
+name: trainingday-tier1-public-fit-plan-source
+
+on:
+  pull_request:
+    paths:
+      - trainingday/tier1_public_fit_plan.py
+      - tests/test_trainingday_tier1_public_fit_plan.py
+      - docs/TRAININGDAY_TIER1_B_PUBLIC_FIT_REQUEST.md
+      - .github/workflows/trainingday-tier1-public-fit-plan.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Reject malformed and unsafe Contract-B request candidates
+        run: python -m unittest discover -s tests -p test_trainingday_tier1_public_fit_plan.py -v
+      - name: Exercise real source-only receipt without any host effects
+        run: |
+          python -m trainingday.tier1_public_fit_plan > "$RUNNER_TEMP/tier1-plan.json"
+          python - "$RUNNER_TEMP/tier1-plan.json" <<'PY'
+          import json, sys
+          from trainingday.tier1_public_fit_plan import build_public_fit_plan
+          with open(sys.argv[1], 'rb') as fh:
+              record = json.load(fh)
+          assert record['authorized'] is False
+          assert record['plan']['launch_path_implemented'] is False
+          assert record['plan']['broker_owner_signed_grant_required'] is True
+          assert record['plan']['model_id'] == 'Qwen/Qwen3.5-4B'
+          assert record['plan']['max_seconds'] == 1800
+          assert record['plan']['max_vram_mib'] == 3072
+          assert record['plan'] == build_public_fit_plan(
+              executable_sha256=record['plan']['executable_sha256'])
+          print('TIER1_SOURCE_PLAN_ONLY_NO_AUTHORITY', record['plan_sha256'])
+          PY
