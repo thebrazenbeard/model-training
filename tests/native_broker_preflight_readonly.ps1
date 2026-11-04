@@ -14,6 +14,7 @@ $fakeSigner = '1111111111111111111111111111111111111111'
 . $AclHelper
 
 $nonAdmin = [Security.Principal.NTAccount]::new('BUILTIN\Users')
+$trustedOwner = [Security.Principal.NTAccount]::new('BUILTIN\Administrators')
 $readAce = [pscustomobject]@{
     AccessControlType = [Security.AccessControl.AccessControlType]::Allow
     FileSystemRights = [Security.AccessControl.FileSystemRights]::ReadAndExecute
@@ -29,14 +30,20 @@ $changeDaclAce = [pscustomobject]@{
     FileSystemRights = [Security.AccessControl.FileSystemRights]::ChangePermissions
     IdentityReference = $nonAdmin
 }
-if (-not (Test-TrainingDayNoUnexpectedWriters ([pscustomobject]@{ Access = @($readAce) }))) {
+if (-not (Test-TrainingDayNoUnexpectedWriters ([pscustomobject]@{ Access = @($readAce); Owner = $trustedOwner }))) {
     throw 'ReadAndExecute for non-admin was wrongly classified as mutating'
 }
-if (Test-TrainingDayNoUnexpectedWriters ([pscustomobject]@{ Access = @($writeAce) })) {
+if (Test-TrainingDayNoUnexpectedWriters ([pscustomobject]@{ Access = @($writeAce); Owner = $trustedOwner })) {
     throw 'Modify for non-admin unexpectedly passed the ACL preflight'
 }
-if (Test-TrainingDayNoUnexpectedWriters ([pscustomobject]@{ Access = @($changeDaclAce) })) {
+if (Test-TrainingDayNoUnexpectedWriters ([pscustomobject]@{ Access = @($changeDaclAce); Owner = $trustedOwner })) {
     throw 'ChangePermissions for non-admin unexpectedly passed the ACL preflight'
+}
+if (Test-TrainingDayNoUnexpectedWriters ([pscustomobject]@{ Access = @($readAce); Owner = $nonAdmin })) {
+    throw 'Read-only ACE masked implicit untrusted owner WRITE_DAC'
+}
+if (Test-TrainingDayNoUnexpectedWriters ([pscustomobject]@{ Access = @(); Owner = $nonAdmin })) {
+    throw 'Untrusted owner of ancestor directory was treated as safe without ACEs'
 }
 
 function Invoke-Probe([string]$CandidatePath, [string]$ExpectedCandidateHash, [string]$Signer = $fakeSigner) {
@@ -79,4 +86,4 @@ Assert-Held $minimum 'GPU_MINIMUM_BELOW_REVIEWED_BOUND'
 
 $after = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash
 if ($after -ne $before) { throw 'Preflight mutated candidate bytes' }
-Write-Output 'BROKER_MAINTENANCE_READONLY_NEGATIVE_PASS cases=8 no_service_install=true no_launch=true'
+Write-Output 'BROKER_MAINTENANCE_READONLY_NEGATIVE_PASS cases=10 no_service_install=true no_launch=true'
