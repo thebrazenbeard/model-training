@@ -1,0 +1,180 @@
+name: TrainingDay owner-attended certificate script source HOLD
+
+on:
+  pull_request:
+    paths:
+      - "trainingday/owner_signer/**"
+      - ".github/workflows/trainingday-owner-attended-source-hold.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  negative-owner-preflight:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Refuse private repository / unexpected context
+        shell: pwsh
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if ($env:GITHUB_REPOSITORY -ne 'thebrazenbeard/model-training' -or
+              $env:REPOSITORY_PRIVATE -ne 'false') {
+            throw 'HOLD: wrong repository context'
+          }
+
+      - name: Checkout exact PR source with no persistent credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify parse and wrong-host refusal with zero key creation
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $head = (git rev-parse --verify HEAD).Trim()
+          if ($head -ne $env:EXPECTED_SHA) { throw 'Source HEAD mismatch' }
+          $path = Join-Path $PWD 'trainingday/owner_signer/New-Tier1BOwnerPublicCertificateVN1.ps1'
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) {
+            throw ('Owner script parse errors: ' + (($errors | ForEach-Object Message) -join '; '))
+          }
+          $commands = @($ast.FindAll({ param($node)
+            $node -is [System.Management.Automation.Language.CommandAst]
+          }, $true) | ForEach-Object { $_.GetCommandName() })
+          foreach ($forbidden in @('Export-PfxCertificate', 'Import-PfxCertificate',
+            'Import-Certificate', 'Restart-Service', 'Remove-Item', 'Stop-Service')) {
+            if ($commands -contains $forbidden) { throw "Forbidden owner script command: $forbidden" }
+          }
+          $source = Get-Content -LiteralPath $path -Raw
+          foreach ($required in @('ProtectHigh', 'NonExportable',
+            'VERA-NODE-1\Patrick', 'S-1-5-21-784600762-3780420976-2835800593-1001',
+            'WTSGetActiveConsoleSessionId', 'WTSQuerySessionInformationW',
+            '301606146983A6FECEA99ABA92BCAF8AA4B9BB9BEBD9E553',
+            'CngKey]::Exists', '-Container $container',
+            'Export-Certificate', '-NoClobber', 'OWNER_PUBLIC_DER_ONLY_PASS')) {
+            if (-not $source.Contains($required)) { throw "Missing source-only contract: $required" }
+          }
+          # ParseFile does not compile embedded C#; explicitly compile only
+          # the WTS interop here-string in ephemeral runner memory, no call
+          # to the owner key-creation cmdlet.
+          $native = [regex]::Match($source, "(?s)Add-Type -TypeDefinition @'\r?\n(.*?)\r?\n'@ -ErrorAction Stop")
+          if (-not $native.Success) { throw 'Missing guarded native WTS interop' }
+          Add-Type -TypeDefinition $native.Groups[1].Value -ErrorAction Stop
+          $subject = 'CN=VERA TrainingDay Tier1 B Owner Patrick v1'
+          $before = @(Get-ChildItem -Path 'Cert:\CurrentUser\My' |
+            Where-Object { $_.Subject -ceq $subject })
+          if ($before.Count -ne 0) { throw 'Runner has unexpected owner subject' }
+          $pathOut = Join-Path $env:LOCALAPPDATA 'Vera\TrainingDay\Tier1B-Patrick-Owner-PUBLIC.cer'
+          if (Test-Path -LiteralPath $pathOut) { throw 'Runner has unexpected owner DER path' }
+          $refused = $false
+          try {
+            & $path
+          } catch {
+            if ($_.Exception.Message -match 'HOLD: owner-attended VN1 local console required') {
+              $refused = $true
+            } else {
+              throw
+            }
+          }
+          if (-not $refused) { throw 'SECURITY FAILURE: GitHub Actions context was not refused' }
+          $after = @(Get-ChildItem -Path 'Cert:\CurrentUser\My' |
+            Where-Object { $_.Subject -ceq $subject })
+          if ($after.Count -ne 0 -or (Test-Path -LiteralPath $pathOut)) {
+            throw 'SECURITY FAILURE: wrong-host refusal generated a key or exported DER'
+          }
+          Write-Output "OWNER_SIGNER_SOURCE_HOLD_PASS head=$head wrong_host_refused=true private_key_generated=false"
+
+      - name: Prove owner LocalApplicationData ancestor junction is refused (Windows PowerShell 5.1, no keys)
+        shell: powershell
+        run: |
+          $path = Join-Path $PWD 'trainingday/owner_signer/New-Tier1BOwnerPublicCertificateVN1.ps1'
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) { throw 'Cannot parse owner script for path preflight test' }
+          $guard = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+              $node.Name -eq 'Assert-OwnerLocalAppDataOrdinaryDirectory'
+          }, $true)
+          if (-not $guard) { throw 'SECURITY FAILURE: owner LocalApplicationData ancestry guard is missing' }
+          . ([scriptblock]::Create($guard.Extent.Text))
+
+          # Work entirely in ephemeral GitHub runner temp, never in a user profile,
+          # certificate store, CNG provider or owner host.
+          $scratch = Join-Path $env:RUNNER_TEMP ('owner-ancestry-' + [guid]::NewGuid().ToString('N'))
+          $goodProfile = Join-Path $scratch 'good\owner'
+          $goodLocal = Join-Path $goodProfile 'AppData\Local'
+          $null = [IO.Directory]::CreateDirectory($goodLocal)
+          Assert-OwnerLocalAppDataOrdinaryDirectory -UserProfilePath $goodProfile -LocalAppDataPath $goodLocal
+
+          $badProfile = Join-Path $scratch 'bad\owner'
+          $outside = Join-Path $scratch 'elsewhere'
+          $null = [IO.Directory]::CreateDirectory($badProfile)
+          $null = [IO.Directory]::CreateDirectory((Join-Path $outside 'Local'))
+          $junction = Join-Path $badProfile 'AppData'
+          $null = New-Item -Path $junction -ItemType Junction -Target $outside -ErrorAction Stop
+          if (-not (Test-Path -LiteralPath (Join-Path $badProfile 'AppData\Local'))) {
+            throw 'Synthetic ancestor junction fixture is not traversable'
+          }
+          $refused = $false
+          try {
+            Assert-OwnerLocalAppDataOrdinaryDirectory -UserProfilePath $badProfile -LocalAppDataPath (Join-Path $badProfile 'AppData\Local')
+          } catch {
+            if ($_.Exception.Message -match 'HOLD: owner LocalApplicationData ancestor is redirected/non-directory') {
+              $refused = $true
+            } else { throw }
+          }
+          if (-not $refused) { throw 'SECURITY FAILURE: ancestor AppData junction escaped owner path confinement' }
+          Write-Output 'OWNER_LOCALAPPDATA_ANCESTRY_HOLD_PASS normal_dir_allowed=true ancestor_junction_refused=true no_keys=true'
+
+      - name: Verify Windows PowerShell 5.1 syntax and fail-closed owner gate
+        shell: powershell
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Expected Windows PowerShell 5.1' }
+          $head = (git rev-parse --verify HEAD).Trim()
+          if ($head -ne $env:EXPECTED_SHA) { throw 'Source HEAD mismatch' }
+          $path = Join-Path $PWD 'trainingday/owner_signer/New-Tier1BOwnerPublicCertificateVN1.ps1'
+          $tokens = $null
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) {
+            throw ('Windows PowerShell 5.1 parser rejected owner script: ' +
+              (($errors | ForEach-Object Message) -join '; '))
+          }
+          # Compile WTS native code using the .NET Framework C# compiler,
+          # without executing the positive owner branch or creating keys.
+          $source = Get-Content -LiteralPath $path -Raw
+          $native = [regex]::Match($source, "(?s)Add-Type -TypeDefinition @'\r?\n(.*?)\r?\n'@ -ErrorAction Stop")
+          if (-not $native.Success) { throw 'Missing native WTS code in PowerShell 5.1' }
+          Add-Type -TypeDefinition $native.Groups[1].Value -ErrorAction Stop
+          $subject = 'CN=VERA TrainingDay Tier1 B Owner Patrick v1'
+          $before = @(Get-ChildItem -Path 'Cert:\CurrentUser\My' |
+            Where-Object { $_.Subject -ceq $subject })
+          if ($before.Count -ne 0) { throw 'Unexpected CI owner subject before refusal' }
+          $out = Join-Path $env:LOCALAPPDATA 'Vera\TrainingDay\Tier1B-Patrick-Owner-PUBLIC.cer'
+          if (Test-Path -LiteralPath $out) { throw 'Unexpected CI owner public DER before refusal' }
+          $refused = $false
+          try {
+            & $path
+          } catch {
+            if ($_.Exception.Message -match 'HOLD: owner-attended VN1 local console required') {
+              $refused = $true
+            } else { throw }
+          }
+          if (-not $refused) { throw 'Windows PowerShell 5.1 failed to HOLD wrong owner context' }
+          $after = @(Get-ChildItem -Path 'Cert:\CurrentUser\My' |
+            Where-Object { $_.Subject -ceq $subject })
+          if ($after.Count -ne 0 -or (Test-Path -LiteralPath $out)) {
+            throw 'Windows PowerShell 5.1 wrong-host path mutated owner cert/DER'
+          }
+          Write-Output "OWNER_SIGNER_PS51_HOLD_PASS head=$head native_wts_compiled=true no_key_generation=true"
