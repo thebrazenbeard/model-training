@@ -89,6 +89,9 @@ class MatchedMethodStudyTests(unittest.TestCase):
                   "authorizes_eval_unseal", "allow_full_parameter_mezo_as_matched_arm"):
             self.assertIs(a[k], False)
         self.assertTrue(a["base_zero_update_reference_required"])
+        self.assertEqual(a["comparison_scope"], "RECIPE_COMPARISON_ONLY")
+        self.assertFalse(a["causal_gradient_estimator_isolated"])
+        self.assertFalse(a["mezo_perturbation_pairing_independently_verified"])
         self.assertFalse(a["full_chatml_tokenizer_fit_independently_verified"])
         self.assertFalse(a["initial_adapter_bytes_independently_attested"])
         self.assertEqual(a["candidate_sequence_length"], 128)
@@ -104,7 +107,10 @@ class MatchedMethodStudyTests(unittest.TestCase):
                            ("wall_clock_budget_seconds", True),
                            ("wall_clock_budget_seconds", 10),
                            ("candidate_sequence_length", 12),
-                           ("actual_time_tolerance_percent", 51)):
+                           ("actual_time_tolerance_percent", 51),
+                           ("mezo_directions_per_step", 0),
+                           ("mezo_directions_per_step", True),
+                           ("mezo_directions_per_step", 65)):
             proposed = spec()
             proposed[key] = wrong
             with self.subTest(key=key, wrong=wrong), self.assertRaises(
@@ -313,6 +319,43 @@ class MatchedMethodStudyTests(unittest.TestCase):
         self.assertFalse(outcome["measured_compute_equivalence_established"])
         self.assertEqual(outcome["scientific_cost_comparison_status"],
                          "EQUAL_TIME_CEILING_ONLY_COMPUTE_UNQUALIFIED")
+
+    def test_standard_qlora_rejects_more_backwards_than_forwards(self):
+        plan = build_study_plan(**spec())
+        r = receipts(plan)
+        qlora = next(x for x in r if x["arm_id"] == "QLORA_ADAMW:correct:11")
+        self.assertEqual((qlora["optimizer_steps"], qlora["backward_calls"]), (10, 10))
+        qlora["forward_calls"] = 1  # Wave8 independently reproduced falsifier.
+        with self.assertRaisesRegex(MatchedStudyError, "corresponding forward"):
+            validate_untrusted_receipts(plan, r)
+
+    def test_qlora_gradient_accumulation_and_zero_update_controls(self):
+        plan = build_study_plan(**spec())
+        r = receipts(plan)
+        qlora = next(x for x in r if x["arm_id"] == "QLORA_ADAMW:correct:11")
+        qlora["backward_calls"] = 20  # Two gradient microbatches per 10 steps.
+        qlora["forward_calls"] = 20
+        zero = next(x for x in r if x["arm_id"] == "QLORA_ADAMW:zero:11")
+        self.assertEqual((zero["optimizer_steps"], zero["backward_calls"]), (0, 0))
+        result = validate_untrusted_receipts(plan, r)
+        self.assertTrue(result["covers_all_declared_arms"])
+        self.assertFalse(result["physical_execution_independently_verified"])
+
+    def test_explicit_mezo_directions_require_two_forwards_each(self):
+        proposal = spec()
+        proposal["mezo_directions_per_step"] = 3
+        plan = build_study_plan(**proposal)
+        r = receipts(plan)
+        with self.assertRaisesRegex(MatchedStudyError, "two-sided forward"):
+            validate_untrusted_receipts(plan, r)
+        for arm in r:
+            if (arm["arm_id"].startswith("MEZO_LORA:")
+                    and ":zero:" not in arm["arm_id"]):
+                arm["forward_calls"] = 60  # 2 directions × 3 samples × 10 steps.
+        result = validate_untrusted_receipts(plan, r)
+        self.assertTrue(result["mezo_direction_count_predeclared"])
+        self.assertFalse(result["mezo_perturbation_pairing_independently_verified"])
+        self.assertFalse(result["causal_gradient_estimator_isolated"])
 
     def test_mcnemar_is_paired_not_deducible_from_marginals(self):
         # Same historical 3/64 vs 5/64 totals; different case identities
