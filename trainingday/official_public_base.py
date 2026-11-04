@@ -32,7 +32,8 @@ PHYSICAL_SHARD_BYTES = sum(item[1] for item in SHARDS)
 MAX_MANIFEST_BYTES = 16384
 METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS = (
     "config.json", "tokenizer_config.json", "tokenizer.json",
-    "model.safetensors.index.json",
+    "model.safetensors.index.json", "chat_template.jinja", "merges.txt",
+    "vocab.json",
 )
 
 
