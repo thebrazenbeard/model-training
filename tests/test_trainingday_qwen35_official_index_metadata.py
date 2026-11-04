@@ -61,6 +61,11 @@ class OfficialIndexMetadataTests(unittest.TestCase):
         with self.assertRaises(source.OfficialIndexMetadataError):
             self.validate(self.raw())
 
+    def test_float_payload_size_not_accepted_as_exact_integer(self):
+        self.payload["metadata"]["total_size"] = float(9_319_737_856)
+        with self.assertRaises(source.OfficialIndexMetadataError):
+            self.validate(self.raw())
+
     def test_unbound_third_shard_or_path_rejected(self):
         first = "model.language_model.embed_tokens.weight"
         for unsafe in ("other.safetensors", "../../untrusted.safetensors"):

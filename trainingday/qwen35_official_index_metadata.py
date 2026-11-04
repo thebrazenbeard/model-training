@@ -71,6 +71,7 @@ def _parse_index(raw: bytes, *, sha256: str, byte_size: int,
         raise OfficialIndexMetadataError("invalid index JSON") from exc
     if (type(document) is not dict or set(document) != {"metadata", "weight_map"}
             or type(document["metadata"]) is not dict
+            or type(document["metadata"].get("total_size")) is not int
             or document["metadata"] != {"total_size": payload_bytes}
             or type(document["weight_map"]) is not dict
             or len(document["weight_map"]) != sum(namespace_counts.values())):
