@@ -14,6 +14,10 @@ jobs:
   negative-owner-preflight:
     runs-on: windows-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [pwsh, powershell]
     steps:
       - name: Refuse private repository / unexpected context
         shell: pwsh
@@ -32,12 +36,16 @@ jobs:
           persist-credentials: false
 
       - name: Verify parse and wrong-host refusal with zero key creation
-        shell: pwsh
+        shell: ${{ matrix.shell }}
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SHELL_EXPECTED: ${{ matrix.shell }}
         run: |
           $head = (git rev-parse --verify HEAD).Trim()
           if ($head -ne $env:EXPECTED_SHA) { throw 'Source HEAD mismatch' }
+          if ($env:SHELL_EXPECTED -eq 'powershell' -and $PSVersionTable.PSVersion.Major -ne 5) {
+            throw 'Windows PowerShell compatibility job did not use PS 5.x'
+          }
           $path = Join-Path $PWD 'trainingday/owner_signer/New-Tier1BOwnerPublicCertificateVN1.ps1'
           $tokens = $null
           $errors = $null
