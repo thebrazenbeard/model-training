@@ -77,7 +77,8 @@ internal static class Tier1BGrantCandidateTests {
             CheckNoLaunch(matched,"valid fixture");
             Assert(matched.ScopeAndSignatureMatched &&
               matched.Reason=="SIGNATURE_AND_SCOPE_MATCHED_SOURCE_ONLY_NO_LAUNCH",
-              "scoped crypto fixture should match without launch");
+              "scoped crypto fixture should match without launch reason="+matched.Reason+
+              " rsaBits="+fixture.KeySize+" sigBytes="+sig.Length);
 
             Assert(matched.AbortByUnix==1800000200L &&
                 matched.AbortByUnix<Now+1800,
