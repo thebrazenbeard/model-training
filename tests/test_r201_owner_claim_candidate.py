@@ -132,6 +132,30 @@ class R201OwnerClaimCandidateTest(unittest.TestCase):
         with self.assertRaises(AdmissionError):
             self.inspect(mixed)
 
+    def test_nonfinite_json_exponents_use_declared_evidence_error(self):
+        original = canonical(self.claim)
+        for key in ("owner_key_epoch", "train_count",
+                    "private_dev_commitment_sha256", "not_before_utc"):
+            needle = (b'"' + key.encode("ascii") + b'":'
+                      + json.dumps(self.claim[key]).encode("ascii"))
+            self.assertIn(needle, original)
+            for exponent in (b"1e999", b"-1e999"):
+                with self.subTest(field=key, exponent=exponent):
+                    malformed = original.replace(needle,
+                                                 b'"' + key.encode("ascii")
+                                                 + b'":' + exponent)
+                    with self.assertRaisesRegex(AdmissionError,
+                                                "nonfinite numeric value"):
+                        self.inspect(raw=malformed)
+
+    def test_escaped_unpaired_surrogate_uses_declared_evidence_error(self):
+        original = canonical(self.claim)
+        needle = b'"owner_identity":"synthetic-test-owner"'
+        self.assertIn(needle, original)
+        malformed = original.replace(needle, b'"owner_identity":"\\ud800"')
+        with self.assertRaisesRegex(AdmissionError, "invalid Unicode"):
+            self.inspect(raw=malformed)
+
     def test_signed_invisible_owner_identity_refuses(self):
         for bad in ("synthetic\u200dtest-owner", "synthetic\ntest-owner"):
             with self.subTest(identity=repr(bad)):

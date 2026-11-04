@@ -105,9 +105,15 @@ def inspect_r201_owner_claim_candidate(
     claim = _strict_json(claim_bytes)
     _require(type(claim) is dict and set(claim) == FIELDS,
              "R201 owner claim field set invalid")
-    _require(claim_bytes == json.dumps(claim, sort_keys=True,
-             ensure_ascii=False, allow_nan=False,
-             separators=(",", ":")).encode("utf-8"),
+    try:
+        canonical = json.dumps(claim, sort_keys=True,
+                               ensure_ascii=False, allow_nan=False,
+                               separators=(",", ":")).encode("utf-8")
+    except UnicodeError as exc:
+        raise ClaimEvidenceError("R201 owner claim contains invalid Unicode") from exc
+    except ValueError as exc:
+        raise ClaimEvidenceError("R201 owner claim contains nonfinite numeric value") from exc
+    _require(claim_bytes == canonical,
              "R201 owner claim must be canonical JSON")
     expected = {
         "schema": SCHEMA, "corpus_id": CORPUS_ID,
