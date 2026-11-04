@@ -2,6 +2,7 @@
 // keys are never enrolled, saved, or accepted by the real host broker.
 using System;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Vera.TrainingDay.HostBroker;
 
@@ -53,6 +54,56 @@ internal static class Tier1BGrantCandidateTests {
             !receipt.LaunchAuthorized && !receipt.Tier2Authorized &&
             !receipt.Promotable,label+" grants authority");
     }
+    static string Sha(byte[] bytes) {
+        using(SHA256 h=SHA256.Create()) {
+            byte[] digest=h.ComputeHash(bytes);
+            return BitConverter.ToString(digest).Replace("-","").ToLowerInvariant();
+        }
+    }
+    static void PublicOnlyMachineCertRegressions() {
+        // Fixtures never touch CurrentUser/LocalMachine certificate stores.
+        // Only short-lived in-memory keys are created, then disposed.
+        using(RSACng ownerKey=new RSACng(2048)) {
+            var request=new CertificateRequest("CN=VERA TrainingDay Tier1 Owner TEST",
+                ownerKey,HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(
+                false,false,0,true));
+            request.CertificateExtensions.Add(new X509KeyUsageExtension(
+                X509KeyUsageFlags.DigitalSignature,true));
+            using(X509Certificate2 ownerWithPrivate=request.CreateSelfSigned(
+                DateTimeOffset.UtcNow.AddMinutes(-5),DateTimeOffset.UtcNow.AddDays(1))) {
+                byte[] payload=Payload(Fields());
+                byte[] signature=ownerKey.SignData(payload,HashAlgorithmName.SHA256,
+                                                  RSASignaturePadding.Pkcs1);
+                string pin=Sha(ownerWithPrivate.RawData);
+                Assert(ownerWithPrivate.HasPrivateKey,"owner fixture has no private key");
+                var leaked=Tier1BGrantCandidate.VerifyPublicCertForNativeTestOnly(
+                    ownerWithPrivate,pin,payload,signature,Host(7,Now));
+                CheckNoLaunch(leaked,"owner secret imported into machine store");
+                Assert(!leaked.ScopeAndSignatureMatched &&
+                    leaked.Reason=="OWNER_PRIVATE_KEY_IN_MACHINE_STORE",
+                    "machine store accepted signing key");
+                using(X509Certificate2 machinePublicOnly=new X509Certificate2(
+                    ownerWithPrivate.Export(X509ContentType.Cert))) {
+                    Assert(!machinePublicOnly.HasPrivateKey,
+                           "public DER unexpectedly has signing secret");
+                    var publicOnly=Tier1BGrantCandidate.VerifyPublicCertForNativeTestOnly(
+                        machinePublicOnly,pin,payload,signature,Host(7,Now));
+                    CheckNoLaunch(publicOnly,"public-only cert candidate");
+                    Assert(publicOnly.ScopeAndSignatureMatched &&
+                        publicOnly.Reason==
+                          "SIGNATURE_AND_SCOPE_MATCHED_SOURCE_ONLY_NO_LAUNCH",
+                        "valid public-only certificate failed source-only observation");
+                    var swapped=Tier1BGrantCandidate.VerifyPublicCertForNativeTestOnly(
+                        machinePublicOnly,new string('0',64),payload,signature,Host(7,Now));
+                    CheckNoLaunch(swapped,"swapped DER trust anchor");
+                    Assert(!swapped.ScopeAndSignatureMatched &&
+                        swapped.Reason=="OWNER_CERTIFICATE_DER_MISMATCH",
+                        "different compiled DER pin was accepted");
+                }
+            }
+        }
+    }
     static void ExpectRejection(RSA fixtureKey, string[] mutated, string label) {
         byte[] b=Payload(mutated);
         byte[] signature=fixtureKey.SignData(b,HashAlgorithmName.SHA256,
@@ -67,6 +118,7 @@ internal static class Tier1BGrantCandidateTests {
         ExpectRejection(key,f,label);
     }
     static void Main() {
+        PublicOnlyMachineCertRegressions();
         using(RSACryptoServiceProvider fixture=new RSACryptoServiceProvider(2048)) {
             fixture.PersistKeyInCsp=false;
             Assert(fixture.KeySize==2048,"2048-bit fixture unavailable");
