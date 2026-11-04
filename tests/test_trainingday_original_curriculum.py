@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from trainingday import original_curriculum
 from trainingday.original_curriculum import DOMAINS, build_rows, validate, write_candidate
@@ -57,6 +58,90 @@ class OriginalCurriculumTests(unittest.TestCase):
             rows[1][key] = value
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, message):
                 validate(rows)
+
+    def test_reject_noncanonical_answer_identity_and_generator(self):
+        baseline = build_rows()
+        changes = (
+            ("answer", "incorrect"),
+            ("case_id", "forged-case"),
+            ("id", "forged-id"),
+            ("variant", 99),
+            ("provenance", {"kind": "source_authored", "generator": "forged",
+                            "external_corpus": False}),
+        )
+        for key, value in changes:
+            rows = [dict(row) for row in baseline]
+            rows[0][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                validate(rows)
+
+    def test_existing_dangling_or_live_symlink_cannot_escape(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            output = root / "output"
+            output.mkdir()
+            outside = root / "external-private.jsonl"
+            link = output / "train.jsonl"
+            for existing in (False, True):
+                if existing:
+                    outside.write_bytes(b"private sentinel")
+                link.symlink_to(outside)
+                with self.subTest(existing=existing), self.assertRaises(FileExistsError):
+                    write_candidate(output)
+                self.assertEqual(outside.exists(), existing)
+                if existing:
+                    self.assertEqual(outside.read_bytes(), b"private sentinel")
+                self.assertEqual(sorted(p.name for p in output.iterdir()), ["train.jsonl"])
+                link.unlink()
+
+    def test_refuse_symlink_as_output_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            target = root / "elsewhere"
+            target.mkdir()
+            alias = root / "output"
+            alias.symlink_to(target, target_is_directory=True)
+            with self.assertRaises(OSError):
+                write_candidate(alias)
+            self.assertEqual(list(target.iterdir()), [])
+
+    def test_staging_failure_leaves_no_candidate_or_temp_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "candidate"
+            real_fsync = original_curriculum.os.fsync
+            calls = 0
+
+            def fail_second_fsync(fd):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected dev staging failure")
+                return real_fsync(fd)
+
+            with mock.patch.object(original_curriculum.os, "fsync", side_effect=fail_second_fsync):
+                with self.assertRaisesRegex(OSError, "injected dev staging failure"):
+                    write_candidate(output)
+            self.assertEqual(list(output.iterdir()), [])
+            self.assertEqual(write_candidate(output)["files"]["train.jsonl"]["rows"], 432)
+
+    def test_second_publication_link_failure_rolls_back(self):
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "candidate"
+            real_link = original_curriculum.os.link
+            calls = 0
+
+            def fail_second_link(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected dev publication failure")
+                return real_link(*args, **kwargs)
+
+            with mock.patch.object(original_curriculum.os, "link", side_effect=fail_second_link):
+                with self.assertRaisesRegex(OSError, "injected dev publication failure"):
+                    write_candidate(output)
+            self.assertEqual(list(output.iterdir()), [])
+            self.assertEqual(write_candidate(output)["files"]["dev.jsonl"]["rows"], 144)
 
     def test_deterministic_files_and_manifest_hashes(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
