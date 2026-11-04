@@ -14,6 +14,11 @@ from pathlib import Path
 import re
 import stat
 
+from trainingday.official_public_base import (
+    INDEX_TENSOR_BYTES, METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS,
+    SHARDS as OFFICIAL_SHARDS,
+)
+
 
 BASE_ID = "Qwen/Qwen3.5-4B"
 BASE_REVISION = "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"
@@ -93,11 +98,13 @@ def _sha_file(path: Path) -> str:
         raise BaseBindingError("official R18 base file unavailable") from exc
 
 
-def require_official_base(binding_path: str | Path) -> tuple[dict, Path]:
-    """Verify exact local bytes without asserting provenance or host authority.
+def inspect_untrusted_base_binding_for_native_test_only(
+    binding_path: str | Path,
+) -> tuple[dict, Path]:
+    """Inspect caller-declared file hashes, never official source authenticity.
 
-    The physical broker must independently authenticate this caller, path,
-    identity and immutable source custody before any protected model operation.
+    Synthetic tests use this seam. A successful match is NOT official model
+    admission, trusted metadata custody, or permission to run a model.
     """
     _require(isinstance(binding_path, (str, Path)))
     binding = Path(binding_path)
@@ -139,3 +146,71 @@ def require_official_base(binding_path: str | Path) -> tuple[dict, Path]:
     _require(bound_shards and {p.name for p in snapshot.glob("*.safetensors")}
              == bound_shards)
     return value, snapshot
+
+
+# These file identities are present at official revision 851bf6e, but their
+# trusted full-byte SHA256 values have NOT yet been independently admitted.
+# Filling this tuple is a separately reviewed source change, never caller input.
+# Empty by design: require_official_base MUST remain fail-closed.
+TRUSTED_OFFICIAL_METADATA_PIN_ITEMS: tuple[tuple[str, str], ...] = ()
+
+
+def require_official_base(binding_path: str | Path) -> tuple[dict, Path]:
+    """Require complete official shard identity AND trusted metadata byte pins.
+
+    This production-facing source gate currently has no enrolled metadata
+    trust pins and thus cannot admit ANY checkpoint. It also confers no GPU
+    lease, owner signature, host path custody, rights, or launch authority.
+    Tests of tiny synthetic fixtures must call the explicitly untrusted
+    inspector instead.
+    """
+    declared, snapshot = inspect_untrusted_base_binding_for_native_test_only(
+        binding_path)
+    declared_files = declared["files"]
+    shard_names = {name for name, _, _ in OFFICIAL_SHARDS}
+    required_metadata = set(METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS)
+    _require({name for name in declared_files if name.endswith(".safetensors")}
+             == shard_names)
+    _require(required_metadata.issubset(declared_files))
+    _require(set(declared_files) == shard_names | required_metadata)
+
+    # The declared values are untrusted; compare the ACTUAL hashed local bytes
+    # (checked above) with immutable independently reviewed official shard
+    # byte pins, including physical size. No LFS/Xet pointer is a weight file.
+    for name, official_size, official_digest in OFFICIAL_SHARDS:
+        _require(declared_files[name] == official_digest)
+        try:
+            _require((snapshot / name).stat().st_size == official_size)
+        except OSError as exc:
+            raise BaseBindingError("official shard size unavailable") from exc
+
+    # Check that the named index really maps tensors into both official
+    # shards, not a caller-crafted one-shard or dimension-only stand-in.
+    try:
+        raw_index = _read_regular_nofollow(
+            snapshot / "model.safetensors.index.json", limit=1024 * 1024)
+        index = json.loads(raw_index.decode("utf-8"),
+                           object_pairs_hook=_unique_pairs,
+                           parse_constant=_bad_constant)
+    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+        raise BaseBindingError("official index unavailable or invalid") from exc
+    _require(type(index) is dict and set(index) == {"metadata", "weight_map"}
+             and type(index["metadata"]) is dict
+             and type(index["metadata"].get("total_size")) is int
+             and index["metadata"]["total_size"] == INDEX_TENSOR_BYTES
+             and type(index["weight_map"]) is dict
+             and bool(index["weight_map"])
+             and all(type(name) is str and type(shard) is str
+                     and shard in shard_names
+                     for name, shard in index["weight_map"].items())
+             and set(index["weight_map"].values()) == shard_names)
+
+    # No trusted SHA256 pins yet for config/tokenizer/index/chat template/
+    # BPE vocab+merges. A caller-supplied manifest cannot supply them.
+    pins = dict(TRUSTED_OFFICIAL_METADATA_PIN_ITEMS)
+    _require(len(pins) == len(TRUSTED_OFFICIAL_METADATA_PIN_ITEMS)
+             and set(pins) == required_metadata
+             and all(type(digest) is str and HEX64.fullmatch(digest)
+                     and declared_files[name] == digest
+                     for name, digest in pins.items()))
+    return declared, snapshot
