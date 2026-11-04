@@ -1,0 +1,83 @@
+name: TrainingDay owner-attended certificate script source HOLD
+
+on:
+  pull_request:
+    paths:
+      - "trainingday/owner_signer/**"
+      - ".github/workflows/trainingday-owner-attended-source-hold.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  negative-owner-preflight:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Refuse private repository / unexpected context
+        shell: pwsh
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if ($env:GITHUB_REPOSITORY -ne 'thebrazenbeard/model-training' -or
+              $env:REPOSITORY_PRIVATE -ne 'false') {
+            throw 'HOLD: wrong repository context'
+          }
+
+      - name: Checkout exact PR source with no persistent credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify parse and wrong-host refusal with zero key creation
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $head = (git rev-parse --verify HEAD).Trim()
+          if ($head -ne $env:EXPECTED_SHA) { throw 'Source HEAD mismatch' }
+          $path = Join-Path $PWD 'trainingday/owner_signer/New-Tier1BOwnerPublicCertificateVN1.ps1'
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+          if ($errors.Count -ne 0) {
+            throw ('Owner script parse errors: ' + (($errors | ForEach-Object Message) -join '; '))
+          }
+          $commands = @($ast.FindAll({ param($node)
+            $node -is [System.Management.Automation.Language.CommandAst]
+          }, $true) | ForEach-Object { $_.GetCommandName() })
+          foreach ($forbidden in @('Export-PfxCertificate', 'Import-PfxCertificate',
+            'Import-Certificate', 'Restart-Service', 'Remove-Item', 'Stop-Service')) {
+            if ($commands -contains $forbidden) { throw "Forbidden owner script command: $forbidden" }
+          }
+          $source = Get-Content -LiteralPath $path -Raw
+          foreach ($required in @('ProtectHigh', 'NonExportable',
+            'VERA-NODE-1\Patrick', '301606146983A6FECEA99ABA92BCAF8AA4B9BB9BEBD9E553',
+            'Export-Certificate', '-NoClobber', 'OWNER_PUBLIC_DER_ONLY_PASS')) {
+            if (-not $source.Contains($required)) { throw "Missing source-only contract: $required" }
+          }
+          $subject = 'CN=VERA TrainingDay Tier1 B Owner Patrick v1'
+          $before = @(Get-ChildItem -Path 'Cert:\CurrentUser\My' |
+            Where-Object { $_.Subject -ceq $subject })
+          if ($before.Count -ne 0) { throw 'Runner has unexpected owner subject' }
+          $pathOut = Join-Path $env:LOCALAPPDATA 'Vera\TrainingDay\Tier1B-Patrick-Owner-PUBLIC.cer'
+          if (Test-Path -LiteralPath $pathOut) { throw 'Runner has unexpected owner DER path' }
+          $refused = $false
+          try {
+            & $path
+          } catch {
+            if ($_.Exception.Message -match 'HOLD: owner-attended VN1 local console required') {
+              $refused = $true
+            } else {
+              throw
+            }
+          }
+          if (-not $refused) { throw 'SECURITY FAILURE: GitHub Actions context was not refused' }
+          $after = @(Get-ChildItem -Path 'Cert:\CurrentUser\My' |
+            Where-Object { $_.Subject -ceq $subject })
+          if ($after.Count -ne 0 -or (Test-Path -LiteralPath $pathOut)) {
+            throw 'SECURITY FAILURE: wrong-host refusal generated a key or exported DER'
+          }
+          Write-Output "OWNER_SIGNER_SOURCE_HOLD_PASS head=$head wrong_host_refused=true private_key_generated=false"
