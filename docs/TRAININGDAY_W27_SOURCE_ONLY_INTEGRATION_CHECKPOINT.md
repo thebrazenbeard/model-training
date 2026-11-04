@@ -1,5 +1,64 @@
 # TRAININGDAY W27→W31 source-only integration checkpoint — HARD HOLD
 
+## W37 one-time source refresh (2026-11-04) — still HARD HOLD
+
+The historical W31 evidence below remains a fixed receipt. W37 composed its exact
+`#335@b0b85052e567ec775959ffc11c49720789b9999a` tree with **three new,
+distinct source heads** in an isolated Git worktree, without replaying or retiring
+any source PR:
+
+| Source PR | Exact head included | Additional source scope | Admission limit |
+| --- | --- | --- | --- |
+| [#333](https://github.com/thebrazenbeard/model-training/pull/333) | `c12ff5c802710ce4e329b0aae9fa021e526cb248` | Official Qwen3.5 GGUF source-workflow plan, tests and documentation (3 new paths beyond the W31 #333 ancestor) | Commands and physical execution remain HOLD; native `--version` is not model inference |
+| [#336](https://github.com/thebrazenbeard/model-training/pull/336) | `0e3ae19ccaa0cfb1f3f8fc969351a6f5a745a137` | Read-only resource screen, tests and documentation (3 new paths, stacked on #333) | Numeric BF16 memory proxy is not peak-RSS qualification; CLI always declines execution; exact-head hosted CI was absent at W36 review |
+| [#337](https://github.com/thebrazenbeard/model-training/pull/337) | `a9aef9025bcc3b1e6556a34d10f9541ac808dd95` | Pinned six-domain curriculum to public five-arm evaluator schema adapter, canonical revalidation and negative tests (3 new paths) | Source-authentic case mapping is not model predictions, unseen-archetype transfer, a rights grant, or protected Q6 |
+
+All three source heads were rechecked open and unmerged before W37 composition.
+Each was merged into the isolated `#335` tree without textual conflict. #337's
+earlier gold and training-row co-forgery attacks were reproduced and rejected by
+the corrected head before this integration; independent review is recorded at
+[#5777595141](https://github.com/thebrazenbeard/model-training/pull/337#pullrequestreview-5777595141).
+[#336's source-only hostile review](https://github.com/thebrazenbeard/model-training/pull/336#pullrequestreview-5777551244)
+explicitly withheld physical and hosted-CI qualification.
+
+W37 local combined-tree checks:
+
+```text
+python -m unittest discover -s tests -p 'test_trainingday*.py' -q
+Ran 248 tests — OK (3 skipped)
+
+python -m unittest -q tests.test_official_qwen35_gguf_workflow tests.test_qwen35_gguf_capacity_screen tests.test_real_qwen35_inference tests.test_optimizer_pilot tests.test_lowmem_experiment
+Ran 63 tests — OK
+
+python -O -m unittest -q tests.test_trainingday_official_inference_admission tests.test_trainingday_r202_admission_candidate tests.test_trainingday_r203_counterfactual_toolstate tests.test_trainingday_public_dev_bridge tests.test_qwen35_gguf_capacity_screen tests.test_official_qwen35_gguf_workflow
+Ran 68 tests — OK
+
+python -m trainingday.integration_preflight --json
+exit 1 — ready=false, source_metadata_pins_enrolled=false,
+physical_launch_attempted=false
+```
+
+These groups overlap; do not sum their test counts. The W31 #335 commit's seven
+hosted workflows completed successfully against the **older** frozen head; any
+W37 update must receive its own exact-head CI readback. No new model execution,
+training, rights admission, checkpoint recovery, protected evaluation or live
+Vera conversation was attempted in this source composition.
+
+The separate [Bus custody receipt](https://github.com/thebrazenbeard/chat-communication-bus/issues/404#issuecomment-6645416922)
+now reports full 26-file public official model checksum/restore verification on
+VN2 as well as VN1. That **external host evidence is not an input to** this
+read-only `integration_preflight` function and does not silently enroll trusted
+metadata, a HostBroker lease, R16 optimizer-resume proof, or evaluator custody.
+The full private 41-file R16 checkpoint/control recovery set was not yet
+independently restored to VN2 at this W37 source checkpoint; preserve Lappy's
+originals until it is and antirollback authority is separately addressed.
+
+**Retirement map:** retain the W31 #316 deduplication decision below. #333,
+#336, and #337 are now explicit incoming source dependencies, **not** closure
+targets or endorsements of protected merge. A later source head drift requires
+a fresh local composition/test witness; do not update this frozen receipt by
+assumption.
+
 **Evidence class:** local source composition and synthetic tests, **not** a physical training, evaluation, conversion, recovery, or serving run. All work is $0 and does not require a model download, GPU allocation, or installed native runtime.
 
 ## Exact input heads
