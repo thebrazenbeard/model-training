@@ -49,6 +49,29 @@ class PinnedBaseTests(unittest.TestCase):
         self.assertEqual(snapshot, self.snapshot)
         self.assertNotIn("training_authorized", binding)
 
+    def test_production_official_admission_rejects_hash_consistent_partial_fake_weights(self):
+        # These synthetic bytes are internally consistent with the caller
+        # declaration, but not either whole official shard. A verifier that
+        # accepts them can never establish authenticated official training.
+        with self.assertRaises(BaseBindingError):
+            require_official_base(self.binding)
+
+    def test_production_official_admission_rejects_two_fake_shards(self):
+        self.shard = "model.safetensors-00001-of-00002.safetensors"
+        first = b"fake-first-shard"
+        second = b"fake-second-shard"
+        for name in list(self.manifest["files"]):
+            if name.endswith(".safetensors"):
+                del self.manifest["files"][name]
+        for name, data in ((self.shard, first),
+                ("model.safetensors-00002-of-00002.safetensors", second)):
+            (self.snapshot / name).write_bytes(data)
+            self.manifest["files"][name] = sha(data)
+        (self.snapshot / "model.safetensors-00001-of-00001.safetensors").unlink()
+        self.write_binding()
+        with self.assertRaises(BaseBindingError):
+            require_official_base(self.binding)
+
     def test_wrong_model_family_or_revision_is_rejected(self):
         for field, value in (("model_id", "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive"),
                              ("revision", "d61dd146c8fd44c9a49cdb7f59f34e17b61902d8")):
