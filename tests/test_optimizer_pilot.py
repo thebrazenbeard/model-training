@@ -1,17 +1,22 @@
 """No torch/model downloads/broker calls: CPU-only synthetic optimizer rehearsal."""
 
 from pathlib import Path
+import hashlib
+import os
+import stat
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+import time
 import unittest
 from unittest.mock import patch
 
 from trainingday.lowmem_experiment import LowMemoryExperimentError
 from trainingday.official_public_base import expected_source_record
 from trainingday.optimizer_pilot import (
-    PilotBounds, memory_preflight,
+    CheckpointCommitIndeterminate, PilotBounds, memory_preflight,
     physical_optimizer_launch, replay_synthetic_adapter,
+    recover_crashed_fixture_staging,
     validate_official_plan,
 )
 from trainingday.physical_launch_authority import PhysicalLaunchAuthorityUnavailable
@@ -209,6 +214,107 @@ class Qwen35OptimizerPilotTests(unittest.TestCase):
             self.assertFalse(target.exists())
             self.assertEqual(user_file.read_text(encoding="utf-8"), "KEEP")
             self.assertEqual(list(root.glob(".trainingday-fixture-*")), [])
+
+    def test_parent_directory_rename_cannot_report_success_for_old_path(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original_parent = root / "original"
+            original_parent.mkdir(mode=0o700)
+            moved_parent = root / "moved"
+            target = original_parent / "fixture.json"
+            original_link = os.link
+
+            def rename_before_publish(*args, **kwargs):
+                original_parent.rename(moved_parent)
+                return original_link(*args, **kwargs)
+
+            with patch("trainingday.optimizer_pilot.os.link",
+                       side_effect=rename_before_publish):
+                with self.assertRaisesRegex(CheckpointCommitIndeterminate,
+                                            "INDETERMINATE"):
+                    replay(target)
+            self.assertFalse(target.exists())
+            self.assertTrue((moved_parent / "fixture.json").is_file())
+            self.assertFalse(list(moved_parent.glob(".trainingday-fixture-*")))
+
+    def test_post_publish_directory_fsync_failure_is_indeterminate(self):
+        with TemporaryDirectory() as tmp:
+            target = Path(tmp) / "fixture.json"
+            original_fsync = os.fsync
+
+            def fail_directory_fsync(fd):
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise OSError("injected directory fsync failure")
+                return original_fsync(fd)
+
+            with patch("trainingday.optimizer_pilot.os.fsync",
+                       side_effect=fail_directory_fsync):
+                with self.assertRaisesRegex(CheckpointCommitIndeterminate,
+                                            "INDETERMINATE"):
+                    replay(target)
+            self.assertTrue(target.is_file())
+            self.assertFalse(list(Path(tmp).glob(".trainingday-fixture-*")))
+            with self.assertRaises(LowMemoryExperimentError):
+                replay(target)  # never silently overwrite an ambiguous commit
+
+    def test_process_crash_leaves_recoverable_stale_staging_only(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "fixture.json"
+            # Simulate abrupt process death immediately before hard-link
+            # publication: neither `finally` nor ordinary cleanup can run.
+            script = (
+                "import os; from pathlib import Path; "
+                "import trainingday.optimizer_pilot as pilot; "
+                "from tests.test_optimizer_pilot import replay; "
+                "pilot.os.link=lambda *a,**kw: os._exit(73); "
+                "replay(Path(" + repr(str(target)) + "))"
+            )
+            child = subprocess.run([sys.executable, "-c", script],
+                                   capture_output=True, text=True, check=False)
+            self.assertEqual(child.returncode, 73, child.stderr)
+            self.assertFalse(target.exists())
+            leftovers = list(root.glob(".trainingday-fixture-*"))
+            self.assertEqual(len(leftovers), 1)
+            self.assertEqual(recover_crashed_fixture_staging(target), 0)
+            stale = time.time() - 4000
+            os.utime(leftovers[0], (stale, stale))
+            other = root / "user_owned.txt"
+            other.write_text("SAFE", encoding="utf-8")
+            self.assertEqual(recover_crashed_fixture_staging(target), 1)
+            self.assertFalse(leftovers[0].exists())
+            self.assertEqual(other.read_text(encoding="utf-8"), "SAFE")
+            self.assertEqual(recover_crashed_fixture_staging(target), 0)
+
+    def test_fixture_directory_must_be_owner_exclusive(self):
+        with TemporaryDirectory() as tmp:
+            shared = Path(tmp) / "shared"
+            shared.mkdir(mode=0o755)
+            path = shared / "fixture.json"
+            with self.assertRaisesRegex(LowMemoryExperimentError, "checkpoint"):
+                replay(path)
+            with self.assertRaisesRegex(LowMemoryExperimentError, "owner-only"):
+                recover_crashed_fixture_staging(path)
+            self.assertEqual(list(shared.iterdir()), [])
+
+    def test_recovery_preserves_multilink_and_symlink_candidates(self):
+        with TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            target = parent / "fixture.json"
+            prefix = ".trainingday-fixture-" + hashlib.sha256(
+                target.name.encode("utf-8")).hexdigest()[:16] + "-"
+            linked = parent / (prefix + "a" * 24)
+            linked.write_text("USER_OWNED", encoding="utf-8")
+            linked.chmod(0o600)
+            other_hardlink = parent / "owner_alias"
+            os.link(linked, other_hardlink)
+            symlink = parent / (prefix + "b" * 24)
+            symlink.symlink_to(other_hardlink)
+            stale = time.time() - 4000
+            os.utime(linked, (stale, stale))
+            self.assertEqual(recover_crashed_fixture_staging(target), 0)
+            self.assertEqual(linked.read_text(encoding="utf-8"), "USER_OWNED")
+            self.assertTrue(symlink.is_symlink())
 
     def test_physical_launch_holds_without_reading_model(self):
         with self.assertRaisesRegex(PhysicalLaunchAuthorityUnavailable, "HARD HOLD"):

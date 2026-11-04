@@ -53,14 +53,37 @@ fixtures and three CPU-only toy SGD updates. It checks finite positive
 gradient norms, nonzero byte changes per step, ordered before/after SHA-256,
 exclusive checkpoint creation, readback byte equality, and a distinct final
 adapter SHA-256. The fixture file is created only after the memory declaration
-passes. Every path ancestor is opened with `O_NOFOLLOW`, and a random
-exclusive temporary file is fully written and fsynced before atomic
-no-clobber hard-link publication; the directory is fsynced, then the new
-checkpoint is reloaded and inode/byte-checked. A failed partial write removes
-only its own temporary file; existing destinations and symlink ancestors are
-refused. Callers should use an
-isolated temporary directory for disposable fixtures; the code never deletes
-or overwrites caller files.
+passes. **This is a Linux/POSIX-only, dedicated-directory fixture contract**:
+the immediate parent must be owned by the executing UID and mode `0700`, with
+no other writer operating in it. Every path ancestor is opened with
+`O_NOFOLLOW`, and a random exclusive temporary file is fully written and
+fsynced before atomic no-clobber hard-link publication. The directory is
+fsynced, then the new checkpoint is reloaded and inode/byte-checked.
+
+**A successful return additionally reopens the original supplied pathname**
+and checks the parent-directory and file `(device, inode)` pairs against the
+anchored FDs. If the parent is renamed or the original path is rebound during
+the write, the function raises `CheckpointCommitIndeterminate`, not success;
+the inode may nevertheless have been published inside the renamed directory.
+Likewise, a directory `fsync` failure *after* publication raises
+`CheckpointCommitIndeterminate`: the destination may exist, but durability is
+unknown. It is intentionally not unlinked or overwritten. Do not blindly
+retry; inspect the target and original path identity first. **No function can
+guarantee that a hostile writer will not mutate the path immediately after
+the last readback.** This code assumes an exclusive owner-controlled folder,
+not adversarial same-UID concurrency or a hostile filesystem.
+
+A normal failed partial write unlinks only its own stage. An abrupt process
+crash can leave a named stage before hard-link publication. The optional
+`recover_crashed_fixture_staging(checkpoint_path, minimum_age_seconds=3600)`
+recovers at most 16 old, same-UID, mode-`0600`, single-linked stage files
+matching the **specific target basename** in the private owner-only folder.
+It refuses recent stages and never removes final checkpoints, other names,
+or multiply-linked published inodes. The caller must independently confirm
+the folder is idle before invoking recovery. A renamed directory cannot be
+recovered through its obsolete pathname; the owner must first locate the
+original directory. Use an isolated temporary directory for disposable
+fixtures; do not run recovery on a shared folder.
 
 Receipt distinguishes `synthetic_updates = 3` from
 `physical_pretrained_optimizer_steps = 0`; records source revision,

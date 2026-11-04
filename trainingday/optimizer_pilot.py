@@ -18,6 +18,7 @@ import re
 import secrets
 import stat
 import struct
+import time
 from typing import Mapping
 
 from trainingday.lowmem_experiment import (
@@ -32,11 +33,70 @@ from trainingday.physical_launch_authority import require_physical_launch_author
 SCHEMA = "TRAININGDAY_QWEN35_QLORA_SYNTHETIC_REPLAY_V1"
 LAYER = re.compile(r"model\.layers\.([0-9]{1,3})\.self_attn\.(q_proj|v_proj)\Z")
 CHECKPOINT_LIMIT = 16 * 1024
+STAGING_PREFIX = ".trainingday-fixture-"
+STAGING_NONCE = re.compile(r"[0-9a-f]{24}\Z")
 # Pinned upstream config.json at BASE_REVISION: text_config.num_hidden_layers=32,
 # layer_types=(linear, linear, linear, full_attention) * 8. This is SOURCE
 # METADATA, not locally authenticated config bytes or an inspected model graph.
 SOURCE_TEXT_LAYER_TYPES = ("linear_attention", "linear_attention",
                            "linear_attention", "full_attention") * 8
+
+
+class CheckpointCommitIndeterminate(LowMemoryExperimentError):
+    """Published inode may survive, but durability or path binding failed.
+
+    Never retry with overwrite or interpret this as a completed checkpoint.
+    Callers must inspect the original path and, if necessary, recover under
+    the explicit owner-only fixture-directory contract.
+    """
+
+
+def _checkpoint_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    if (any(part == ".." for part in candidate.parts)
+            or not candidate.name or candidate.name in {".", ".."}):
+        raise LowMemoryExperimentError("unsafe checkpoint path")
+    return Path(os.path.abspath(candidate))
+
+
+def _open_bound_directory(output: Path, *, require_private: bool = True) -> int:
+    """Anchor every existing ancestor; no symlinks, including race replacements."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open("/", flags)
+    try:
+        for component in output.parent.parts[1:]:
+            next_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        info = os.fstat(fd)
+        if (require_private and (info.st_mode & 0o077 or info.st_uid != os.getuid())):
+            raise LowMemoryExperimentError("fixture directory must be owner-only (0700)")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _verify_supplied_path_identity(output: Path, dir_fd: int, file_fd: int) -> None:
+    """Check pathname resolves to the anchored inodes *at this instant* only."""
+    reopened = _open_bound_directory(output)
+    try:
+        original_dir, latest_dir = os.fstat(dir_fd), os.fstat(reopened)
+        if ((original_dir.st_dev, original_dir.st_ino)
+                != (latest_dir.st_dev, latest_dir.st_ino)):
+            raise LowMemoryExperimentError("supplied directory pathname rebound")
+        info = os.stat(output.name, dir_fd=reopened, follow_symlinks=False)
+        original_file = os.fstat(file_fd)
+        if (not stat.S_ISREG(info.st_mode)
+                or (info.st_dev, info.st_ino)
+                != (original_file.st_dev, original_file.st_ino)):
+            raise LowMemoryExperimentError("supplied checkpoint pathname rebound")
+    finally:
+        os.close(reopened)
+
+
+def _staging_prefix(target_name: str) -> str:
+    return STAGING_PREFIX + hashlib.sha256(target_name.encode("utf-8")).hexdigest()[:16] + "-"
 
 
 @dataclass(frozen=True)
@@ -144,15 +204,13 @@ def _validate_fixture_tensors(tensors: object, targets: tuple[str, ...]) -> None
 def persist_reload_fixture(
     path: str | Path, tensors: dict[str, bytes], targets: tuple[str, ...],
 ) -> dict[str, bytes]:
-    """Exclusive local fixture checkpoint, read back and verify exact bytes.
+    """Exclusive 0700 fixture-directory commit; fail closed on ambiguous path.
 
-    No arbitrary deletion/overwrite. Callers own any temporary directory.
+    Successful return verifies original-path inode identity at readback time.
+    It cannot guarantee a hostile actor will not rename the path later.
     """
     _validate_fixture_tensors(tensors, targets)
-    output = Path(path)
-    if any(part == ".." for part in output.parts) or not output.name:
-        raise LowMemoryExperimentError("unsafe checkpoint path")
-    output = Path(os.path.abspath(output))
+    output = _checkpoint_path(path)
     document = {
         "schema": SCHEMA,
         "tensors": {key: value.hex() for key, value in sorted(tensors.items())},
@@ -164,16 +222,11 @@ def persist_reload_fixture(
         raise LowMemoryExperimentError("fixture checkpoint too large")
     dir_fd = file_fd = read_fd = None
     temporary_name = None
+    published = False
     try:
-        # Traverse *each* ancestor with O_NOFOLLOW. Keep the final directory
-        # FD throughout creation/publish/reload to prevent ancestor swaps.
-        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        dir_fd = os.open("/", flags)
-        for component in output.parent.parts[1:]:
-            next_fd = os.open(component, flags, dir_fd=dir_fd)
-            os.close(dir_fd)
-            dir_fd = next_fd
-        temporary_name = ".trainingday-fixture-" + secrets.token_hex(12)
+        # Parent must be owner-exclusive; keep its FD anchored throughout.
+        dir_fd = _open_bound_directory(output)
+        temporary_name = _staging_prefix(output.name) + secrets.token_hex(12)
         file_fd = os.open(temporary_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY
                           | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
         cursor = 0
@@ -187,6 +240,7 @@ def persist_reload_fixture(
         # Unlike os.replace/rename, this cannot overwrite a user file.
         os.link(temporary_name, output.name, src_dir_fd=dir_fd,
                 dst_dir_fd=dir_fd, follow_symlinks=False)
+        published = True
         os.fsync(dir_fd)
         read_fd = os.open(output.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
         if (not stat.S_ISREG(os.fstat(read_fd).st_mode)
@@ -203,8 +257,15 @@ def persist_reload_fixture(
         _validate_fixture_tensors(restored, targets)
         if loaded["sha256"] != _tensor_hash(restored) or restored != tensors:
             raise LowMemoryExperimentError("checkpoint reload mismatch")
+        _verify_supplied_path_identity(output, dir_fd, read_fd)
         return restored
+    except CheckpointCommitIndeterminate:
+        raise
     except (OSError, ValueError, TypeError, UnicodeError) as exc:
+        if published:
+            raise CheckpointCommitIndeterminate(
+                "checkpoint inode published but durability/path identity INDETERMINATE: "
+                f"{output}; inspect before retrying") from exc
         raise LowMemoryExperimentError("checkpoint save/reload failed") from exc
     finally:
         if read_fd is not None:
@@ -216,6 +277,69 @@ def persist_reload_fixture(
                 os.unlink(temporary_name, dir_fd=dir_fd)
             except FileNotFoundError:
                 pass
+        if dir_fd is not None:
+            os.close(dir_fd)
+
+
+def recover_crashed_fixture_staging(
+    checkpoint_path: str | Path, *, minimum_age_seconds: int = 3600,
+) -> int:
+    """Opt-in bounded recovery for an exclusively owned private fixture dir.
+
+    Only this target's old, regular 0600, single-linked, same-UID stage files
+    are eligible. Caller must guarantee no active writer owns the directory.
+    Cannot recover files from a directory renamed outside the supplied path.
+    No final checkpoint, unrelated path, or ambiguous candidate is deleted.
+    """
+    if type(minimum_age_seconds) is not int or minimum_age_seconds < 60:
+        raise LowMemoryExperimentError("recovery requires >=60s stale age")
+    output = _checkpoint_path(checkpoint_path)
+    dir_fd = None
+    try:
+        dir_fd = _open_bound_directory(output)
+        names = os.listdir(dir_fd)
+        prefix = _staging_prefix(output.name)
+        candidates = []
+        for name in names:
+            if not name.startswith(prefix):
+                continue
+            nonce = name[len(prefix):]
+            if not STAGING_NONCE.fullmatch(nonce):
+                continue
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if (stat.S_ISREG(info.st_mode)
+                    and stat.S_IMODE(info.st_mode) == 0o600
+                    and info.st_uid == os.getuid()
+                    and info.st_nlink == 1
+                    and info.st_size <= CHECKPOINT_LIMIT
+                    and time.time() - info.st_mtime >= minimum_age_seconds):
+                candidates.append((name, info.st_dev, info.st_ino))
+        if len(candidates) > 16:
+            raise LowMemoryExperimentError("too many staging candidates for bounded recovery")
+        # Confirm the user-supplied parent path still resolves to this FD.
+        rebound = _open_bound_directory(output)
+        try:
+            before, after = os.fstat(dir_fd), os.fstat(rebound)
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                raise LowMemoryExperimentError("recovery directory pathname changed")
+        finally:
+            os.close(rebound)
+        for name, device, inode in candidates:
+            # A private 0700 directory with one designated writer is mandatory;
+            # this final check detects accidental replacement, not a guarantee
+            # against an adversarial same-UID concurrent rename.
+            now = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if ((now.st_dev, now.st_ino) != (device, inode)
+                    or not stat.S_ISREG(now.st_mode)
+                    or now.st_nlink != 1):
+                raise LowMemoryExperimentError("staging candidate changed during recovery")
+            os.unlink(name, dir_fd=dir_fd)
+        if candidates:
+            os.fsync(dir_fd)
+        return len(candidates)
+    except OSError as exc:
+        raise LowMemoryExperimentError("staging recovery unavailable or ambiguous") from exc
+    finally:
         if dir_fd is not None:
             os.close(dir_fd)
 
