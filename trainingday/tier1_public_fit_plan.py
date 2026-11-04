@@ -26,16 +26,20 @@ MAX_VRAM_MIB = 3072
 MIN_DRIVER_HEADROOM_MIB = 256
 SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 
-# Independently published official public-base bytes; the older repository
-# artifact for rodrigomt/*Uncensored-Aggressive* is explicitly NOT this model.
-OFFICIAL_FILE_SHA256 = {
-    "config.json": "ddc63e1c717afa86c865bb5e01313d89d72bb53b97ad4a8a03ba8510c0621670",
-    "tokenizer.json": "5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42",
+# Upstream official-revision Git LFS object IDs, not locally hashed weights.
+# Do not substitute unsupported declarations of config/tokenizer byte hashes:
+# those metadata byte pins have not been independently authenticated.
+# The older rodrigomt/*Uncensored-Aggressive* artifact is not this model.
+OFFICIAL_SHARD_LFS_OID_SHA256 = {
     "model.safetensors-00001-of-00002.safetensors":
         "26a93f066e1916adb13453dae5a0c707c0fbc71299ed98779571a907b8e74c61",
     "model.safetensors-00002-of-00002.safetensors":
         "cb544bd9bfae93dc59b0f22b292f5933573854a7f9b97835c67060d7d910e188",
 }
+METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS = (
+    "config.json", "tokenizer.json", "tokenizer_config.json",
+    "model.safetensors.index.json",
+)
 
 
 class PublicFitPlanError(ValueError):
@@ -64,8 +68,15 @@ def build_public_fit_plan(*, executable_sha256: str) -> dict:
     if (type(executable_sha256) is not str
             or SHA256_HEX.fullmatch(executable_sha256) is None):
         raise PublicFitPlanError("kernel SHA256 must be exact lowercase hex")
-    # Immutable allowlist bytes, NOT a hash declaration selected by a caller.
-    official_manifest_sha256 = _sha(_canonical(OFFICIAL_FILE_SHA256))
+    # Immutable *source proposal* bytes, NOT an authenticated model snapshot.
+    # Independently verified config/tokenizer/index byte SHA values are UNKNOWN.
+    source_manifest = {
+        "shard_upstream_lfs_oids": OFFICIAL_SHARD_LFS_OID_SHA256,
+        "metadata_files_needing_trusted_byte_pins":
+            METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS,
+        "evidence_class": "UPSTREAM_LFS_POINTER_METADATA_NOT_LOCAL_WEIGHT_VERIFICATION",
+    }
+    official_manifest_sha256 = _sha(_canonical(source_manifest))
     return {
         "schema": SCHEMA,
         "tier": "TIER1_PUBLIC_SYNTHETIC",
@@ -79,9 +90,13 @@ def build_public_fit_plan(*, executable_sha256: str) -> dict:
         "memory_telemetry_missing_or_unsafe": "HOLD",
         "model_id": MODEL_ID,
         "model_revision": REVISION,
-        "official_public_file_sha256": dict(OFFICIAL_FILE_SHA256),
+        "official_shard_lfs_oid_sha256": dict(OFFICIAL_SHARD_LFS_OID_SHA256),
+        "metadata_files_needing_trusted_byte_pins":
+            list(METADATA_FILES_NEEDING_TRUSTED_BYTE_PINS),
+        "metadata_sha256_status": "UNKNOWN_UNAUTHENTICATED",
+        "model_snapshot_authenticated": False,
         "manifest_sha256": official_manifest_sha256,
-        "remaining_snapshot_files_require_separate_signed_binding": True,
+        "all_snapshot_files_require_independent_byte_authentication": True,
         "executable_relative_path": KERNEL_RELATIVE,
         "executable_sha256": executable_sha256,
         "candidate_entrypoint": "trainingday.lowmem_experiment.one_step_kernel",
