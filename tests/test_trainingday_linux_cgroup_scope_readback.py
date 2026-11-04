@@ -60,6 +60,7 @@ class LinuxCgroupScopeReadbackTests(unittest.TestCase):
         self.assertEqual(status["observed_start_ticks"], self.start_ticks)
         self.assertTrue(status["populated_at_observation"])
         self.assertEqual(status["direct_process_count"], 1)
+        self.assertEqual(status["readback_origin"], "CALLER_SUPPLIED_TEST_PATHS")
         self.assertFalse(status["exclusive_cgroup_delegation_verified"])
         self.assertFalse(status["all_prior_descendants_proven_dead"])
         self.assertFalse(status["windows_wsl2_crash_qualified"])
@@ -68,6 +69,11 @@ class LinuxCgroupScopeReadbackTests(unittest.TestCase):
     def test_stale_or_reused_pid_is_rejected(self):
         with self.assertRaisesRegex(CgroupReadbackError, "stale or reused"):
             self.probe(ticks=self.start_ticks + 1)
+
+    def test_embedded_pid_mismatch_is_rejected(self):
+        self.process_stat.write_text(self.make_stat(self.start_ticks).replace(f"{self.pid} (", "1234 (", 1), encoding="utf-8")
+        with self.assertRaisesRegex(CgroupReadbackError, "mismatched kernel PID"):
+            self.probe()
 
     def test_forged_scope_cannot_be_substituted(self):
         with self.assertRaisesRegex(CgroupReadbackError, "cgroup mismatch"):
