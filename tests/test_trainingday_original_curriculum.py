@@ -143,6 +143,56 @@ class OriginalCurriculumTests(unittest.TestCase):
             self.assertEqual(list(output.iterdir()), [])
             self.assertEqual(write_candidate(output)["files"]["dev.jsonl"]["rows"], 144)
 
+    def test_staged_path_swap_to_symlink_cannot_claim_success(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            output = root / "candidate"
+            outside = root / "private-input"
+            outside.write_bytes(b"private and unchanged")
+            real_link = original_curriculum.os.link
+            attacked = False
+
+            def replace_stage_once(src, dst, **kwargs):
+                nonlocal attacked
+                if not attacked:
+                    attacked = True
+                    dir_fd = kwargs["src_dir_fd"]
+                    original_curriculum.os.rename(src, src + ".held", src_dir_fd=dir_fd,
+                                                  dst_dir_fd=dir_fd)
+                    original_curriculum.os.symlink(outside, src, dir_fd=dir_fd)
+                return real_link(src, dst, **kwargs)
+
+            with mock.patch.object(original_curriculum.os, "link", side_effect=replace_stage_once):
+                with self.assertRaisesRegex(RuntimeError, "publication|incomplete"):
+                    write_candidate(output)
+            self.assertFalse((output / "manifest.json").exists())
+            self.assertEqual(outside.read_bytes(), b"private and unchanged")
+            # The tampered path is not removed by rollback; manual recovery is required.
+            self.assertTrue((output / "train.jsonl").is_symlink())
+
+    def test_renamed_output_directory_is_indeterminate(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            output = root / "candidate"
+            moved = root / "candidate-moved"
+            real_link = original_curriculum.os.link
+            attacked = False
+
+            def rename_directory_once(*args, **kwargs):
+                nonlocal attacked
+                result = real_link(*args, **kwargs)
+                if not attacked:
+                    attacked = True
+                    output.rename(moved)
+                return result
+
+            with mock.patch.object(original_curriculum.os, "link", side_effect=rename_directory_once):
+                with self.assertRaisesRegex(RuntimeError, "directory .*changed|publication indeterminate"):
+                    write_candidate(output)
+            self.assertFalse(output.exists())
+            self.assertFalse((moved / "manifest.json").exists())
+            self.assertEqual(list(moved.iterdir()), [])
+
     def test_deterministic_files_and_manifest_hashes(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             one, two = Path(first), Path(second)
