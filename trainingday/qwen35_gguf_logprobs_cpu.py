@@ -29,7 +29,7 @@ MEAN_TOKEN_LOGPROB_DELTA = 0.05
 
 
 def assert_sampled_logprobs(
-    hf_logprobs, reported: list[dict], *,
+    hf_logprobs, reported: list[dict], generated_ids: list[int], *,
     max_delta: float = MAX_TOKEN_LOGPROB_DELTA,
     mean_delta: float = MEAN_TOKEN_LOGPROB_DELTA,
 ) -> dict:
@@ -43,8 +43,15 @@ def assert_sampled_logprobs(
         raise AssertionError("llama.cpp response missing required top_logprobs")
     if len(hf_logprobs) < 128:
         raise AssertionError("unexpected tiny HF vocabulary")
+    if any(not math.isfinite(float(v)) for v in hf_logprobs):
+        raise AssertionError("nonfinite HF log probability")
 
+    # A reported set with correct probabilities on the wrong 12 token IDs
+    # is not top-k output parity. Check membership AND rank independently.
+    hf_top_ids = sorted(range(len(hf_logprobs)),
+                        key=lambda i: (-float(hf_logprobs[i]), i))[:SAMPLES]
     seen: set[int] = set()
+    reported_ids: list[int] = []
     deltas: list[float] = []
     for entry in reported[:SAMPLES]:
         if not isinstance(entry, dict):
@@ -55,12 +62,22 @@ def assert_sampled_logprobs(
                 token_id >= len(hf_logprobs) or token_id in seen):
             raise AssertionError("invalid, duplicated or out-of-range token ID")
         seen.add(token_id)
+        reported_ids.append(token_id)
         if type(observed) not in (int, float) or not math.isfinite(observed):
             raise AssertionError("invalid llama.cpp reported log probability")
         expected = float(hf_logprobs[token_id])
         if not math.isfinite(expected):
             raise AssertionError("nonfinite HF log probability")
         deltas.append(abs(float(observed) - expected))
+
+    if reported_ids != hf_top_ids:
+        raise AssertionError("llama.cpp reported top-k token ID rank mismatch "
+                             f"reported={reported_ids} hf={hf_top_ids}")
+    if (not isinstance(generated_ids, list) or len(generated_ids) != 1 or
+            type(generated_ids[0]) is not int):
+        raise AssertionError("llama.cpp missing a single generated token ID")
+    if generated_ids[0] != hf_top_ids[0]:
+        raise AssertionError("llama.cpp generated token ID differs from HF argmax")
 
     maximum = max(deltas)
     average = sum(deltas) / len(deltas)
@@ -70,7 +87,8 @@ def assert_sampled_logprobs(
             f"max={maximum:.6f} mean={average:.6f} n={len(deltas)}"
         )
     return {"compared_tokens": len(deltas), "max_abs_logprob_delta": maximum,
-            "mean_abs_logprob_delta": average}
+            "mean_abs_logprob_delta": average,
+            "hf_top_token_ids": hf_top_ids, "generated_token_id": generated_ids[0]}
 
 
 def _request_json(url: str, body: dict | None = None, *, timeout: float = 10) -> dict:
@@ -195,7 +213,7 @@ def hf_logprobs(merged_dir: Path):
 def verify(merged_dir: Path, gguf: Path, server_bin: Path) -> dict:
     hf = hf_logprobs(merged_dir)
     top, server_receipt = llama_logprobs(gguf, server_bin)
-    metrics = assert_sampled_logprobs(hf, top)
+    metrics = assert_sampled_logprobs(hf, top, server_receipt["generated_ids"])
     return {
         "schema": "TRAININGDAY_QWEN35_SYNTHETIC_GGUF_LOGPROB_PARITY_V1",
         "scope": "random tiny 32-layer Qwen3.5 HF versus pinned llama.cpp GGUF CPU next-token top-k",
