@@ -28,6 +28,24 @@ for the actual Lappy service.
   This remains **pre-open checking, not post-open kernel file-ID or ACL
   attestation**: a malicious administrator could race path resolution, swap
   content using privileged filesystem access, or roll back the journal.
+- Demonstrate a stronger **two-ordinary-peer negative counterexample** in the
+  same isolated Windows CI fixture: initialize two different journal files,
+  preserve both pre-reservation snapshots, durably reserve the same request
+  nonce at both, then restore **both** old snapshots. Both journals again
+  report genesis and each accepts the same previously consumed nonce at
+  epoch 1. This establishes that simply combining two ordinary, equally
+  administrator-controllable journals cannot supply an independent
+  rollback-resistant Q6 floor. The synthetic fixture is **not** a VN1/VN2
+  network test, independent signer, committed 2PC transaction, or live witness.
+  The existing Tier1 source-only object remains HOLD with all grant flags false.
+- A future actual two-reader Q6 service must fail closed when either required
+  peer is absent or partitioned. A 1-of-2 acceptance can fork history; a 2-of-2
+  rule loses availability during a partition but cannot be treated as safe
+  solely because it sees two matching hashes. A coordinated rollback of both
+  peer journals defeats their unanchored high-water marks. Owner-controlled
+  independent key custody, a stronger independently protected monotonic anchor,
+  explicit crash/recovery protocol, and clock/replay threat testing are
+  **unqualified**. No partition protocol is implemented or claimed by this PR.
 - Prove the remaining rollback counterexample in an isolated fixture: deleting
   the journal and allowing `OpenOrCreate` resets its epoch to zero and lets an
   old nonce be reserved again. A live Tier1 journal must require an
