@@ -13,6 +13,7 @@ import json
 import os
 import random
 import time
+from collections import Counter
 
 from trainingday import qwen35_tiny_heldout_eval as baseline
 from trainingday import qwen35_full32_hybrid_peft_cpu_smoke as smoke
@@ -41,11 +42,24 @@ def _assigned_answers(
 ) -> tuple[list[int], int]:
     answers = [sum(pair) for pair in assigned]
     if shuffled:
-        permutation = list(range(len(answers)))
-        random.Random(seed + 9901).shuffle(permutation)
-        altered = [answers[i] for i in permutation]
+        # Repeated presentations of one operand pair MUST receive the same
+        # shuffled target. Shuffle unique pairs only within equal occurrence-
+        # count groups; this preserves both pair consistency and the *exact*
+        # occurrence-weighted marginal answer-frequency multiset.
+        counts = Counter(assigned)
+        by_count: dict[int, list[tuple[int, int]]] = {}
+        for pair, count in counts.items():
+            by_count.setdefault(count, []).append(pair)
+        assigned_target: dict[tuple[int, int], int] = {}
+        for count in sorted(by_count):
+            group = sorted(by_count[count])
+            permuted = list(group)
+            random.Random(seed + 9901 + count).shuffle(permuted)
+            assigned_target.update({pair: sum(other)
+                                    for pair, other in zip(group, permuted)})
+        altered = [assigned_target[pair] for pair in assigned]
         if sorted(altered) != sorted(answers):
-            raise AssertionError("shuffled labels changed frequency multiset")
+            raise AssertionError("stable shuffled feedback changed target multiset")
         answers = altered
     changed = sum(answer != sum(pair) for pair, answer in zip(assigned, answers))
     if shuffled and changed < len(assigned) // 2:
@@ -62,8 +76,10 @@ def _arm(torch, seed: int, train_pairs: list[tuple[int, int]],
         raise AssertionError("heldout pair leaked into optimizer source")
     assigned = _assigned_pairs(seed, train_pairs)
     labels, changed = _assigned_answers(seed, assigned, shuffled=shuffled)
-    seen = sorted(set(assigned))
-    if len(seen) < 25:
+    # Fixed full-schedule domain. At step 4 this includes operand pairs not
+    # encountered by the optimizer yet: it is NOT a seen-so-far measurement.
+    scheduled_train_domain = sorted(set(assigned))
+    if len(scheduled_train_domain) < 25:
         raise AssertionError("curve did not cover training operand domain")
     optimizer = torch.optim.AdamW((p for p in model.parameters() if p.requires_grad), lr=5e-3)
     frozen_embedding = smoke._hash_tensors(
@@ -77,7 +93,8 @@ def _arm(torch, seed: int, train_pairs: list[tuple[int, int]],
         if step in CHECKPOINT_STEPS:
             points.append({
                 "steps": step,
-                "seen_true_answer_nll": baseline._answer_nll(model, seen, torch),
+                "scheduled_train_domain_true_answer_nll": baseline._answer_nll(
+                    model, scheduled_train_domain, torch),
                 "heldout_answer_nll": baseline._answer_nll(model, withheld_pairs, torch),
             })
         if step == CHECKPOINT_STEPS[-1]:
@@ -104,7 +121,8 @@ def _arm(torch, seed: int, train_pairs: list[tuple[int, int]],
     }):
         raise AssertionError("LoRA-B remained unchanged")
     return {"checkpoints": points, "changed_feedback": changed,
-            "unique_seen_pairs": len(seen), "optimizer_steps": CHECKPOINT_STEPS[-1]}
+            "unique_scheduled_train_domain_pairs": len(scheduled_train_domain),
+            "optimizer_steps": CHECKPOINT_STEPS[-1]}
 
 
 def run() -> dict:
@@ -126,11 +144,14 @@ def run() -> dict:
             if a["steps"] != b["steps"]:
                 raise AssertionError("checkpoint alignment lost")
             if a["steps"] == 0 and any(abs(a[key] - b[key]) > 1e-6 for key in
-                                       ("seen_true_answer_nll", "heldout_answer_nll")):
+                                       ("scheduled_train_domain_true_answer_nll", "heldout_answer_nll")):
                 raise AssertionError("paired arms differ before training")
             paired.append({"steps": a["steps"],
                            "heldout_advantage_nats": b["heldout_answer_nll"] - a["heldout_answer_nll"],
-                           "seen_advantage_nats": b["seen_true_answer_nll"] - a["seen_true_answer_nll"]})
+                           "scheduled_train_domain_advantage_nats": (
+                               b["scheduled_train_domain_true_answer_nll"] -
+                               a["scheduled_train_domain_true_answer_nll"]),
+                           })
         records.append({
             "seed": seed, "train_count": len(train_pairs), "heldout_count": len(heldout),
             "train_digest": hashlib.sha256(json.dumps(train_pairs).encode()).hexdigest(),
@@ -147,7 +168,11 @@ def run() -> dict:
             "gpu_requested": False, "seeds": list(SEEDS),
             "optimizer_step_checkpoints": list(CHECKPOINT_STEPS),
             "records": records, "cpu_elapsed_seconds": time.monotonic() - start,
-            "interpretation": "Both signs are retained; no best-step or best-seed selection."}
+            "interpretation": (
+                "Both signs retained; no best-step/seed selection. The fixed "
+                "scheduled training domain includes future optimizer pairs at "
+                "early checkpoints; it is not a seen-so-far memorization measure."
+            )}
 
 
 if __name__ == "__main__":
