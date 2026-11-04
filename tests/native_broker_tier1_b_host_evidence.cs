@@ -1,6 +1,7 @@
 // Exact Windows source tests only: retained host-read file bytes, host nonce,
 // and existing durable probe journal. Never a signed production grant or GPU run.
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using Vera.TrainingDay.HostBroker;
@@ -35,6 +36,32 @@ internal static class Tier1BHostEvidenceNativeTests {
             File.WriteAllText(plan,"abc",Encoding.ASCII);
             File.WriteAllText(manifest,"hello",Encoding.ASCII);
             File.WriteAllText(kernel,"abc",Encoding.ASCII);
+            // RED regression: the fixture root itself may be ordinary while
+            // a parent directory is an NTFS reparse junction. Current source
+            // checked only the final root; it must reject ancestor redirects.
+            string actual=Path.Combine(root,"actual");
+            string actualChild=Path.Combine(actual,"child");
+            Directory.CreateDirectory(actualChild);
+            File.Copy(plan,Path.Combine(actualChild,"plan.json"));
+            File.Copy(manifest,Path.Combine(actualChild,"manifest.json"));
+            File.Copy(kernel,Path.Combine(actualChild,"kernel.bin"));
+            string junction=Path.Combine(root,"junction");
+            var mklink=new ProcessStartInfo("cmd.exe",
+                "/d /c mklink /J \""+junction+"\" \""+actual+"\"") {
+                UseShellExecute=false,CreateNoWindow=true,
+                RedirectStandardOutput=true,RedirectStandardError=true
+            };
+            using(var proc=Process.Start(mklink)) {
+                string output=proc.StandardOutput.ReadToEnd();
+                string error=proc.StandardError.ReadToEnd();
+                Need(proc.WaitForExit(5000) && proc.ExitCode==0,
+                    "cannot establish harmless native junction fixture: "+output+error);
+            }
+            Reject<InvalidDataException>(()=>{
+                using(var alias=Tier1BHostEvidenceHold.OpenForNativeTestOnly(
+                    Path.Combine(junction,"child"))) {}
+            },"ancestor NTFS junction into test-owned directory");
+            Directory.Delete(junction);
             Reject<ArgumentException>(() => {
                 using(var bad=Tier1BHostEvidenceHold.OpenForNativeTestOnly("relative")) {}
             },"caller-relative root");
@@ -92,6 +119,10 @@ internal static class Tier1BHostEvidenceNativeTests {
                     "after-close source replacement kept stale digest");
                 Need(!changed.LaunchAuthorized,"changed file authorized training");
             }
+            File.WriteAllText(plan,new string('x',32769),Encoding.ASCII);
+            Reject<InvalidDataException>(()=>{
+                using(var oversize=Tier1BHostEvidenceHold.OpenForNativeTestOnly(root)) {}
+            },"plan larger than 32768-byte bound");
             // Host-local hash chaining is not a rollback-resistant witness.
             // In an isolated fixture, deleting the journal restarts the epoch
             // and allows reuse of a previously consumed nonce. A live broker
