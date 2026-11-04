@@ -281,23 +281,22 @@ def persist_reload_fixture(
             os.close(dir_fd)
 
 
-def recover_crashed_fixture_staging(
+def inspect_crashed_fixture_staging(
     checkpoint_path: str | Path, *, minimum_age_seconds: int = 3600,
-) -> int:
-    """Opt-in bounded recovery for an exclusively owned private fixture dir.
+) -> dict:
+    """Read-only bounded inventory; never infer stage ownership from metadata.
 
-    Only this target's old, regular 0600, single-linked, same-UID stage files
-    are eligible. Caller must guarantee no active writer owns the directory.
-    Cannot recover files from a directory renamed outside the supplied path.
-    No final checkpoint, unrelated path, or ambiguous candidate is deleted.
+    Even an aged 0600 single-linked same-UID name can be forged by the owner.
+    Listing a candidate is not authorization to delete, quarantine or modify
+    it; recovery requires independent operator judgment outside this module.
     """
     if type(minimum_age_seconds) is not int or minimum_age_seconds < 60:
-        raise LowMemoryExperimentError("recovery requires >=60s stale age")
+        raise LowMemoryExperimentError("inspection requires >=60s stale age")
     output = _checkpoint_path(checkpoint_path)
     dir_fd = None
     try:
         dir_fd = _open_bound_directory(output)
-        names = os.listdir(dir_fd)
+        names = sorted(os.listdir(dir_fd))
         prefix = _staging_prefix(output.name)
         candidates = []
         for name in names:
@@ -313,32 +312,34 @@ def recover_crashed_fixture_staging(
                     and info.st_nlink == 1
                     and info.st_size <= CHECKPOINT_LIMIT
                     and time.time() - info.st_mtime >= minimum_age_seconds):
-                candidates.append((name, info.st_dev, info.st_ino))
+                candidates.append({
+                    "basename": name,
+                    "size_bytes": info.st_size,
+                    "device": info.st_dev,
+                    "inode": info.st_ino,
+                    "source_verified": False,
+                    "classification": "UNVERIFIED_NAME_AND_METADATA_MATCH_ONLY",
+                })
         if len(candidates) > 16:
-            raise LowMemoryExperimentError("too many staging candidates for bounded recovery")
+            raise LowMemoryExperimentError("too many staging candidates for bounded inspection")
         # Confirm the user-supplied parent path still resolves to this FD.
         rebound = _open_bound_directory(output)
         try:
             before, after = os.fstat(dir_fd), os.fstat(rebound)
             if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
-                raise LowMemoryExperimentError("recovery directory pathname changed")
+                raise LowMemoryExperimentError("inspection directory pathname changed")
         finally:
             os.close(rebound)
-        for name, device, inode in candidates:
-            # A private 0700 directory with one designated writer is mandatory;
-            # this final check detects accidental replacement, not a guarantee
-            # against an adversarial same-UID concurrent rename.
-            now = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-            if ((now.st_dev, now.st_ino) != (device, inode)
-                    or not stat.S_ISREG(now.st_mode)
-                    or now.st_nlink != 1):
-                raise LowMemoryExperimentError("staging candidate changed during recovery")
-            os.unlink(name, dir_fd=dir_fd)
-        if candidates:
-            os.fsync(dir_fd)
-        return len(candidates)
+        return {
+            "status": "READ_ONLY_UNVERIFIED_CANDIDATE_INVENTORY",
+            "checkpoint_basename": output.name,
+            "candidates": candidates,
+            "deletions_performed": 0,
+            "recovery_authorized": False,
+            "proves_staging_provenance": False,
+        }
     except OSError as exc:
-        raise LowMemoryExperimentError("staging recovery unavailable or ambiguous") from exc
+        raise LowMemoryExperimentError("staging inspection unavailable or ambiguous") from exc
     finally:
         if dir_fd is not None:
             os.close(dir_fd)

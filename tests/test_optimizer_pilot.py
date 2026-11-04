@@ -16,7 +16,7 @@ from trainingday.official_public_base import expected_source_record
 from trainingday.optimizer_pilot import (
     CheckpointCommitIndeterminate, PilotBounds, memory_preflight,
     physical_optimizer_launch, replay_synthetic_adapter,
-    recover_crashed_fixture_staging,
+    inspect_crashed_fixture_staging,
     validate_official_plan,
 )
 from trainingday.physical_launch_authority import PhysicalLaunchAuthorityUnavailable
@@ -257,7 +257,7 @@ class Qwen35OptimizerPilotTests(unittest.TestCase):
             with self.assertRaises(LowMemoryExperimentError):
                 replay(target)  # never silently overwrite an ambiguous commit
 
-    def test_process_crash_leaves_recoverable_stale_staging_only(self):
+    def test_process_crash_orphan_is_listed_but_never_deleted(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             target = root / "fixture.json"
@@ -276,15 +276,22 @@ class Qwen35OptimizerPilotTests(unittest.TestCase):
             self.assertFalse(target.exists())
             leftovers = list(root.glob(".trainingday-fixture-*"))
             self.assertEqual(len(leftovers), 1)
-            self.assertEqual(recover_crashed_fixture_staging(target), 0)
+            self.assertEqual(inspect_crashed_fixture_staging(target)["candidates"], [])
             stale = time.time() - 4000
             os.utime(leftovers[0], (stale, stale))
             other = root / "user_owned.txt"
             other.write_text("SAFE", encoding="utf-8")
-            self.assertEqual(recover_crashed_fixture_staging(target), 1)
-            self.assertFalse(leftovers[0].exists())
+            inventory = inspect_crashed_fixture_staging(target)
+            self.assertEqual(inventory["status"],
+                             "READ_ONLY_UNVERIFIED_CANDIDATE_INVENTORY")
+            self.assertEqual(len(inventory["candidates"]), 1)
+            self.assertEqual(inventory["candidates"][0]["basename"], leftovers[0].name)
+            self.assertFalse(inventory["candidates"][0]["source_verified"])
+            self.assertEqual(inventory["deletions_performed"], 0)
+            self.assertFalse(inventory["recovery_authorized"])
+            self.assertTrue(leftovers[0].is_file())
             self.assertEqual(other.read_text(encoding="utf-8"), "SAFE")
-            self.assertEqual(recover_crashed_fixture_staging(target), 0)
+            self.assertEqual(len(inspect_crashed_fixture_staging(target)["candidates"]), 1)
 
     def test_fixture_directory_must_be_owner_exclusive(self):
         with TemporaryDirectory() as tmp:
@@ -294,10 +301,10 @@ class Qwen35OptimizerPilotTests(unittest.TestCase):
             with self.assertRaisesRegex(LowMemoryExperimentError, "checkpoint"):
                 replay(path)
             with self.assertRaisesRegex(LowMemoryExperimentError, "owner-only"):
-                recover_crashed_fixture_staging(path)
+                inspect_crashed_fixture_staging(path)
             self.assertEqual(list(shared.iterdir()), [])
 
-    def test_recovery_preserves_multilink_and_symlink_candidates(self):
+    def test_inspection_preserves_multilink_and_symlink_candidates(self):
         with TemporaryDirectory() as tmp:
             parent = Path(tmp)
             target = parent / "fixture.json"
@@ -312,9 +319,33 @@ class Qwen35OptimizerPilotTests(unittest.TestCase):
             symlink.symlink_to(other_hardlink)
             stale = time.time() - 4000
             os.utime(linked, (stale, stale))
-            self.assertEqual(recover_crashed_fixture_staging(target), 0)
+            self.assertEqual(inspect_crashed_fixture_staging(target)["candidates"], [])
             self.assertEqual(linked.read_text(encoding="utf-8"), "USER_OWNED")
             self.assertTrue(symlink.is_symlink())
+
+    def test_forged_old_same_owner_stage_is_reported_not_deleted(self):
+        with TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            target = parent / "fixture.json"
+            prefix = ".trainingday-fixture-" + hashlib.sha256(
+                target.name.encode("utf-8")).hexdigest()[:16] + "-"
+            unrelated_user_file = parent / (prefix + "c" * 24)
+            unrelated_user_file.write_bytes(b"FORGED_USER_DATA")
+            unrelated_user_file.chmod(0o600)
+            stale = time.time() - 4000
+            os.utime(unrelated_user_file, (stale, stale))
+            first = inspect_crashed_fixture_staging(target)
+            second = inspect_crashed_fixture_staging(target)
+            self.assertEqual(first, second)
+            self.assertEqual(len(first["candidates"]), 1)
+            self.assertEqual(first["candidates"][0]["basename"],
+                             unrelated_user_file.name)
+            self.assertEqual(first["candidates"][0]["classification"],
+                             "UNVERIFIED_NAME_AND_METADATA_MATCH_ONLY")
+            self.assertFalse(first["proves_staging_provenance"])
+            self.assertFalse(first["recovery_authorized"])
+            self.assertEqual(first["deletions_performed"], 0)
+            self.assertEqual(unrelated_user_file.read_bytes(), b"FORGED_USER_DATA")
 
     def test_physical_launch_holds_without_reading_model(self):
         with self.assertRaisesRegex(PhysicalLaunchAuthorityUnavailable, "HARD HOLD"):

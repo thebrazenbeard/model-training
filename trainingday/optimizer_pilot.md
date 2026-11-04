@@ -73,17 +73,21 @@ guarantee that a hostile writer will not mutate the path immediately after
 the last readback.** This code assumes an exclusive owner-controlled folder,
 not adversarial same-UID concurrency or a hostile filesystem.
 
-A normal failed partial write unlinks only its own stage. An abrupt process
-crash can leave a named stage before hard-link publication. The optional
-`recover_crashed_fixture_staging(checkpoint_path, minimum_age_seconds=3600)`
-recovers at most 16 old, same-UID, mode-`0600`, single-linked stage files
-matching the **specific target basename** in the private owner-only folder.
-It refuses recent stages and never removes final checkpoints, other names,
-or multiply-linked published inodes. The caller must independently confirm
-the folder is idle before invoking recovery. A renamed directory cannot be
-recovered through its obsolete pathname; the owner must first locate the
-original directory. Use an isolated temporary directory for disposable
-fixtures; do not run recovery on a shared folder.
+A normal failed partial write unlinks only its own newly created stage.
+An abrupt process crash can leave a named stage before hard-link publication.
+**No automatic crash-orphan deletion or quarantine is implemented**: an old,
+mode-`0600`, single-linked, same-UID file with a correctly shaped staging name
+may still be **unrelated user data intentionally forged to that pattern**.
+`inspect_crashed_fixture_staging(checkpoint_path, minimum_age_seconds=3600)`
+returns a **read-only**, bounded (at most 16) inventory of such names and
+file metadata, marked `UNVERIFIED_NAME_AND_METADATA_MATCH_ONLY`, with
+`deletions_performed = 0` and `recovery_authorized = false`. An actual
+subprocess crash fixture and a forged unrelated same-owner file both appear
+as *unverified candidates* and remain untouched. Only an independent human
+or authenticated custody process can decide how to handle these files; this
+pilot never deletes them. A renamed directory cannot be inventoried through
+its obsolete pathname. Use an isolated temporary directory for disposable
+fixtures; never treat the inventory as provenance proof.
 
 Receipt distinguishes `synthetic_updates = 3` from
 `physical_pretrained_optimizer_steps = 0`; records source revision,
