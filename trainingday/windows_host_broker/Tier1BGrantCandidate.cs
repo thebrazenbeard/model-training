@@ -15,8 +15,12 @@ internal sealed class Tier1BCandidateObservation {
     internal readonly bool LaunchAuthorized = false;
     internal readonly bool Tier2Authorized = false;
     internal readonly bool Promotable = false;
-    internal Tier1BCandidateObservation(string reason, bool matched) {
+    // Non-authoritative deadline observation: a future host runner must prove
+    // fail-safe termination at or before this time before enabling any launch.
+    internal readonly long AbortByUnix;
+    internal Tier1BCandidateObservation(string reason, bool matched, long abortByUnix=0) {
         Reason = reason; ScopeAndSignatureMatched = matched;
+        AbortByUnix = abortByUnix;
     }
 }
 
@@ -101,7 +105,8 @@ internal static class Tier1BGrantCandidate {
         if(host==null || !Digest(host.Plan) || !Digest(host.Manifest)
                 || !Digest(host.Executable) || !Digest(host.Nonce)
                 || host.NextEpoch<=0 || host.NextEpoch>=Int64.MaxValue-1
-                || host.NowUnix<=0) return false;
+                || host.NowUnix<=0 || host.NowUnix>Int64.MaxValue-1800)
+            return false;
         if(f[0]!="TRAININGDAY_TIER1_B_OWNER_GRANT_V1"
                 || f[1]!="TIER1_PUBLIC_SYNTHETIC"
                 || f[2]!="LAPPY"
@@ -119,12 +124,14 @@ internal static class Tier1BGrantCandidate {
                 || !UnsignedNumber(f[13],out before)
                 || !UnsignedNumber(f[14],out after)) return false;
         return epoch==host.NextEpoch && before<=host.NowUnix
-            && host.NowUnix<=after && after>before && after-before<=1800;
+            && host.NowUnix<after && after>before && after-before<=1800;
     }
     static bool VerifyRsaSignature(byte[] payload, byte[] signature, RSA ownerPublicKey) {
-        if (signature==null || signature.Length<128 || signature.Length>512
-                || ownerPublicKey==null) return false;
+        if (signature==null || ownerPublicKey==null) return false;
         try {
+            int rsaBits=ownerPublicKey.KeySize;
+            if(rsaBits<2048 || rsaBits>4096 || rsaBits%8!=0
+                    || signature.Length!=rsaBits/8) return false;
             return ownerPublicKey.VerifyData(payload, signature,
                 HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         } catch (CryptographicException) { return false; }
@@ -141,8 +148,15 @@ internal static class Tier1BGrantCandidate {
         if (!MatchesHostScope(fields,host)) return Hold("SCOPE_OR_REPLAY_MISMATCH");
         if (!VerifyRsaSignature(payload,signature,syntheticPublicKey))
             return Hold("SIGNATURE_INVALID");
+        // This observation is not a scheduler or an enforcement mechanism.
+        // A later installed host must independently enforce its clock/deadline
+        // and kill the nested WSL PID tree, including on broker crash.
+        long expires;
+        if(!UnsignedNumber(fields[14],out expires))
+            return Hold("SCOPE_OR_REPLAY_MISMATCH");
+        long abortBy=Math.Min(expires,host.NowUnix+1800);
         return new Tier1BCandidateObservation(
-            "SIGNATURE_AND_SCOPE_MATCHED_SOURCE_ONLY_NO_LAUNCH", true);
+            "SIGNATURE_AND_SCOPE_MATCHED_SOURCE_ONLY_NO_LAUNCH", true, abortBy);
     }
 
     // Production-facing candidate additionally needs a *compiled and verified*
