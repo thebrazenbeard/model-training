@@ -8,6 +8,9 @@ or that an external Windows broker is trusted.
 
 from __future__ import annotations
 
+import errno
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -89,6 +92,39 @@ def _parse_pids(data: str) -> tuple[int, ...]:
     return pids
 
 
+def _read_scope_files(cgroup_root: Path, parts: tuple[str, ...]) -> tuple[str, str]:
+    """Open scope and leaf files through stable no-symlink directory handles."""
+    if sys.platform != "linux":
+        raise CgroupReadbackError("Linux cgroup-v2 kernel required")
+    # lstat/is_symlink alone would race against replacement between check/open.
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    leaf_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    directory_fd = None
+    try:
+        directory_fd = os.open(cgroup_root, dir_flags)
+        for part in parts:
+            next_fd = os.open(part, dir_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+
+        def read_leaf(name: str) -> str:
+            leaf_fd = os.open(name, leaf_flags, dir_fd=directory_fd)
+            with os.fdopen(leaf_fd, "r", encoding="utf-8") as leaf:
+                data = leaf.read(65537)
+            if len(data) > 65536:
+                raise CgroupReadbackError("oversize kernel cgroup readback")
+            return data
+
+        return read_leaf("cgroup.events"), read_leaf("cgroup.procs")
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise CgroupReadbackError("symlink or non-directory in cgroup scope") from exc
+        raise
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
 def inspect_read_only(
     retained: RetainedProcess,
     expected_scope: str,
@@ -121,19 +157,26 @@ def inspect_read_only(
             raise CgroupReadbackError("stale or reused Linux PID")
         if observed_scope != expected_scope:
             raise CgroupReadbackError("observed Linux cgroup mismatch")
-        location = cgroup_root.joinpath(*parts)
-        # Reject symlink substitution on each component, including fixture.
-        current = cgroup_root
-        for part in parts:
-            current = current / part
-            if current.is_symlink():
-                raise CgroupReadbackError("symlink in cgroup scope")
-        populated = _parse_events((location / "cgroup.events").read_text(encoding="utf-8"))
-        direct_pids = _parse_pids((location / "cgroup.procs").read_text(encoding="utf-8"))
+        events_text, procs_text = _read_scope_files(cgroup_root, parts)
+        populated = _parse_events(events_text)
+        direct_pids = _parse_pids(procs_text)
         if populated == 0 and direct_pids:
             raise CgroupReadbackError("contradictory cgroup population readback")
         if retained.pid not in direct_pids:
             raise CgroupReadbackError("owner process not directly in claimed scope")
+        # The two separate /proc and cgroup files are not an atomic snapshot.
+        # A second kernel observation rejects detected PID exit/reuse/movement.
+        again_ticks = _proc_stat_start_ticks(
+            (proc_root / str(retained.pid) / "stat").read_text(encoding="utf-8"),
+            expected_pid=retained.pid,
+        )
+        again_scope = _unified_path(
+            (proc_root / str(retained.pid) / "cgroup").read_text(encoding="utf-8")
+        )
+        if again_ticks != retained.start_ticks:
+            raise CgroupReadbackError("stale or reused Linux PID during readback")
+        if again_scope != expected_scope:
+            raise CgroupReadbackError("observed Linux cgroup changed during readback")
     except OSError as exc:
         raise CgroupReadbackError("kernel cgroup readback unavailable") from exc
     return {
@@ -143,6 +186,7 @@ def inspect_read_only(
         "observed_start_ticks": observed_ticks,
         "observed_scope": observed_scope,
         "readback_origin": "DEFAULT_LINUX_PATHS" if proc_root == Path("/proc") and cgroup_root == Path("/sys/fs/cgroup") else "CALLER_SUPPLIED_TEST_PATHS",
+        "readback_atomic": False,
         "populated_at_observation": populated == 1,
         "direct_process_count": len(direct_pids),
         "exclusive_cgroup_delegation_verified": False,
@@ -157,15 +201,10 @@ def scope_empty_readback(
 ) -> dict:
     """Post-stop snapshot only; missing scope is UNKNOWN, not success."""
     parts = _dedicated_scope(expected_scope)
-    location = Path(cgroup_root).joinpath(*parts)
     try:
-        current = Path(cgroup_root)
-        for part in parts:
-            current = current / part
-            if current.is_symlink():
-                raise CgroupReadbackError("symlink in cgroup scope")
-        populated = _parse_events((location / "cgroup.events").read_text(encoding="utf-8"))
-        direct_pids = _parse_pids((location / "cgroup.procs").read_text(encoding="utf-8"))
+        events_text, procs_text = _read_scope_files(Path(cgroup_root), parts)
+        populated = _parse_events(events_text)
+        direct_pids = _parse_pids(procs_text)
         if populated == 0 and direct_pids:
             raise CgroupReadbackError("contradictory cgroup population readback")
     except OSError as exc:
@@ -175,6 +214,7 @@ def scope_empty_readback(
         "status": "SOURCE_OBSERVATION_ONLY_TRAINING_HOLD",
         "scope": expected_scope,
         "readback_origin": "DEFAULT_LINUX_PATHS" if Path(cgroup_root) == Path("/sys/fs/cgroup") else "CALLER_SUPPLIED_TEST_PATHS",
+        "readback_atomic": False,
         "scope_empty_at_observation": populated == 0 and len(direct_pids) == 0,
         "all_prior_descendants_proven_dead": False,
         "windows_wsl2_crash_qualified": False,
