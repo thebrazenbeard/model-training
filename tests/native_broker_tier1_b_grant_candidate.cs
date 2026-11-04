@@ -67,8 +67,9 @@ internal static class Tier1BGrantCandidateTests {
         ExpectRejection(key,f,label);
     }
     static void Main() {
-        using(RSA fixture=RSA.Create()) {
-            fixture.KeySize=2048;
+        using(RSACryptoServiceProvider fixture=new RSACryptoServiceProvider(2048)) {
+            fixture.PersistKeyInCsp=false;
+            Assert(fixture.KeySize==2048,"2048-bit fixture unavailable");
             byte[] valid=Payload(Fields());
             byte[] sig=fixture.SignData(valid,HashAlgorithmName.SHA256,
                                          RSASignaturePadding.Pkcs1);
@@ -97,8 +98,9 @@ internal static class Tier1BGrantCandidateTests {
             CheckNoLaunch(badSig,"tampered signature");
             Assert(!badSig.ScopeAndSignatureMatched &&
                 badSig.Reason=="SIGNATURE_INVALID","forged signature admitted");
-            using(RSA attacker=RSA.Create()) {
-                attacker.KeySize=2048;
+            using(RSACryptoServiceProvider attacker=new RSACryptoServiceProvider(2048)) {
+                attacker.PersistKeyInCsp=false;
+                Assert(attacker.KeySize==2048,"2048-bit attack fixture unavailable");
                 byte[] attackerSig=attacker.SignData(valid,HashAlgorithmName.SHA256,
                                                       RSASignaturePadding.Pkcs1);
                 var wrongSigner=Tier1BGrantCandidate.VerifyForNativeTestOnly(
@@ -106,8 +108,9 @@ internal static class Tier1BGrantCandidateTests {
                 CheckNoLaunch(wrongSigner,"wrong signer");
                 Assert(wrongSigner.Reason=="SIGNATURE_INVALID","wrong signer accepted");
             }
-            using(RSA weak=RSA.Create()) {
-                weak.KeySize=1024;
+            using(RSACryptoServiceProvider weak=new RSACryptoServiceProvider(1024)) {
+                weak.PersistKeyInCsp=false;
+                Assert(weak.KeySize==1024,"1024-bit weak fixture unavailable");
                 byte[] weakSig=weak.SignData(valid,HashAlgorithmName.SHA256,
                                             RSASignaturePadding.Pkcs1);
                 var weakReceipt=Tier1BGrantCandidate.VerifyForNativeTestOnly(
