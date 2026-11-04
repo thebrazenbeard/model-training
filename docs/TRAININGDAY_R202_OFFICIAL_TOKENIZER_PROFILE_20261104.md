@@ -55,6 +55,36 @@ deployed chat template, EOS/system overhead, and low-memory activation costs
 have **not** been measured. This is neither a 128-token optimizer-fit PASS nor
 a recommendation to launch Qwen training on the 4 GiB GPU.
 
+### Additional genuine default chat-template measurement
+
+A second CPU-only run used the same pinned public R202 generator and local
+official snapshot, but now loaded **only** tokenizer/config metadata via
+`transformers==5.22.1`, `AutoTokenizer.from_pretrained(...,
+local_files_only=True, trust_remote_code=False)`. For every row it rendered
+one `user` message containing the prompt and one `assistant` message
+containing the answer with `apply_chat_template(tokenize=True,
+add_generation_prompt=False)`, then counted the actual `input_ids`.
+
+| Default one-user/one-assistant chat template | min | median | p95 | max | >64 | >128 | >256 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,536 R202 examples | 44 | 77 | 99 | 104 | **1,024** | 0 | 0 |
+
+- Diagnostic script:
+  `D:\VERA\scratch\trainingday-r202-tokenizer-20261104-w3\r202_chat_template_lappy_w3.py`;
+  fresh local/remote matching SHA256
+  `9a662113beed56b679c968fbbb3710d3512c4cc47d5232f534f2fd8adc4a5119`.
+- A **rejected preliminary output** reported exactly two tokens for every
+  row because `BatchEncoding.__len__()` counts its **two fields**, not its
+  token IDs. The measurement was fail-closed, instrumented, and rerun by
+  explicitly extracting `input_ids` and rejecting unexpected data types.
+- This authenticates a **specific** default two-message chat-template length
+  calculation with the pinned files. It does **not** establish the actual
+  optimizer's training-input contract, additional system context, model
+  architecture loading, label-mask/EOS placement, dynamic padding/packing,
+  gradient activation memory, or Q6/host-owned training lease. Physical
+  `seq128` Qwen training fit therefore remains **UNKNOWN**, even though these
+  1,536 measured default-template examples are each below 128 tokens.
+
 ## Independent contamination and shortcut checks
 
 The wave3 source tests regenerated 1,024 R201 public TRAIN prompt strings

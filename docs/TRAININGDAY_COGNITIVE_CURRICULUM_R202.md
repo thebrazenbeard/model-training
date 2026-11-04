@@ -132,8 +132,11 @@ observed runtime invocation and its own receipt.
 is documented separately in
 [`TRAININGDAY_R202_OFFICIAL_TOKENIZER_PROFILE_20261104.md`](TRAININGDAY_R202_OFFICIAL_TOKENIZER_PROFILE_20261104.md).
 Its public prompt+answer measurement found **757/1,536 rows over 64 tokens**,
-zero over 128. This is a concrete **seq64 candidate FAIL**, not a memory or
-end-to-end optimizer qualification; chat-template overhead remains unmeasured.
+zero over 128. The actual local **default one-user/one-assistant** Qwen
+chat-template tokenization found **1,024/1,536 rows over 64 tokens** and none
+over 128, with maximum 104 tokens. This is a concrete **seq64 candidate FAIL**,
+not a physical optimizer or 128-token activation-memory qualification; its
+exact message template may differ from the training collator.
 
 ## Practical rights admission (owner and steward may be the same person)
 
