@@ -86,6 +86,47 @@ class TinyQwenLearningCurveTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             curve._exposure_domain(assigned[:-1], 4)
 
+    def test_feedback_marginals_match_only_whole_schedule_not_early_prefix(self):
+        # A full-schedule frequency-preserving shuffled control can change
+        # the answer frequencies seen by the optimizer at early checkpoints.
+        expected_prefix_l1 = {35060: 4, 35061: 10}
+        for seed in curve.SEEDS:
+            train, _ = baseline._pairs(seed)
+            assigned = curve._assigned_pairs(seed, train)
+            truth, _ = curve._assigned_answers(seed, assigned, shuffled=False)
+            shuffled, _ = curve._assigned_answers(seed, assigned, shuffled=True)
+            for step in curve.CHECKPOINT_STEPS:
+                truth_hist = curve._prefix_feedback_histogram(truth, step)
+                shuffled_hist = curve._prefix_feedback_histogram(shuffled, step)
+                l1 = curve._histogram_l1(truth_hist, shuffled_hist,
+                                         step * curve.BATCH_SIZE)
+                if step == 4:
+                    self.assertEqual(l1, expected_prefix_l1[seed])
+                else:
+                    self.assertEqual(l1, 0)
+
+    def test_frequency_count_diagnostic_rejects_spoofed_histograms(self):
+        for true, shuffled, expected in (
+            ({"1": 2}, {"1": 1}, 2),
+            ({"1": -1}, {"1": 1}, 1),
+            ({"1": 1}, {"1": True}, 1),
+            ({"1": 1}, {"bad": 1}, 1),
+        ):
+            with self.assertRaises(AssertionError):
+                curve._histogram_l1(true, shuffled, expected)
+        self.assertEqual(curve._histogram_l1({"1": 1}, {"2": 1}, 1), 2)
+        train, _ = baseline._pairs(curve.SEEDS[0])
+        labels, _ = curve._assigned_answers(
+            curve.SEEDS[0], curve._assigned_pairs(curve.SEEDS[0], train),
+            shuffled=False)
+        for bad_step in (-1, 5, 17, None, 0.0, True):
+            with self.assertRaises(AssertionError):
+                curve._prefix_feedback_histogram(labels, bad_step)
+        with self.assertRaises(AssertionError):
+            curve._prefix_feedback_histogram(labels[:-1], 4)
+        with self.assertRaises(AssertionError):
+            curve._prefix_feedback_histogram([True] + labels[1:], 4)
+
     def test_invalid_training_source_fails_closed(self):
         with self.assertRaises(AssertionError):
             curve._assigned_pairs(35060, [(1, 2)] * 30)
