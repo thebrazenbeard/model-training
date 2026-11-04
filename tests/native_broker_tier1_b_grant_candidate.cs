@@ -61,7 +61,8 @@ internal static class Tier1BGrantCandidateTests {
             return BitConverter.ToString(digest).Replace("-","").ToLowerInvariant();
         }
     }
-    static CertificateRequest OwnerRequest(RSA key,bool includePurpose,bool isCa=false) {
+    static CertificateRequest OwnerRequest(RSA key,bool includePurpose,
+                                           bool isCa=false,bool purposeCritical=true) {
         var request=new CertificateRequest("CN=VERA TrainingDay Tier1 Owner TEST",
             key,HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(
@@ -72,7 +73,7 @@ internal static class Tier1BGrantCandidateTests {
             var eku=new OidCollection();
             eku.Add(new Oid(OwnerPurposeOid));
             request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
-                eku,true));
+                eku,purposeCritical));
         }
         return request;
     }
@@ -150,6 +151,18 @@ internal static class Tier1BGrantCandidateTests {
                     CheckNoLaunch(noPurpose,"unscoped owner cert purpose");
                     Assert(noPurpose.Reason=="OWNER_CERTIFICATE_PURPOSE_REQUIRED",
                         "ordinary RSA certificate without owner EKU accepted");
+                }
+                var optionalPurpose=OwnerRequest(ownerKey,true,false,false);
+                using(var optionalWithKey=optionalPurpose.CreateSelfSigned(
+                    DateTimeOffset.UtcNow.AddMinutes(-5),DateTimeOffset.UtcNow.AddDays(1)))
+                using(var optionalPublic=new X509Certificate2(
+                    optionalWithKey.Export(X509ContentType.Cert))) {
+                    var noncritical=Tier1BGrantCandidate.VerifyPublicCertForNativeTestOnly(
+                        optionalPublic,Sha(optionalPublic.RawData),payload,signature,Host(7,Now));
+                    CheckNoLaunch(noncritical,"noncritical owner purpose EKU");
+                    Assert(!noncritical.ScopeAndSignatureMatched &&
+                        noncritical.Reason=="OWNER_CERTIFICATE_PURPOSE_MUST_BE_CRITICAL",
+                        "noncritical Tier1 B EKU bypassed critical-purpose requirement");
                 }
                 var caRequest=OwnerRequest(ownerKey,true,true);
                 using(var caWithKey=caRequest.CreateSelfSigned(
