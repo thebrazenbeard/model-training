@@ -8,19 +8,22 @@ Run offline: `python -m unittest tests.test_trainingday_matched_method_compariso
 
 ## The two comparisons are different questions
 
-1. **Causal optimizer comparison:** MeZO applied only to the **same pinned
-   trainable LoRA targets** as QLoRA/AdamW, on the exact same authenticated
-   Qwen3.5-4B baseline checkpoint, tokenizer, training split and seed list. This isolates the
-   algorithmic choice more effectively than full-parameter MeZO versus
-   adapter-only QLoRA. Still record forward/backward counts and actual token
-   exposure; matching a time cap alone cannot equate compute or examples.
+1. **LoRA-restricted training-recipe comparison:** MeZO and QLoRA/AdamW use
+   the **same declared LoRA targets**, Qwen3.5-4B source revision, tokenizer,
+   TRAIN commitments and seed list. This narrows one confound but does **not**
+   causally isolate the gradient estimator: MeZO's zeroth-order estimator,
+   QLoRA's AdamW update rule, and possibly different NF4/backbone precision
+   remain mixed. The plan names itself `RECIPE_COMPARISON_ONLY` and sets
+   `causal_gradient_estimator_isolated=false`. Isolating the estimator would
+   require an additional study with matching optimizer update rule, executed
+   backbone precision, batch loss, target tensors and hardware kernels.
 2. **Practical deployability comparison (separate):** Original full-parameter
    MeZO versus QLoRA under the same per-device hardware and wall-clock cap.
    Explicitly acknowledge differences in trainable capacity and memory.
    Never pool these two studies or describe either as a fully controlled
    head-to-head on algorithm alone.
 
-Each causal study seed gets **seven** arms: MeZO / QLoRA crossed with correct,
+Each study seed gets **seven** arms: MeZO / QLoRA crossed with correct,
 corrupted and zero-update label modes, **plus an untouched official base
 reference with no adapter**. Three seeds produce 21 independently named arms.
 An initial shape-only version of this contract omitted the base from its
@@ -44,7 +47,7 @@ authority; these declarations cannot make them runnable.
 
 ### Initial adapter identity and the zero-update causal control
 
-The V3 study requires one `initial_adapter_commitments` record **for every
+The V4 study retains V3's requirement for one `initial_adapter_commitments` record **for every
 seed**. Its `initial_adapter_sha256` is frozen into *all six PEFT arms of
 that seed* (both methods × all three label conditions), while the untouched
 `OFFICIAL_BASE` reference has **no adapter** and a null initial commitment.
@@ -68,7 +71,7 @@ arm's adapter hash alone never proves reasoning improvement or proper updates.
 
 ### Actual ordered TRAIN content and label-custody commitment
 
-The V3 plan **requires** a distinct `schedule_commitments` entry for every
+The V4 plan **requires** a distinct `schedule_commitments` entry for every
 seed, with exactly three SHA-256 digests: `train_order_sha256`,
 `correct_labels_sha256`, and `corrupted_labels_sha256`. The pure helper
 `commit_training_schedule(seed, ordered_rows)` generates these from the
@@ -107,7 +110,7 @@ the receipt's `truncated_training_rows=0` is only untrusted telemetry.
 ### Wall-clock cap versus measured cost
 
 The two methods receive the same **maximum duration**, not equivalent actual
-compute or guaranteed equal numbers of FLOPs. The V3 plan predeclares a
+compute or guaranteed equal numbers of FLOPs. The V4 plan predeclares a
 0–50% `actual_time_tolerance_percent` (default 20%), then measures the
 relative difference against the larger elapsed time for each seed/label pair.
 Over-tolerance pairs return
@@ -118,6 +121,30 @@ so even equal counts or equal seconds cannot prove matched compute.
 `measured_compute_equivalence_established` remains **false** by construction.
 Independent accelerator time/energy/FLOP profiling and separate quality-vs-
 cost plots are required for an actual resource-efficiency comparison.
+
+### Source-only optimizer-step falsifiers (V4)
+
+The standard supervised QLoRA/AdamW recipe must execute a forward loss graph
+for each backward call. V3 wrongly accepted a synthetic training arm claiming
+10 optimizer steps, 10 backwards, but **only 1 forward**. V4 rejects
+`QLORA_ADAMW.forward_calls < backward_calls` for trained arms, while accepting
+legitimate gradient accumulation (for example, 20 forward/backward microbatches
+over 10 optimizer steps) and true zero-update controls. A deliberately
+different recipe that backward-propagates multiple losses through a single
+retained graph needs its *own explicit accounting contract*; it is not this
+standard QLoRA procedure.
+
+Original MeZO uses two loss evaluations at `theta + epsilon * z` and
+`theta - epsilon * z` on the **same minibatch**, with replayed perturbation
+direction and restored unperturbed parameters before update. For `n`
+independent directions, its finite-difference estimator takes **2n forward
+evaluations** per optimizer step. The optional bounded
+`mezo_directions_per_step` source field enforces at least `2 * n * steps`
+forward-call telemetry when explicitly declared; when absent, only the basic
+two-per-step minimum is enforced. Neither case proves actual paired minibatch
+identity, perturbation replay, truthful GPU telemetry, or restoration:
+`mezo_perturbation_pairing_independently_verified=false` always. Forward calls
+and token exposure are not interchangeable compute or energy units.
 
 The pinned model ID `Qwen/Qwen3.5-4B` is the official **post-trained**
 checkpoint. `Qwen/Qwen3.5-4B-Base` is a different pretraining-only model.
