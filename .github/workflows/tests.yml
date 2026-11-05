@@ -20,9 +20,34 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - name: Check out exact Calc oracle source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: thebrazenbeard/calc
+          ref: 17e12d0f659b42732fb98e5730732aba9ff1b488
+          path: .ci-calcoracle
+          persist-credentials: false
       - name: Install dependencies
         run: pip install --disable-pip-version-check -r requirements.txt
+      - name: Require pinned Calc oracle tests without skips
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.ci-calcoracle/src:${{ github.workspace }}
+        run: |
+          python - <<'PY'
+          import unittest
+
+          cases = (
+              "tests.test_trainingday_calc_curriculum.CalcCurriculumSourceTests.test_real_calc_oracle_and_independent_answer_checks",
+              "tests.test_trainingday_calc_eval_commitment.CalcEvalCommitmentTests.test_exact_calc_algebra_parity_if_installed",
+          )
+          suite = unittest.defaultTestLoader.loadTestsFromNames(cases)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.testsRun != len(cases) or result.skipped or not result.wasSuccessful():
+              raise SystemExit("Pinned Calc oracle tests failed or were skipped")
+          PY
       - name: Compile and test
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.ci-calcoracle/src:${{ github.workspace }}
         run: |
           python -m py_compile bootcamp.py fast_bootcamp.py quality_gate.py
           python -m pytest -q
