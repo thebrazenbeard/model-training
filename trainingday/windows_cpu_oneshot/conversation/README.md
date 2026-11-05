@@ -134,3 +134,48 @@ DLL/exe contents or their provenance. Release tag b12125 displays commit
 3259ab6: review this difference before treating a signed release description
 as compiled-code equivalence. Model GGUF chat-template correctness and any
 actual reasoning-disable effect require physical runtime verification.
+
+## An 82 ms empty stdout/stderr exit: triage, not a diagnosis
+
+Do not infer unsupported CLI options, missing DLLs, CPU incompatibility,
+or a successful model load from 0.082 seconds of elapsed time. First retain
+the **raw child exit code** from GetExitCodeProcess and normalize it to unsigned
+32-bit hexadecimal, plus whether CreateProcess succeeded and whether the
+owner supervisor terminated its JobObject. A wrapper's own exit code is NOT
+necessarily the child's.
+
+| Exact read-only observation | Interpretation / candidates | Next discriminator |
+| --- | --- | --- |
+| Exit code unavailable, 0/0 captured bytes | UNKNOWN: wrapper may have discarded child exit status; capture may be broken | Child PID/start time, exact GetExitCodeProcess result, redirect-handle lifecycle |
+| 0x00000000, 0/0 bytes in 82ms | Zero-status empty pipeline; no model evidence. CLI stdout/TTY semantics and captured-stream failure both remain possible | Read current b12125 CLI mode and stdout/pipe handling; check start/stop evidence without replay |
+| 0xC0000135 | DLL not found (Windows loader) | Read-only comparison of archive DLL manifest, extracted files, VC++ runtime |
+| 0xC000007B | Invalid binary image or architecture | PE x64/exe+DLL machine types and exact archive digest |
+| 0xC0000142 | DLL initialization failure | Windows Event/WER module record and app-local dependencies |
+| 0xC000001D | Illegal instruction, possibly unsupported CPU ISA | Read-only CPUID + compiled binary feature requirements; 82ms alone is not ISA evidence |
+| 0xC0000005 | Access violation; native defect/CRT mismatch/other memory corruption | WER exception module; installed VC++ Redistributable version |
+| 0xC0000017 | Insufficient virtual-memory commit | Scoped process/system commit readback |
+| 0xC0000006 | Paging/storage in-page error | Scoped disk/system event status |
+| Owner's JobObject kill receipt | Intentional owner termination/limit event may dominate child exit | Exact job termination reason, child-tree reaping and supervisor clock |
+| Nonzero other code, empty streams | Unclassified; no diagnosis | Preserve signed and unsigned code, ownership and source of status |
+
+The offline exit_diagnostics.py module accepts these bounded numeric fields,
+maps Microsoft NTSTATUS codes, and returns next *read-only* discriminators.
+Every result sets physical_inference_proved=false. No host process is run.
+
+Primary historical falsifiers:
+
+- Upstream llama.cpp issue 27214 observed an earlier b10453 build with
+  redirected stdout/stderr returning **0 bytes/0 bytes/exit 0** on Linux
+  without loading a model; Windows behavior differed. This is **not proof**
+  that b12125 has the same bug:
+  https://github.com/ggml-org/llama.cpp/issues/27214
+- Upstream llama.cpp issue 11479 documented historical Windows 10 silent
+  0xC0000005 exits that reporters resolved by upgrading the MSVC Redistributable.
+  A current 0xC0000005 still does NOT prove a CRT defect, nor authorize an
+  install or global PATH change:
+  https://github.com/ggml-org/llama.cpp/issues/11479
+- Microsoft's authoritative Windows NTSTATUS table:
+  https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
+
+No replay, update, package installation, process kill, PATH modification,
+service change or host diagnostic call was performed by this module.
