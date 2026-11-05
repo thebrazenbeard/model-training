@@ -36,7 +36,7 @@ internal static class NativeOwnerLlamaCandidateTests {
         MustHold(OwnerLlamaServerLaunchCandidate.ReviewSyntheticObservation(null),"NO_OBSERVATION");
         OwnerLlamaObservation o=Fixture();
         OwnerLlamaPlanReview proposed=OwnerLlamaServerLaunchCandidate.ReviewSyntheticObservation(o);
-        Require(proposed.SourceInputsMatch,"self-consistent synthetic fixture unexpectedly rejected");
+        Require(proposed.Holds.Length==0,"self-consistent synthetic fixture unexpectedly rejected");
         Require(!proposed.CanPhysicalRun && proposed.PhysicalRunState=="PHYSICAL_RUN_HOLD",
             "synthetic readiness issued real launch authority");
         try {
