@@ -132,3 +132,34 @@ Exact source was transferred and SHA-verified on VN1:
 exact dependency allowlisting, pre-extraction missing-DLL rejection,
 hash/size failures, sibling copying, collision preservation, private ACLs,
 and concurrent directory creation. This is not a full model runtime test.
+
+## New isolated v2 artifact stage — no model launch
+
+After a separate conditional hostile review of the copy-only path, the
+following exact operation was performed on VN1:
+
+- Source: `C:\Users\Vera\BT2ModelArtifacts\w56-q4-oneshot`
+- New, previously absent sibling destination:
+  `C:\Users\Vera\BT2ModelArtifacts\w56-q4-oneshot-v2`
+- Reused pinned ZIP/model bytes with checksum-gated read-only source access,
+  no download, no service modification, and no new model execution.
+- Stager exited **0**, reporting `STAGED_AND_HASH_VERIFIED` at the new
+  `stage-receipt.json`.
+- v2 receipt schema `bt2.q4.stage.receipt.v2`; runner archive SHA
+  `968091...`, model SHA `b7508d...`, 2,783,446,880 model bytes, **23**
+  native EXE/DLL files. All four previously omitted DLLs were separately
+  rehashed on VN1 and match the official ZIP's streamed SHA values.
+- v2 root, `bin`, `models`, and `state` are owned by
+  `VERA-NODE-1\Vera` with inheritance-protected ACLs. v2 `state` is empty.
+- Receipt explicitly reports `Executed=false`,
+  `WindowsPeLoaderVerified=false`, and `LeaseQualified=false`.
+- The original consumed plan remains under the original v1 stage; no v2
+  model execution plan was created.
+- A second, independent VN1 readback after the stager exited rehashed the
+  complete **2,783,446,880-byte model** (`b7508d8b4a652bc020a439aafdd4ce1527d49774865ce3334a43b16dbeaa90ca`),
+  the complete **24,730,921-byte runner archive** (`968091ccb8c230e0cf7e0eed386310703bebae4a4fd4375f0c57db53958307d8`),
+  and each of the **23 native EXE/DLL files** against the v2 manifest.
+  All passed; the readback process exited 0 in 100.67 seconds.
+
+The v2 artifact is a **staging qualification**, not a loader test, trained
+Vera, an official-base provenance proof, or authority to launch again.
