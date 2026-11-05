@@ -1,8 +1,6 @@
 // Native Windows custody regression: a harmless child must run in a real
 // JobObject and terminate on owner-handle close. No model or GPU use.
 using System;
-using System.Diagnostics;
-using System.Threading;
 using Vera.TrainingDay.HostBroker;
 
 internal static class NativeCustodyTests {
@@ -10,26 +8,21 @@ internal static class NativeCustodyTests {
         if (!condition) throw new Exception(reason);
     }
     public static int Main() {
-        int pid;
         using (var custody = JobObjectChildCustody.LaunchHarmlessProbe()) {
-            pid = custody.ProcessId;
-            Require(pid > 0, "child PID absent");
+            Require(custody.ProcessId > 0, "child PID absent");
             Require(custody.IsInJob, "child was not bound to native job");
+            Require(custody.HasExpectedLimits,
+                "kernel Job readback missing job-wide memory limit, CPU hard cap or kill-on-close");
             Require(custody.IsAlive, "child ended before custody close");
+            // Keep the kernel PROCESS handle pinned while closing the Job,
+            // eliminating a PID-reuse race in the termination assertion.
+            Require(custody.CloseJobAndConfirmChildExit(),
+                "native child did not exit after closing owning Job handle");
         }
-        bool alive = true;
-        for (int i=0; i<30; i++) {
-            Thread.Sleep(100);
-            try {
-                using (var p=Process.GetProcessById(pid)) {
-                    p.Refresh();
-                    alive=!p.HasExited;
-                }
-            } catch (ArgumentException) { alive=false; }
-            if (!alive) break;
-        }
-        Require(!alive, "child survived closing kill-on-close JobObject");
-        Console.WriteLine("NATIVE_JOB_CUSTODY_PASS child_assigned=true killed_on_close=true");
+        Console.WriteLine("NATIVE_JOB_CUSTODY_PASS child_assigned=true"
+            + " memory_limit_bytes=" + JobObjectChildCustody.ProbeJobMemoryBytes
+            + " cpu_hard_cap_rate=" + JobObjectChildCustody.ProbeCpuRate
+            + " killed_on_close=true");
         return 0;
     }
 }
