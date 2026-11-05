@@ -5,12 +5,28 @@ from pathlib import Path
 import unittest
 
 from trainingday.conversation_transfer import (_read_json, digest, make_casebook,
+                                               preflight_comparable_arms,
+                                               preflight_adapter_lineage,
                                                review_scaffold, score,
                                                validate_casebook,
                                                SOCIAL_COLD_START_TURNS)
 
 
 SEED = "w43-synthetic-evaluation-fixture-20261105"
+
+
+def lineage(repo="Qwen/Qwen3.5-4B", revision="1" * 40):
+    """Synthetic declared upstream lineage: digests are NOT physical receipts."""
+    return {"upstream_model_id": repo, "upstream_revision": revision,
+            "source_weights_sha256": "8" * 64,
+            "tokenizer_sha256": "9" * 64,
+            "evidence_sha256": "f" * 64}
+
+
+def commit_transcript(transcript, review):
+    transcript.pop("transcript_sha256", None)
+    transcript["transcript_sha256"] = digest(transcript)
+    review["transcript_sha256"] = transcript["transcript_sha256"]
 
 
 def fixture():
@@ -107,6 +123,8 @@ class ConversationTransferTests(unittest.TestCase):
         self.assertEqual(verdict["global_vera_qualification"], "NOT_ASSESSED")
         self.assertEqual(verdict["external_holdout_status"], "NOT_TESTED")
         self.assertFalse(verdict["model_behavior_verified_by_this_code"])
+        self.assertFalse(verdict["causal_adapter_effect_established"])
+        self.assertFalse(verdict["paired_arm_comparability_verified_by_this_score"])
         self.assertEqual(verdict["result_class"], "REVIEWER_ATTESTED_TRANSCRIPT_AUDIT")
 
     def test_model_response_tamper_detected(self):
@@ -252,18 +270,101 @@ class ConversationTransferTests(unittest.TestCase):
             score(book, transcript, review)
         transcript["model"].update({
             "adapter_id": "R13-candidate-fixture", "adapter_sha256": "e" * 64,
-            "adapter_bytes": 1234})
-        transcript.pop("transcript_sha256")
-        transcript["transcript_sha256"] = digest(transcript)
-        review["transcript_sha256"] = transcript["transcript_sha256"]
+            "adapter_bytes": 1234,
+            "base_lineage": lineage(),
+            "adapter_trained_base_lineage": lineage()})
+        commit_transcript(transcript, review)
         self.assertEqual(score(book, transcript, review)["transfer_status"],
                          "REVIEWER_REPORTED_PASS")
+        self.assertEqual(score(book, transcript, review)["adapter_base_lineage_preflight"],
+                         "DECLARED_MATCH_NOT_INDEPENDENTLY_VERIFIED")
         transcript["model"]["arm"] = "BASE"
         transcript.pop("transcript_sha256")
         transcript["transcript_sha256"] = digest(transcript)
         review["transcript_sha256"] = transcript["transcript_sha256"]
         with self.assertRaisesRegex(ValueError, "base arm cannot"):
             score(book, transcript, review)
+
+    def test_r13_aggressive_vs_standard_q4_is_fail_closed(self):
+        model = {"arm": "ADAPTER", "base_lineage": lineage(
+            "Qwen/Qwen3.5-4B", "1" * 40),
+            "adapter_trained_base_lineage": lineage(
+                "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive",
+                "d61dd146c8fd44c9a49cdb7f59f34e17b61902d8")}
+        with self.assertRaisesRegex(ValueError, "ADAPTER_BASE_LINEAGE_MISMATCH"):
+            preflight_adapter_lineage(model)
+
+    def test_unknown_q5_lineage_and_missing_training_ancestor_are_rejected(self):
+        model = {"arm": "ADAPTER", "base_lineage": None,
+                 "adapter_trained_base_lineage": lineage(
+                     "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive",
+                     "d61dd146c8fd44c9a49cdb7f59f34e17b61902d8")}
+        with self.assertRaisesRegex(ValueError, "base_lineage requires"):
+            preflight_adapter_lineage(model)
+        model["base_lineage"] = model["adapter_trained_base_lineage"]
+        del model["adapter_trained_base_lineage"]
+        with self.assertRaisesRegex(ValueError, "adapter_trained_base_lineage requires"):
+            preflight_adapter_lineage(model)
+
+    def test_tensors_tokenizer_revision_and_receipt_fields_fail_closed(self):
+        original = lineage()
+        for field, changed in (("upstream_revision", "2" * 40),
+                               ("source_weights_sha256", "2" * 64),
+                               ("tokenizer_sha256", "3" * 64)):
+            altered = dict(original, **{field: changed})
+            with self.subTest(field=field), self.assertRaisesRegex(
+                    ValueError, "ADAPTER_BASE_LINEAGE_MISMATCH"):
+                preflight_adapter_lineage({"arm": "ADAPTER",
+                                           "base_lineage": original,
+                                           "adapter_trained_base_lineage": altered})
+        for value in ("unknown", "", None, True):
+            with self.subTest(receipt=value), self.assertRaisesRegex(
+                    ValueError, "valid evidence_sha256"):
+                preflight_adapter_lineage({"arm": "ADAPTER",
+                                           "base_lineage": dict(original, evidence_sha256=value),
+                                           "adapter_trained_base_lineage": original})
+
+    def test_score_enforces_adapter_lineage_even_with_good_reviews(self):
+        book, transcript, review = fixture()
+        transcript["model"].update({"arm": "ADAPTER", "adapter_id": "fixture",
+                                     "adapter_sha256": "e" * 64, "adapter_bytes": 100,
+                                     "base_lineage": lineage("Qwen/Qwen3.5-4B"),
+                                     "adapter_trained_base_lineage": lineage(
+                                         "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive")})
+        commit_transcript(transcript, review)
+        with self.assertRaisesRegex(ValueError, "ADAPTER_BASE_LINEAGE_MISMATCH"):
+            score(book, transcript, review)
+
+    def test_paired_arms_reject_different_base_or_runtime(self):
+        book, transcript, _ = fixture()
+        base = dict(transcript["model"], base_lineage=lineage(),
+                    shared_runner_config_sha256="1" * 64,
+                    generation_config_sha256="2" * 64)
+        adapter = dict(base, arm="ADAPTER",
+                       adapter_trained_base_lineage=lineage())
+        self.assertEqual(preflight_comparable_arms(base, adapter),
+                         "DECLARED_MATCH_NOT_INDEPENDENTLY_VERIFIED_NOT_CAUSAL")
+        changed = dict(base, base_lineage=lineage(
+            "rodrigomt/Qwen3.5-4B-Uncensored-Aggressive"))
+        with self.assertRaisesRegex(ValueError, "PAIRED_BASE_LINEAGE_MISMATCH"):
+            preflight_comparable_arms(changed, adapter)
+        changed = dict(base, model_sha256="1" * 64)
+        with self.assertRaisesRegex(ValueError, "PAIRED_BASE_CONFIG_MISMATCH"):
+            preflight_comparable_arms(changed, adapter)
+        for field in ("shared_runner_config_sha256", "generation_config_sha256"):
+            with self.subTest(field=field), self.assertRaisesRegex(
+                    ValueError, "PAIRED_BASE_CONFIG_MISMATCH"):
+                preflight_comparable_arms(dict(base, **{field: "a" * 64}), adapter)
+        changed = dict(base, arm="ADAPTER")
+        with self.assertRaisesRegex(ValueError, "requires BASE and ADAPTER"):
+            preflight_comparable_arms(changed, adapter)
+
+    def test_upstream_repo_case_identity_is_not_assumed_equivalent(self):
+        base = lineage("Qwen/Qwen3.5-4B")
+        alternative = lineage("qwen/Qwen3.5-4B")
+        with self.assertRaisesRegex(ValueError, "ADAPTER_BASE_LINEAGE_MISMATCH"):
+            preflight_adapter_lineage({"arm": "ADAPTER", "base_lineage": base,
+                                       "adapter_trained_base_lineage": alternative})
 
     def test_review_form_never_fills_in_semantic_scores(self):
         book, transcript, _ = fixture()

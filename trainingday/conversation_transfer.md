@@ -73,6 +73,66 @@ itself does **not** run a model.
    A BASE arm must not silently carry any adapter fields. The base and adapter
    arms share the same casebook commitment but have separate transcript hashes.
 
+   **Adapter ancestry is a mandatory fail-closed preflight.** An ADAPTER arm
+   must also carry **both** `model.base_lineage` (the actual GGUF's *underlying
+   unquantized checkpoint*) and `model.adapter_trained_base_lineage` (the
+   checkpoint on which the adapter was trained), each in this format:
+
+   ```json
+   {
+     "upstream_model_id": "owner/repository",
+     "upstream_revision": "<exact 40-hex source commit>",
+     "source_weights_sha256": "<64-hex SHA-256 of curated source-weight manifest>",
+     "tokenizer_sha256": "<64-hex SHA-256 of curated tokenizer manifest>",
+     "evidence_sha256": "<64-hex SHA-256 of separate custody evidence receipt>"
+   }
+   ```
+
+   The four identity fields (repository, revision, source-weight manifest
+   digest, tokenizer manifest digest) must match exactly across the two
+   objects. The evidence receipts can differ, since their custodians and
+   sampling methods can differ. An unknown/missing provenance item, a mutable
+   branch instead of a commit, or any mismatch rejects the entire ADAPTER
+   transcript **before semantic scoring**. An ordinary GGUF SHA-256 is *not*
+   `source_weights_sha256`: quantization changes tensor bytes, and the
+   quantizer's hosting repository need not be the underlying checkpoint repo.
+   The separate evidence receipt must be audited against original file/manifests
+   and physical tensors outside this source-only tool. Matching *self-declared*
+   strings is **not** independent proof of compatible ancestry; the evaluator
+   returns `DECLARED_MATCH_NOT_INDEPENDENTLY_VERIFIED` and
+   `physical_adapter_ancestry_verified_by_this_code: false` even on a match.
+   Repository IDs are compared **exactly, including case**; alias or case
+   equivalence must be established separately, never guessed by this code.
+   A single-arm `evaluate` always reports
+   `paired_arm_comparability_verified_by_this_score: false` and
+   `causal_adapter_effect_established: false`. For a proposed A/B result,
+   both arms must separately pass source validation **and** the additional
+   Python `preflight_comparable_arms(base_model, adapter_model)` check. That
+   rejects different source ancestry, GGUF model SHA, runtime binary, persona,
+   source commit, host, context size, or `shared_runner_config_sha256` and
+   `generation_config_sha256` between arms. The last two are mandatory
+   64-hex commitments to independently preserved, canonical records of the
+   *shared* runtime flags/template (excluding the explicit adapter-loading
+   delta) and sampling parameters, seed, temperature and context policy.
+   Literal `runner` strings may differ by `--lora` versus no adapter, so
+   equality of the strings alone would be the wrong test. All such config
+   receipts remain self-reported until compared with real process/runner logs.
+   Even a declared pair match requires independent physical custody and
+   blinded behavior comparison before any causal benefit claim.
+
+   **Concrete NO-GO (2026-11-05):** Lappy's R13 `adapter_config.json` points
+   to a local base whose `MODEL_MANIFEST.json` identifies
+   `rodrigomt/Qwen3.5-4B-Uncensored-Aggressive` at
+   `d61dd146c8fd44c9a49cdb7f59f34e17b61902d8`; the proposed Q4_K_M
+   comparator is hosted by `lmstudio-community/Qwen3.5-4B-GGUF` and declares
+   the standard `Qwen/Qwen3.5-4B` as its upstream. These are not established
+   to be identical training weights. Successful `llama_load_exit0` does *not*
+   repair the ancestry gap. The older unlabeled `model_q5_k_s.gguf` has no
+   proven source lineage; it also cannot be presumed an R13-matched base.
+   Do **not** interpret either pairing as a causal adapter A/B until separately
+   qualified. An official Q4 *prompt-only BASE* experiment is a different,
+   permissible question and must not be presented as proof of LoRA benefit.
+
 4. Give an independent reviewer the read-only casebook and complete transcript.
    Generate a deliberately unscored form:
 
@@ -125,6 +185,7 @@ itself does **not** run a model.
 | Real raw transcript + hashes | A particular model/runtime response if provenance independently read back | Correctness, intent comprehension, or unchanged effective KV context by itself |
 | Review with quoted turn evidence | A named reviewer **reported** a quality judgment | Reviewer independence, semantic truth, or model generalization by itself |
 | `evaluate` output | Valid schema, unchanged prompts, transcript/review commitments, reviewer-reported pass/fail | Autonomous human-quality grading, tool execution, training, deployment, or completed runbook qualification |
+| ADAPTER ancestry preflight | Supplied upstream repository/revision/manifest/tokenizer fields are complete and identical | That those fields are honest, GGUF tensor ancestry was physically proven, or the adapter improved behavior |
 
 The reviewer can be wrong or colluding; a SHA does not make subjective scores
 true. `context_history_verified` and `independence_attested` are assertions
