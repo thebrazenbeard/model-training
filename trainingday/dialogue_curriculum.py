@@ -27,6 +27,21 @@ ROW_FIELDS = frozenset({
 })
 MESSAGE_FIELDS = frozenset({"role", "content"})
 
+# Unicode 18.0 Default_Ignorable_Code_Point, compressed from the authoritative
+# DerivedCoreProperties.txt ranges. Reject rather than strip: ZWJ and variation
+# selectors can be meaningful in other writing systems. This *fictional source
+# candidate* requires unambiguous displayed text, not general Unicode folding.
+# https://www.unicode.org/Public/18.0.0/ucd/DerivedCoreProperties.txt
+_DEFAULT_IGNORABLE_U18 = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C),
+    (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F),
+    (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F),
+    (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+
 # Independently written, imaginary scenes. There are no personal-chat exports,
 # real user histories, live runtime claims, or proprietary persona phrases here.
 # A family block holds ten *distinct scenarios*, with the last two for DEV.
@@ -165,6 +180,11 @@ def _normalized_prompt(prompt: str) -> str:
     return " ".join(unicodedata.normalize("NFKC", prompt).casefold().split())
 
 
+def _contains_default_ignorable(text: str) -> bool:
+    return any(start <= ord(char) <= end
+               for char in text for start, end in _DEFAULT_IGNORABLE_U18)
+
+
 def candidate_rows(split: str | None = None) -> list[dict]:
     """Return source candidates only. 'heldout' is intentionally impossible."""
     if split is not None and split not in ALLOWED_SPLITS:
@@ -212,6 +232,8 @@ def validate(rows: list[dict], split: str | None = None) -> None:
                type(m["role"]) is not str or type(m["content"]) is not str
                for m in messages):
             raise ValueError("dialogue message fields mismatch")
+        if any(_contains_default_ignorable(m["content"]) for m in messages):
+            raise ValueError("default-ignorable Unicode in dialogue text")
     expected_count = {None: 80, "train": 64, "dev": 16}[split]
     if len(rows) != expected_count or len({r["id"] for r in rows}) != len(rows):
         raise ValueError("candidate cardinality/identity mismatch")
