@@ -110,3 +110,25 @@ The original failed Q4 receipt was unchanged (SHA-256
 `cf4a47e8a52a877bf574d454773a53d2607ff4eed977416be4885a243fa3ddc6`),
 and its nonce remains consumed. This verifies the fast-exit accounting fix
 on actual Windows, not that the GGUF runner loads or produces text.
+
+## Revised stager source and Windows offline qualification
+
+The first stager's 19-file allowlist was repaired to require four additional
+native DLLs and enforce the nine-file minimum CLI/CPU dependency candidate
+set before any extraction write. A new `-CopyFromVerifiedStage` option requires
+a distinct canonical sibling leaf, refuses an existing destination, refuses
+explicit blank source arguments, reads the original archive/model without
+mutating them, and verifies hashes before and after bounded streaming copy.
+
+Independent hostile review conditionally approved Windows offline tests only.
+Exact source was transferred and SHA-verified on VN1:
+
+- `Q4Stager.Core.ps1` `4deda1e08e0ede2e427e505cbee55102f37cd29d135ebfd513908a88b1b53d3b`
+- `Stage-Q4Trial.ps1` `8015c18593d1a459ebf6b71107a1c437980e7bf6ca66c3a63ec101e8ecc13c87`
+- `Test-Q4Stager.ps1` `14f741b557f546114606e79f5fe5f3ac1171f33124b3f92d10c351a27c855a8e`
+
+`powershell.exe -NoProfile -File Test-Q4Stager.ps1` returned
+`STAGER_V2_OFFLINE_TEST_EXIT=0` and a PASS for archive ZIP path safety,
+exact dependency allowlisting, pre-extraction missing-DLL rejection,
+hash/size failures, sibling copying, collision preservation, private ACLs,
+and concurrent directory creation. This is not a full model runtime test.
