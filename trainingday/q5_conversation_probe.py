@@ -9,8 +9,8 @@ This module neither starts a model server nor attests the server's weights.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
-import http.client
 import json
 import os
 from pathlib import Path
@@ -139,30 +139,71 @@ def _endpoint(url: str) -> tuple[str, int, str]:
 
 
 def local_chat(url: str, messages: list[dict], seed: int,
-               timeout: int = 30) -> dict:
+               timeout: float = 30) -> dict:
+    """One total wall deadline across connect, write, headers and body.
+
+    A socket's per-read timeout is insufficient: a drip server could send
+    one byte per timeout and keep a host lease occupied indefinitely.
+    """
     host, port, path = _endpoint(url)
-    if type(timeout) is not int or not 1 <= timeout <= 30:
+    if type(timeout) not in (int, float) or not 0 < timeout <= 30:
         raise ValueError("invalid request timeout")
-    request = {
+    payload = _canonical({
         "messages": messages,
         "temperature": GENERATION["temperature"],
         "max_tokens": GENERATION["max_tokens"],
         "seed": seed,
         "stream": False,
-    }
-    connection = http.client.HTTPConnection(host, port, timeout=timeout)
+    })
+
+    async def request():
+        reader, writer = await asyncio.open_connection(host, port, limit=8192)
+        try:
+            request_head = (
+                "POST " + path + " HTTP/1.1\r\n"
+                "Host: 127.0.0.1\r\n"
+                "Content-Type: application/json\r\n"
+                "Accept: application/json\r\n"
+                "Content-Length: " + str(len(payload)) + "\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii")
+            writer.write(request_head + payload)
+            await writer.drain()
+            head = await reader.readuntil(b"\r\n\r\n")
+            if len(head) > 8192:
+                raise ValueError("upstream headers exceed bound")
+            lines = head[:-4].decode("latin1").split("\r\n")
+            status = lines.pop(0).split()
+            if len(status) < 2 or status[0] not in ("HTTP/1.0", "HTTP/1.1") or status[1] != "200":
+                raise OSError("local upstream returned non-200")
+            headers = {}
+            for line in lines:
+                if ":" not in line:
+                    raise ValueError("malformed upstream headers")
+                key, value = line.split(":", 1)
+                key = key.lower().strip()
+                if key in headers:
+                    raise ValueError("duplicate upstream header")
+                headers[key] = value.strip()
+            if "transfer-encoding" in headers:
+                raise ValueError("chunked upstream response unsupported")
+            if not headers.get("content-type", "").lower().startswith("application/json"):
+                raise ValueError("upstream did not return JSON")
+            number = headers.get("content-length", "")
+            if not number.isascii() or not number.isdecimal():
+                raise ValueError("strict content length required")
+            length = int(number)
+            if not 0 < length <= MAX_REPLY_BYTES:
+                raise ValueError("upstream response exceeds byte budget")
+            raw = await reader.readexactly(length)
+            return json.loads(raw)
+        finally:
+            writer.close()
+
     try:
-        connection.request("POST", path, body=_canonical(request),
-                           headers={"Content-Type": "application/json"})
-        response = connection.getresponse()
-        if response.status != 200:
-            raise OSError("local upstream returned non-200")
-        raw = response.read(MAX_REPLY_BYTES + 1)
-        if len(raw) > MAX_REPLY_BYTES:
-            raise ValueError("upstream response exceeds byte budget")
-        return json.loads(raw)
-    finally:
-        connection.close()
+        return asyncio.run(asyncio.wait_for(request(), timeout=timeout))
+    except (asyncio.LimitOverrunError, EOFError) as exc:
+        raise ValueError("invalid upstream HTTP framing") from exc
 
 
 def _reply(reply: object) -> tuple[str, str | None]:
@@ -199,14 +240,17 @@ def execute(case_id: str, seed: int, system_prompt: str, transport,
     results = []
     started = monotonic()
     for user in dict(CASES)[case_id]:
-        if monotonic() - started >= MAX_SESSION_SECONDS:
+        remaining = MAX_SESSION_SECONDS - (monotonic() - started)
+        if remaining <= 0:
             results.append({"user": user, "assistant": None, "outcome": "timeout"})
             break
         messages.append({"role": "user", "content": user})
         try:
-            wire = transport(messages, seed)
+            wire = transport(messages, seed, min(30, remaining))
             outcome, assistant = _reply(wire)
-        except (OSError, TimeoutError, ValueError, TypeError):
+        except TimeoutError:
+            outcome, assistant = "timeout", None
+        except (OSError, ValueError, TypeError, RuntimeError):
             outcome, assistant = "upstream_error", None
         results.append({"user": user, "assistant": assistant, "outcome": outcome})
         if outcome != "complete":
@@ -281,7 +325,8 @@ def main(argv=None) -> int:
         prompt = args.system_prompt_file.read_text(encoding="utf-8")
         review, receipt = execute(
             args.case, args.seed, prompt,
-            lambda messages, seed: local_chat(args.endpoint, messages, seed))
+            lambda messages, seed, timeout:
+                local_chat(args.endpoint, messages, seed, timeout=timeout))
         private_write(args.private_output_dir, review, receipt)
     except (ValueError, OSError, UnicodeError, TypeError) as exc:
         # The system prompt and user-owned output may be sensitive.
