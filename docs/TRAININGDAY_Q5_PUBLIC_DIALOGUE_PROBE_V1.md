@@ -105,7 +105,11 @@ is needed.
 Use a preexisting, separately protected client API-key file containing a
 single printable ASCII token with an optional trailing line ending. No token
 file, bearer value, or source copy belongs in GitHub. POSIX clients reject
-group/other-readable key files; on Windows the owner must independently inspect
+symlinks, non-absolute key paths, non-owner key files, and key files whose
+immediate parent is not owned by the current user and mode 0700. POSIX keys
+are opened with `O_NOFOLLOW` and inspected via `fstat` before a bounded read.
+This does not attest every ancestor in a hostile writable filesystem or
+establish runtime endpoint identity. On Windows the owner must independently inspect
 NTFS ACLs for the client key and its parent directory before use. The CLI
 refuses inference if the key file is absent, malformed, or the operator has not
 explicitly opted in. The owner must also test that the raw endpoint rejects

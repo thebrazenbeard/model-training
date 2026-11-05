@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import sys
 import time
 from urllib.parse import urlsplit
@@ -144,14 +145,33 @@ def _client_api_key_file(path: Path) -> str:
     The caller is responsible for independently qualifying Windows NTFS ACLs.
     POSIX file modes are checked here; no token value enters a receipt/log.
     """
-    path = path.resolve(strict=True)
+    if not path.is_absolute() or path != path.resolve(strict=True):
+        raise ValueError("absolute non-symlink client key path required")
     if not path.is_file():
         raise ValueError("existing client API-key file required")
-    if not 1 <= path.stat().st_size <= 514:
-        raise ValueError("client API-key file exceeds size bound")
-    if os.name != "nt" and (path.stat().st_mode & 0o077):
-        raise ValueError("client API-key file must be owner-only")
-    raw = path.read_bytes()
+    if os.name != "nt":
+        parent = path.parent.stat()
+        if (parent.st_uid != os.geteuid() or parent.st_mode & 0o077):
+            raise ValueError("client API-key parent must be owner-only")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            identity = os.fstat(fd)
+            if (not stat.S_ISREG(identity.st_mode)
+                    or identity.st_uid != os.geteuid()
+                    or identity.st_mode & 0o077):
+                raise ValueError("client API-key file must be owner-only")
+            if not 1 <= identity.st_size <= 514:
+                raise ValueError("client API-key file exceeds size bound")
+            raw = os.read(fd, 515)
+        finally:
+            os.close(fd)
+    else:
+        # Python's POSIX mode bits cannot attest Windows NTFS ACLs. An
+        # independent owner-qualified host witness remains mandatory.
+        if not 1 <= path.stat().st_size <= 514:
+            raise ValueError("client API-key file exceeds size bound")
+        raw = path.read_bytes()
     if raw.endswith(b"\n"):
         raw = raw[:-1]
     if raw.endswith(b"\r"):

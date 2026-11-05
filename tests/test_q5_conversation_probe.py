@@ -336,7 +336,17 @@ class Q5ProbeContractTests(unittest.TestCase):
             path.write_bytes(b"SYNTHETIC_OWNER_KEY\n")
             os.chmod(path, 0o600)
             self.assertEqual(_client_api_key_file(path), "SYNTHETIC_OWNER_KEY")
+            path.write_bytes(b"SYNTHETIC_OWNER_KEY\r\n")
+            self.assertEqual(_client_api_key_file(path), "SYNTHETIC_OWNER_KEY")
             if os.name != "nt":
+                symlink = Path(tmp) / "alias-key.txt"
+                symlink.symlink_to(path)
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    _client_api_key_file(symlink)
+                os.chmod(tmp, 0o755)
+                with self.assertRaisesRegex(ValueError, "parent"):
+                    _client_api_key_file(path)
+                os.chmod(tmp, 0o700)
                 os.chmod(path, 0o644)
                 with self.assertRaisesRegex(ValueError, "owner-only"):
                     _client_api_key_file(path)
