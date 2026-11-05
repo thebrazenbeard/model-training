@@ -23,6 +23,22 @@ Run offline: `python -m unittest tests.test_trainingday_matched_method_compariso
    Never pool these two studies or describe either as a fully controlled
    head-to-head on algorithm alone.
 
+**R16 geometry is not this study's validated adapter geometry.** Source
+`trainingday/train_neural.py` at
+[`9a6c3b72`](https://github.com/thebrazenbeard/model-training/blob/9a6c3b72ef8ad425fa4df371ee10cf700972c8cd/trainingday/train_neural.py)
+configures PEFT LoRA `r=4`, `lora_alpha=16`, and `target_modules="all-linear"`
+with an 8-bit AdamW optimizer. That is **not** interchangeable with the
+separate minimal `q_proj/v_proj` pilot in Draft
+[#246](https://github.com/thebrazenbeard/model-training/pull/246), which
+intentionally covers just the eight full-attention Qwen3.5 decoder layers and
+no adapters in the other 24 Gated DeltaNet layers. Any physical matched study
+must bind and independently inspect the **actual** installed target module
+names, LoRA rank/scaling, trainable tensor shapes/bytes, quantized-backbone
+settings and resulting optimizer, identically for both method arms; the
+current `lora_target_spec_sha256` is merely a caller-supplied declaration.
+Neither this source-only plan nor historical R16 marginal accuracy numbers
+qualify a method-isolated, geometry-matched physical comparison.
+
 Each study seed gets **seven** arms: MeZO / QLoRA crossed with correct,
 corrupted and zero-update label modes, **plus an untouched official base
 reference with no adapter**. Three seeds produce 21 independently named arms.
@@ -72,13 +88,21 @@ arm's adapter hash alone never proves reasoning improvement or proper updates.
 ### Actual ordered TRAIN content and label-custody commitment
 
 The V4 plan **requires** a distinct `schedule_commitments` entry for every
-seed, with exactly three SHA-256 digests: `train_order_sha256`,
-`correct_labels_sha256`, and `corrupted_labels_sha256`. The pure helper
+seed, with four SHA-256 digests: `train_order_sha256`,
+`correct_labels_sha256`, `corrupted_labels_sha256`, and
+`corrupted_assignment_content_sha256`. The pure helper
 `commit_training_schedule(seed, ordered_rows)` generates these from the
 full ordered `(row_id, input)` sequence and, separately, the ordered
 `(row_id, assigned_label)` pairs for each correct/corrupted condition. It
-canonicalizes UTF-8 JSON with sorted object keys, no insignificant spaces,
-domain labels, and the seed. Each input row must carry distinct `row_id`,
+canonicalizes UTF-8 JSON with sorted object keys and no insignificant spaces.
+The first three receipt-binding digests include the seed; the fourth is a
+**seed-neutral content digest** of the corrupted `(input, assigned_label)`
+multiset, sorted lexicographically while preserving duplicates. This fourth
+digest makes exact corrupted TRAIN content reuse detectable across seeds even
+when the per-seed digests differ because of their salt, row IDs are relabeled,
+or example order differs. It remains an **untrusted caller
+commitment**, not independent evidence that a host used those assignments.
+Each input row must carry distinct `row_id`,
 `input`, `correct_label`, and `corrupted_label` strings. The model adapter
 must build these *from the actual admitted TRAIN rows after the corruption
 transform* and independently re-hash the data at read time: a made-up digest

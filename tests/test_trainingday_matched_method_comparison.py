@@ -164,6 +164,48 @@ class MatchedMethodStudyTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(MatchedStudyError):
                 build_study_plan(**proposed)
 
+    def test_reused_corrupted_assignments_rejected_despite_seed_salted_hashes(self):
+        # The existing per-seed digest includes the seed, so assigning the
+        # identical wrong label to every row for every seed creates different
+        # digests even though the actual corruption assignments are identical.
+        proposed = spec()
+        same_assignments = [
+            {"row_id": f"row-{i}", "input": f"prompt-{i}",
+             "correct_label": f"answer-{i}", "corrupted_label": f"wrong-{i}"}
+            for i in range(3)
+        ]
+        proposed["schedule_commitments"] = [
+            commit_training_schedule(seed, list(reversed(same_assignments))
+                                     if seed == 13 else same_assignments)
+            for seed in proposed["seeds"]
+        ]
+        self.assertEqual(len({row["corrupted_labels_sha256"] for row
+                              in proposed["schedule_commitments"]}), 3)
+        with self.assertRaisesRegex(MatchedStudyError, "reused.*corruption"):
+            build_study_plan(**proposed)
+
+    def test_corrupted_content_reuse_rejected_even_if_row_ids_are_renamed(self):
+        proposed = spec()
+        schedule = []
+        for seed in proposed["seeds"]:
+            rows = [
+                {"row_id": f"seed-{seed}-row-{i}", "input": f"prompt-{i}",
+                 "correct_label": f"answer-{i}", "corrupted_label": f"wrong-{i}"}
+                for i in range(3)]
+            if seed == 13:
+                rows.reverse()
+            schedule.append(commit_training_schedule(seed, rows))
+        proposed["schedule_commitments"] = schedule
+        self.assertEqual(len({row["corrupted_labels_sha256"] for row
+                              in proposed["schedule_commitments"]}), 3)
+        with self.assertRaisesRegex(MatchedStudyError, "reused.*corruption"):
+            build_study_plan(**proposed)
+
+    def test_distinct_corruption_assignments_same_training_prompts_survive(self):
+        # Negative-control uniqueness should not forbid distinct wrong labels
+        # when all seeds intentionally use the same TRAIN input population.
+        self.assertEqual(len(build_study_plan(**spec())["arms"]), 21)
+
     def test_receipt_shape_covers_all_arms_but_does_not_authenticate(self):
         plan = build_study_plan(**spec())
         result = validate_untrusted_receipts(plan, receipts(plan))

@@ -72,16 +72,28 @@ def commit_training_schedule(seed: int, ordered_rows: Sequence[Mapping[str, str]
         payload = {"domain": domain, "seed": seed, "ordered_values": values}
         return hashlib.sha256(_canonical_bytes(payload)).hexdigest()
 
+    # The per-seed corrupted-label digest is deliberately seed-salted for
+    # receipt binding, but two *identical label assignments* under different
+    # seeds must also be detectable. A second commitment excludes the seed and
+    # caller-controlled row IDs, sorting the (input, corrupted-label) multiset
+    # so neither row-ID relabeling nor order shuffling can disguise reuse.
+    corruption_content = hashlib.sha256(_canonical_bytes({
+        "domain": "corrupted-label-assignment-content-v1",
+        "assignments_by_input": sorted([input_row[1], bad_row[1]]
+                                       for input_row, bad_row
+                                       in zip(input_rows, corrupted)),
+    })).hexdigest()
     return {"seed": seed,
             "train_order_sha256": digest("training-input-order-v1", input_rows),
             "correct_labels_sha256": digest("correct-label-assignment-v1", correct),
-            "corrupted_labels_sha256": digest("corrupted-label-assignment-v1", corrupted)}
+            "corrupted_labels_sha256": digest("corrupted-label-assignment-v1", corrupted),
+            "corrupted_assignment_content_sha256": corruption_content}
 
 
 def _schedule(seeds: Sequence[int], rows: Sequence[Mapping[str, object]]) -> dict:
     """Demand precommitted ordered rows and both label schedules per seed."""
     required = {"seed", "train_order_sha256", "correct_labels_sha256",
-                "corrupted_labels_sha256"}
+                "corrupted_labels_sha256", "corrupted_assignment_content_sha256"}
     if type(rows) not in (tuple, list) or len(rows) != len(seeds):
         raise MatchedStudyError("complete predeclared per-seed label schedule required")
     result = {}
@@ -95,7 +107,9 @@ def _schedule(seeds: Sequence[int], rows: Sequence[Mapping[str, object]]) -> dic
         result[row["seed"]] = dict(row)
     if (set(result) != set(seeds)
             or len({x["corrupted_labels_sha256"] for x in result.values()})
-            != len(seeds)):
+            != len(seeds)
+            or len({x["corrupted_assignment_content_sha256"]
+                    for x in result.values()}) != len(seeds)):
         raise MatchedStudyError("reused or missing seed-specific corruption schedule")
     return result
 
