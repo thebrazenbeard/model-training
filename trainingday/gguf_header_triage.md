@@ -69,17 +69,20 @@ unconverted/unqualified for a GGUF adapter at the cited checkpoints.
 
 ### Public provenance lead (not a match receipt)
 
-The public model card at
+The public repository at
 [`tinyopsec/Qwen3.5-4B-Uncensored-Aggressive-GGUF`](https://huggingface.co/tinyopsec/Qwen3.5-4B-Uncensored-Aggressive-GGUF)
-describes a GGUF quantization of the `rodrigomt` Aggressive checkpoint and
-lists a generic `model_q5_k_s.gguf` at roughly **3.07 GB**. The unrelated
-Lappy filename is identical and its **3,072,993,056-byte** file size is near
-that rounded figure. This is a **SEARCH LEAD ONLY**: file names and rounded
-sizes do not prove matching SHA-256, exact upstream revision, conversion
-parameters, or tokenizer. In fact, the card's prose says "Qwen2 (28 layers)"
-while its GGUF model summary says `qwen35`, a contradiction that prevents
-treating the card's architecture details as reliable proof. No model or file
-was downloaded, moved or hashed by this source investigation.
+describes a GGUF quantization of the `rodrigomt` Aggressive checkpoint.
+Its exact [`model_q5_k_s.gguf` file page](https://huggingface.co/tinyopsec/Qwen3.5-4B-Uncensored-Aggressive-GGUF/blob/main/model_q5_k_s.gguf)
+reports rounded **3.07 GB**, SHA-256
+`15150f534dc90ee15c82320ccc014463db7985205a7161228cff89b925fd1216`,
+Xet hash `85203e0c3b62cd99aa40a671c40d9d711a81dfb999f678bbeee0ba52c72aad67`.
+The **narrative model card contradicts** its file listing: it says Q5_K_S is
+`~2.5 GB` and "Qwen2 (28 layers)", whereas the automatically shown GGUF
+summary says `qwen35`. The unrelated Lappy Q5 has the same generic basename
+and is **3,072,993,056 bytes**. Matching an approximate number and filename
+is a **SEARCH LEAD ONLY**, not an exact byte identity, repository revision,
+source-weight match, tokenizer match, or license/custody proof. No model or
+file was downloaded, moved, fully hashed, or loaded in this investigation.
 
 Reference format specification: [ggml GGUF v3](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
 and [gguf.h](https://github.com/ggml-org/ggml/blob/master/include/gguf.h).
