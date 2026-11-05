@@ -47,27 +47,42 @@ headers may be larger or differ in format; a parser refusal is `UNKNOWN`, not
 evidence that the model is bad. Untrusted metadata itself can also lie. Never
 automatically trust or import metadata as a trained-base manifest.
 
-## What would make the local Q5 an eligible *candidate* for R13?
+## What would make local Q5 eligible for H07? (not R13)
 
-1. **File identity passed (W48):** the host custodian independently hashed the
-   existing Q5 file and matched the full SHA-256 and byte count to a public HF
-   LFS pointer. Recover the creation/download manifest and exact upstream
-   repository/revision, original source-shard SHA and tokenizer custody.
-2. Match those external manifests to R13's **actual** `adapter_config.json`
-   donor and `D:\VERA\models\latest-trained\base` shard custody, not just the
-   model family or name. Historical R13 donor is
-   `rodrigomt/Qwen3.5-4B-Uncensored-Aggressive@d61dd146c8fd44c9a49cdb7f59f34e17b61902d8`.
-3. Independently verify the GGUF quantizer/source chain is derived from that
-   donor and preserves compatible tokenizer, tensor mapping and LoRA targets.
-4. Only after owner-exclusive host resource/lease approval, proceed to a
-   bounded technical load and separately blinded conversational comparison.
+1. **File identity passed (W48):** the host custodian independently hashed
+   Q5 and matched its SHA-256 and byte count to a public HF LFS pointer.
+   Recover its immutable upstream revision, source-shard and tokenizer custody.
+2. Match those manifests to the **H07 rule-transfer V2** package at
+   `D:\\VERA\\models\\latest-trained\\MODEL_MANIFEST.json`, its
+   `adapter\\adapter_config.json`, and the actual `base` shards.
+   The H07 manifest declares donor
+   `rodrigomt/Qwen3.5-4B-Uncensored-Aggressive@d61dd146c8fd44c9a49cdb7f59f34e17b61902d8`,
+   adapter SHA-256
+   `2b628e90c9ceee52bf4ddcba3f7d77187265f6d62813f8cdcd1265792f531d7f`.
+   Its embedded `C:\\Vera` strings are **obsolete**: physical files are
+   under `D:\\VERA` and require new path readback.
+3. Independently verify Q5's actual quantizer/source chain, tokenizer,
+   tensor mapping and adapter LoRA targets against H07's trained donor.
+4. Only after an owner-exclusive physical resource/port lease, proceed to
+   technical loading and separately blinded behavioral comparison.
 
-Until all these are satisfied, R13+standard Q4 is **HARD NO-GO**, and the
-preexisting Q5 has **verified GGUF binary identity but UNKNOWN trained-base
-compatibility / NOT QUALIFIED for R13**. The separate official
+**Distinct R13 profile:** The read-only live-host file
+`D:\\VERA\\model-profiles\\vera-qwen35-r13-20261029\\qualification.json`
+names `lmstudio-community/Qwen3.5-4B-GGUF@f9f88ac3e234be915e23811a6d28ea287bdb927e`
+Q4 base SHA-256 `25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c`
+and converted adapter SHA-256
+`0211e111b712053a45e5014bec4436207fa83b8344247f4e4b92a5c203d1eeb6`.
+Its declared `RUNNABLE_WITH_ADAPTER_NOT_BEHAVIORALLY_QUALIFIED` status is
+**not** a trained-base identity proof or behavioral acceptance. It contains no
+immutable R13 training-base lineage. **R13+Q5 and H07+Q5 are separately
+NO-GO for causal LoRA A/B** pending exact physical provenance; do not
+conflate H07 and R13. An unrelated prompt-only Q5 BASE trial may be
+independently qualified under a host lease. The separate official
 `Qwen/Qwen3.5-4B@851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a` + R16
-lineage is a different experiment; its 496-tensor correct8 LoRA remains
-unconverted/unqualified for a GGUF adapter at the cited checkpoints.
+lineage is another experiment and its correct8 LoRA remains
+unconverted/unqualified for GGUF inference.
+
+[W50 live-host evidence correction](https://github.com/thebrazenbeard/chat-communication-bus/issues/404#issuecomment-6650655645).
 
 ### Verified GGUF binary identity, not trained-base compatibility
 
