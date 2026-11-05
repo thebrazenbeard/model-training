@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import socket
 import tempfile
+import time
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
@@ -35,9 +36,11 @@ class Q5ProbeContractTests(unittest.TestCase):
 
     def test_normal_multi_turn_only_forwards_completed_assistant_text(self):
         sent = []
-        def fake_transport(messages, seed):
+        def fake_transport(messages, seed, timeout):
             sent.append(json.loads(json.dumps(messages)))
             self.assertEqual(seed, SEEDS[0])
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, 30)
             return completed("Mock assistant turn " + str(len(sent)))
         review, custody = execute(CASES[0][0], SEEDS[0], "mock prompt", fake_transport)
         self.assertEqual(len(review["turns"]), 3)
@@ -57,7 +60,7 @@ class Q5ProbeContractTests(unittest.TestCase):
 
     def test_length_limited_never_replays_or_writes_partial(self):
         seen = []
-        def fake(messages, seed):
+        def fake(messages, seed, timeout):
             seen.append(messages)
             return {"choices": [{"finish_reason": "length", "message": {
                 "role": "assistant", "content": "SECRET_PARTIAL_CANARY"}}]}
@@ -87,7 +90,7 @@ class Q5ProbeContractTests(unittest.TestCase):
 
     def test_private_output_is_no_overwrite_and_blinded(self):
         review, receipt = execute(CASES[0][0], SEEDS[0], "PRIVATE_TEST_PROMPT",
-                                  lambda m, s: completed())
+                                  lambda m, s, t: completed())
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             os.chmod(root, 0o700)
@@ -107,7 +110,7 @@ class Q5ProbeContractTests(unittest.TestCase):
     def test_refuse_public_repo_output_and_world_readable_parent(self):
         from trainingday import q5_conversation_probe as subject
         review, receipt = execute(CASES[0][0], SEEDS[0], "mock",
-                                  lambda m, s: completed())
+                                  lambda m, s, t: completed())
         with self.assertRaisesRegex(ValueError, "source repository"):
             private_write(Path(subject.__file__).resolve().parents[1], review, receipt)
         if os.name != "nt":
@@ -152,17 +155,17 @@ class Q5ProbeContractTests(unittest.TestCase):
 
     def test_bounded_prompt_and_invalid_seed_fail(self):
         with self.assertRaises(ValueError):
-            execute(CASES[0][0], 999, "mock", lambda m, s: completed())
+            execute(CASES[0][0], 999, "mock", lambda m, s, t: completed())
         with self.assertRaises(ValueError):
-            execute(CASES[0][0], SEEDS[0], "x" * 12001, lambda m, s: completed())
+            execute(CASES[0][0], SEEDS[0], "x" * 12001, lambda m, s, t: completed())
         with self.assertRaises(ValueError):
-            execute("not_a_case", SEEDS[0], "mock", lambda m, s: completed())
+            execute("not_a_case", SEEDS[0], "mock", lambda m, s, t: completed())
 
     def test_unresponsive_transport_is_censored(self):
-        def failed(messages, seed):
+        def failed(messages, seed, timeout):
             raise socket.timeout("host state private")
         review, receipt = execute(CASES[1][0], SEEDS[0], "mock", failed)
-        self.assertEqual(review["turns"][0]["outcome"], "upstream_error")
+        self.assertEqual(review["turns"][0]["outcome"], "timeout")
         self.assertIsNone(review["turns"][0]["assistant"])
         self.assertEqual(receipt["complete_turn_count"], 0)
 
@@ -196,9 +199,59 @@ class Q5ProbeContractTests(unittest.TestCase):
         self.assertEqual(_reply(response), ("complete", "Mock answer"))
         self.assertEqual(observed[0][0], "/v1/chat/completions")
         self.assertEqual(observed[0][1]["seed"], SEEDS[0])
+        self.assertEqual(set(observed[0][1]),
+                         {"messages", "temperature", "max_tokens", "seed", "stream"})
+        # This is a raw llama.cpp probe, not the guarded web #30 schema:
+        # web #30 requires a model selector and refuses temperature/seed.
+        self.assertNotIn("model", observed[0][1])
         self.assertEqual(observed[0][1]["messages"][-1]["content"], "public test")
         self.assertNotIn("rubric", json.dumps(observed[0]))
         self.assertNotIn("expected", json.dumps(observed[0]))
+
+    def test_dripping_http_body_is_bounded_by_absolute_wall_deadline(self):
+        class Drip(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "60")
+                self.end_headers()
+                for _ in range(60):
+                    try:
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                    except OSError:
+                        break
+                    time.sleep(0.05)
+            def log_message(self, *args):
+                pass
+        with ThreadingHTTPServer(("127.0.0.1", 0), Drip) as server:
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            started = time.monotonic()
+            try:
+                port = server.server_address[1]
+                with self.assertRaises(TimeoutError):
+                    local_chat("http://127.0.0.1:" + str(port)
+                               + "/v1/chat/completions",
+                               [{"role": "user", "content": "public mock"}],
+                               SEEDS[0], timeout=0.22)
+            finally:
+                server.shutdown()
+                thread.join(timeout=2)
+            self.assertLess(time.monotonic() - started, 1.5)
+
+    def test_remaining_session_budget_is_passed_down_to_transport(self):
+        # Simulate a slow prior turn so the final request cannot spend a full
+        # fresh 30-second socket budget right before the global deadline.
+        clock = iter([0, 0, 99.5, 119.75])
+        budgets = []
+        def fake(messages, seed, timeout):
+            budgets.append(timeout)
+            return completed()
+        execute(CASES[0][0], SEEDS[0], "mock", fake,
+                monotonic=lambda: next(clock))
+        self.assertEqual(budgets, [30, 20.5, 0.25])
 
 
 if __name__ == "__main__":
