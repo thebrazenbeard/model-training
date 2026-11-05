@@ -1,0 +1,77 @@
+name: W8 Windows private custody synthetic qualification
+
+on:
+  push:
+    branches:
+      - "feature/w8-windows-custody-*"
+      - "bt2/w8-native-ntfs-custody-20261105"
+    paths:
+      - ".github/workflows/w8-windows-private-custody.yml"
+      - "trainingday/win_custody_diagnostic.py"
+      - "tests/test_win_custody_diagnostic.py"
+      - "trainingday/q5_conversation_probe.py"
+      - "tests/test_q5_conversation_probe.py"
+
+permissions:
+  contents: read
+
+jobs:
+  native-synthetic-custody:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout exact source commit without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact source identity
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          $actual = (git rev-parse --verify HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SHA) { throw 'Checkout HEAD mismatch' }
+          Write-Output "Source HEAD: $actual"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned native Win32 dependency
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --no-input "pywin32==312"
+          if ($LASTEXITCODE -ne 0) { throw 'pywin32 install failed' }
+          python -c "import os, win32security, win32file; assert os.name == 'nt'"
+          if ($LASTEXITCODE -ne 0) { throw 'native Win32 Python import failed' }
+
+      - name: Require synthetic custody test source
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath 'trainingday/win_custody_diagnostic.py')) {
+            throw 'Native diagnostic implementation absent'
+          }
+          if (-not (Test-Path -LiteralPath 'tests/test_win_custody_diagnostic.py')) {
+            throw 'Native synthetic diagnostic tests absent'
+          }
+
+      - name: Run native synthetic custody tests without skips
+        shell: pwsh
+        run: |
+          $native = "import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_win_custody_diagnostic.py'); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(0 if r.wasSuccessful() and r.testsRun >= 2 and not r.skipped else 1)"
+          python -c $native
+          if ($LASTEXITCODE -ne 0) { throw 'Native custody tests missing, skipped or failed' }
+          python -O -c $native
+          if ($LASTEXITCODE -ne 0) { throw 'Optimized native custody tests missing, skipped or failed' }
+
+      - name: Preserve baseline Q5 synthetic contract on Windows
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p 'test_q5_conversation_probe.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Q5 synthetic regression failed' }
+          python -O -m unittest discover -s tests -p 'test_q5_conversation_probe.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'Optimized Windows Q5 synthetic regression failed' }
