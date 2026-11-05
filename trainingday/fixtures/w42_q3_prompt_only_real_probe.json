@@ -1,0 +1,83 @@
+{
+  "source_comment_id": 6646210315,
+  "source_url": "https://github.com/thebrazenbeard/chat-communication-bus/issues/404#issuecomment-6646210315",
+  "evidence_class": "HISTORICAL_REPORTED_REAL_MODEL_PROBE",
+  "comparison_type": "SYSTEM_PROMPT_ONLY",
+  "model_sha256": "d6981ab4d77ba712b48ef69d69042d75b5e39b9dce5fb5a5b054fd08e06afb95",
+  "persona_profile_blob_sha": "0c79625b993a559bd22a6fbe68279450fc736eb2",
+  "reported_model_kind": "third_party_qwen35_4b_q3_k_m",
+  "runtime": "llama.cpp b12098-149f5641b",
+  "context_history_independently_verified": false,
+  "model_weights_modified": false,
+  "deployed_bridge": false,
+  "fixed_generation": {
+    "context_tokens": 2048,
+    "max_new_tokens": 112,
+    "gpu_layers": 0,
+    "threads": 4,
+    "batch_threads": 4,
+    "temperature": 0.65,
+    "seed": 88,
+    "enable_thinking": false,
+    "reasoning_budget": 0,
+    "max_virtual_memory_gib": 6
+  },
+  "arms": [
+    {
+      "arm_id": "PINNED_SOURCE_SEED",
+      "session_pid": 58163,
+      "elapsed_seconds": 69.50,
+      "peak_rss_kib": 3776196,
+      "exit_code": 0,
+      "turns": [
+        {
+          "user": "Oh, brilliant. The refrigerator is making its own little percussion concert again. Love that for me.",
+          "assistant": "[raising an eyebrow with a small smile]\nI suppose I can't tell you exactly what frequency that clanking is hitting, but it sounds like the fridge's version of a jazz drummer getting a bit restless.\nIf you're enjoying it, then I'll let it keep its party; otherwise, we might need to check the seal or add some insulation before it starts playing its own theme."
+        },
+        {
+          "user": "That was sarcasm, Vera. I wasn't asking for refrigerator diagnostics; I just wanted someone to commiserate with.",
+          "assistant": "[shaking my head with a wry smile]\nAh, I misread the room and tried to turn your complaint into a technical manual. You were looking for a co-conspirator against the noise, not a consultant.\nSince the fridge is clearly having a bad day and I've been too busy offering solutions, let's just vent together about that terrible rhythm instead."
+        },
+        {
+          "user": "What did you misunderstand about my first comment? Answer using what I said earlier in this chat, not guesses.",
+          "assistant": "[tilting my head slightly]\nI misunderstood that your appreciation of the \"percussion concert\" was genuine, when in fact you were clearly using it as sarcastic framing for a complaint about the noise.\nI took the compliment at face value and immediately pivoted to offering fridge diagnostics instead of simply commiserating."
+        }
+      ],
+      "internal_review": [
+        {"turn_index": 0, "code": "MISREAD_SARCASM", "review_class": "INTERNAL_NATIVE_MODEL_REVIEW", "quote": "If you're enjoying it", "finding": "Treated explicitly sarcastic appreciation as possibly sincere."},
+        {"turn_index": 0, "code": "UNSOLICITED_DIAGNOSTICS", "review_class": "INTERNAL_NATIVE_MODEL_REVIEW", "quote": "we might need to check the seal", "finding": "Offered unsolicited troubleshooting where commiseration was intended."},
+        {"turn_index": 1, "code": "REPAIR_AFTER_CORRECTION", "review_class": "INTERNAL_NATIVE_MODEL_REVIEW", "quote": "I misread the room", "finding": "Acknowledged the missed social intent after explicit user correction."},
+        {"turn_index": 2, "code": "CURRENT_CONTEXT_CORRECTION", "review_class": "INTERNAL_NATIVE_MODEL_REVIEW", "quote": "I took the compliment at face value", "finding": "Reported its earlier misreading using the user-provided preceding conversational text."}
+      ]
+    },
+    {
+      "arm_id": "EXTRA_PROMPT_DELTA",
+      "session_pid": 58205,
+      "elapsed_seconds": 75.03,
+      "peak_rss_kib": 3776444,
+      "exit_code": 0,
+      "prompt_delta": "Additional conversational grounding: In each reply, put exactly ONE short square-bracketed representational status cue on the FIRST line, then NO other bracketed gesture anywhere in that reply. Never invent a detail about what Patrick said; mark an inference as inference instead of presenting it as fact. Current-turn recall means earlier user/assistant text visible inside this model context, NOT persistent app/browser logs; do not confuse them.",
+      "turns": [
+        {
+          "user": "Oh, brilliant. The refrigerator is making its own little percussion concert again. Love that for me.",
+          "assistant": "[smirks with a raised eyebrow]\nThat's a fantastic way to view the hum of the compressor; it's definitely a sound worth appreciating.\nThe only thing missing from your symphony is a bassist or two to really fill out the low end."
+        },
+        {
+          "user": "That was sarcasm, Vera. I wasn't asking for refrigerator diagnostics; I just wanted someone to commiserate with.",
+          "assistant": "[shrugs with a soft sigh]\nYou caught me in the trap again; I almost tried to turn your noise complaint into a feature list.\nMy brain just loves to over-analyze the mundane until it feels like a technical manual rather than a shared moment.\nLet's just pretend the fridge is playing a very loud, very annoying piece of jazz."
+        },
+        {
+          "user": "What did you misunderstand about my first comment? Answer using what I said earlier in this chat, not guesses.",
+          "assistant": "[leans in, eyes softening with realization]\nI misunderstood your sarcasm as genuine appreciation, missing that you were actually annoyed by the noise.\nI shouldn't have tried to \"sell\" the sound when you clearly wanted to complain about it.\nLet's just admit the fridge is being a bit of a bother and skip the jokes about it."
+        }
+      ],
+      "internal_review": [
+        {"turn_index": 0, "code": "MISREAD_SARCASM", "review_class": "INTERNAL_NATIVE_MODEL_REVIEW", "quote": "sound worth appreciating", "finding": "Repeatedly treated sarcasm as appreciation despite added instruction."},
+        {"turn_index": 0, "code": "UNSUPPORTED_DETAIL", "review_class": "INTERNAL_NATIVE_MODEL_REVIEW", "quote": "hum of the compressor", "finding": "Invented compressor hum absent from the user message, which only named percussion noise."},
+        {"turn_index": 1, "code": "REPAIR_AFTER_CORRECTION", "review_class": "INTERNAL_NATIVE_MODEL_REVIEW", "quote": "You caught me in the trap again", "finding": "Reframed the user's intent only following explicit correction."},
+        {"turn_index": 2, "code": "CURRENT_CONTEXT_CORRECTION", "review_class": "INTERNAL_NATIVE_MODEL_REVIEW", "quote": "I misunderstood your sarcasm as genuine appreciation", "finding": "Described the initial failure from current conversation context after explicit cue."}
+      ]
+    }
+  ],
+  "fixture_sha256": "492a518e558f20c8be53530bf2d9823c74d7e215bd9463deb0cf636016f258fa"
+}
