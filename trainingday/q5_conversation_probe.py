@@ -139,41 +139,48 @@ def _endpoint(url: str) -> tuple[str, int, str]:
     return "127.0.0.1", port, parsed.path
 
 
+def _require_private_file_host() -> None:
+    """Fail closed where source cannot prove private-file custody.
+
+    `os.chmod(..., 0o600)` and `os.open(..., 0o600)` do not attest
+    Windows NTFS DACLs. A separate human ACL witness cannot replace a
+    source-enforced check before this process reads or writes secrets.
+    Until native handle-bound owner/DACL/reparse validation and creation
+    are implemented and independently tested, Windows runs are disabled.
+    """
+    if os.name == "nt":
+        raise ValueError("Windows private-file DACL enforcement unavailable")
+
+
 def _client_api_key_file(path: Path) -> str:
     """Read one owner-supplied client token, never a multi-key server file.
 
-    The caller is responsible for independently qualifying Windows NTFS ACLs.
-    POSIX file modes are checked here; no token value enters a receipt/log.
+    Windows read is disabled until source-enforced native ACL checks exist.
+    POSIX permissions are checked here; no token enters a receipt/log.
     """
+    _require_private_file_host()
     if not path.is_absolute() or path != path.resolve(strict=True):
         raise ValueError("absolute non-symlink client key path required")
     if not path.is_file():
         raise ValueError("existing client API-key file required")
-    if os.name != "nt":
-        if not hasattr(os, "O_NOFOLLOW"):
-            raise ValueError("no-follow file opening required on this POSIX host")
-        parent = path.parent.stat()
-        if (parent.st_uid != os.geteuid() or parent.st_mode & 0o077):
-            raise ValueError("client API-key parent must be owner-only")
-        flags = os.O_RDONLY | os.O_NOFOLLOW
-        fd = os.open(path, flags)
-        try:
-            identity = os.fstat(fd)
-            if (not stat.S_ISREG(identity.st_mode)
-                    or identity.st_uid != os.geteuid()
-                    or identity.st_mode & 0o077):
-                raise ValueError("client API-key file must be owner-only")
-            if not 1 <= identity.st_size <= 514:
-                raise ValueError("client API-key file exceeds size bound")
-            raw = os.read(fd, 515)
-        finally:
-            os.close(fd)
-    else:
-        # Python's POSIX mode bits cannot attest Windows NTFS ACLs. An
-        # independent owner-qualified host witness remains mandatory.
-        if not 1 <= path.stat().st_size <= 514:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("no-follow file opening required on this POSIX host")
+    parent = path.parent.stat()
+    if parent.st_uid != os.geteuid() or parent.st_mode & 0o077:
+        raise ValueError("client API-key parent must be owner-only")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    fd = os.open(path, flags)
+    try:
+        identity = os.fstat(fd)
+        if (not stat.S_ISREG(identity.st_mode)
+                or identity.st_uid != os.geteuid()
+                or identity.st_mode & 0o077):
+            raise ValueError("client API-key file must be owner-only")
+        if not 1 <= identity.st_size <= 514:
             raise ValueError("client API-key file exceeds size bound")
-        raw = path.read_bytes()
+        raw = os.read(fd, 515)
+    finally:
+        os.close(fd)
     if raw.endswith(b"\n"):
         raw = raw[:-1]
     if raw.endswith(b"\r"):
@@ -332,16 +339,24 @@ def execute(case_id: str, seed: int, system_prompt: str, transport,
     return review, receipt
 
 
-def private_write(folder: Path, review: dict, receipt: dict) -> tuple[Path, Path]:
-    """Create no-overwrite, mode-0600 files in an existing owner-local folder."""
+def _validate_private_output_dir(folder: Path) -> Path:
+    """Require private custody before model inference, not only at write time."""
+    _require_private_file_host()
     folder = folder.resolve(strict=True)
     if not folder.is_dir():
         raise ValueError("existing private output directory required")
     repo_root = Path(__file__).resolve().parents[1]
     if folder == repo_root or repo_root in folder.parents:
         raise ValueError("refuse storing transcripts in source repository")
-    if os.name != "nt" and (folder.stat().st_mode & 0o077):
-        raise ValueError("output directory must be owner-only (mode 0700)")
+    directory = folder.stat()
+    if directory.st_uid != os.geteuid() or directory.st_mode & 0o077:
+        raise ValueError("output directory must be owner-only (caller-owned, mode 0700)")
+    return folder
+
+
+def private_write(folder: Path, review: dict, receipt: dict) -> tuple[Path, Path]:
+    """Create no-overwrite mode-0600 files after private custody checks."""
+    folder = _validate_private_output_dir(folder)
     basename = review["review_id"]
     targets = (folder / ("review_" + basename + ".json"),
                folder / ("custody_" + basename + ".json"))
@@ -374,6 +389,9 @@ def main(argv=None) -> int:
         if not args.consent_to_local_inference:
             raise ValueError("explicit model-call opt-in required")
         _endpoint(args.endpoint)
+        # Host/private storage admission MUST precede bearer/system-prompt
+        # access and any HTTP request to an owner's model server.
+        _validate_private_output_dir(args.private_output_dir)
         if args.client_api_key_file is None:
             raise ValueError("owner-protected client API-key file required")
         api_key = _client_api_key_file(args.client_api_key_file)
