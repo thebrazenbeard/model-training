@@ -253,6 +253,57 @@ class Q5ProbeContractTests(unittest.TestCase):
                 monotonic=lambda: next(clock))
         self.assertEqual(budgets, [30, 20.5, 0.25])
 
+    def test_owner_opt_in_cli_collects_one_three_turn_http_smoke_only(self):
+        from contextlib import redirect_stdout
+        from io import StringIO
+        calls = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                calls.append(json.loads(self.rfile.read(
+                    int(self.headers["Content-Length"]))))
+                encoded = json.dumps(completed("MOCK_PUBLIC_RESPONSE")).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+            def log_message(self, *args):
+                pass
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "private"
+            out.mkdir(mode=0o700)
+            prompt = root / "system.txt"
+            prompt.write_text("SYNTHETIC_MODEL_SYSTEM", encoding="utf-8")
+            with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+                thread = Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                stdout = StringIO()
+                try:
+                    args = [
+                        "run", "--case", CASES[0][0], "--seed", str(SEEDS[0]),
+                        "--endpoint", "http://127.0.0.1:"
+                                      + str(server.server_address[1])
+                                      + "/v1/chat/completions",
+                        "--system-prompt-file", str(prompt),
+                        "--private-output-dir", str(out),
+                        "--consent-to-local-inference",
+                    ]
+                    with redirect_stdout(stdout):
+                        self.assertEqual(main(args), 0)
+                finally:
+                    server.shutdown()
+                    thread.join(timeout=2)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual([len(x["messages"]) for x in calls], [2, 4, 6])
+            review = list(out.glob("review_*.json"))
+            custody = list(out.glob("custody_*.json"))
+            self.assertEqual(len(review), 1)
+            self.assertEqual(len(custody), 1)
+            self.assertNotIn("MOCK_PUBLIC_RESPONSE", stdout.getvalue())
+            self.assertEqual(json.loads(custody[0].read_text())["complete_turn_count"], 3)
+            self.assertFalse(json.loads(stdout.getvalue())["semantic_persona_pass"])
+
 
 if __name__ == "__main__":
     unittest.main()
