@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
+from typing import Callable
 
 
 if os.name != "nt":
@@ -52,6 +53,8 @@ WAIT_OBJECT_0 = 0
 WAIT_TIMEOUT = 258
 WAIT_FAILED = 0xFFFFFFFF
 TH32CS_SNAPPROCESS = 0x00000002
+PROCESS_QUERY_INFORMATION = 0x0400
+PROCESS_VM_READ = 0x0010
 
 
 class Win32Hold(RuntimeError):
@@ -205,6 +208,10 @@ GetUserNameExW.restype = w.BOOL
 GetProcessMemoryInfo = psapi.GetProcessMemoryInfo
 GetProcessMemoryInfo.argtypes = [HANDLE, LPVOID, DWORD]
 GetProcessMemoryInfo.restype = w.BOOL
+OpenProcess = _bind("OpenProcess", HANDLE, DWORD, w.BOOL, DWORD)
+GetProcessTimes = _bind("GetProcessTimes", w.BOOL, HANDLE,
+                        ctypes.POINTER(FILETIME), ctypes.POINTER(FILETIME),
+                        ctypes.POINTER(FILETIME), ctypes.POINTER(FILETIME))
 CreateToolhelp32Snapshot = _bind("CreateToolhelp32Snapshot", HANDLE, DWORD, DWORD)
 Process32FirstW = _bind("Process32FirstW", w.BOOL, HANDLE, ctypes.POINTER(PROCESSENTRY32W))
 Process32NextW = _bind("Process32NextW", w.BOOL, HANDLE, ctypes.POINTER(PROCESSENTRY32W))
@@ -272,7 +279,7 @@ def host_cpu_percent() -> float:
     return 100.0 * (total_delta - idle_delta) / total_delta
 
 
-def running_executable_names() -> set[str]:
+def running_named_processes() -> dict[str, set[int]]:
     snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if not snapshot or snapshot == INVALID_HANDLE:
         raise _err("CreateToolhelp32Snapshot")
@@ -281,15 +288,37 @@ def running_executable_names() -> set[str]:
         entry.dwSize = ctypes.sizeof(entry)
         if not Process32FirstW(snapshot, ctypes.byref(entry)):
             raise _err("Process32FirstW")
-        names = set()
+        names: dict[str, set[int]] = {}
         while True:
-            names.add(entry.szExeFile.lower())
+            names.setdefault(entry.szExeFile.lower(), set()).add(int(entry.th32ProcessID))
             if not Process32NextW(snapshot, ctypes.byref(entry)):
                 if ctypes.get_last_error() == 18:  # ERROR_NO_MORE_FILES
                     return names
                 raise _err("Process32NextW")
     finally:
         _close(snapshot)
+
+
+def running_executable_names() -> set[str]:
+    return set(running_named_processes())
+
+
+def observed_process_snapshot(pid: int) -> tuple[int, int]:
+    """Return OS-observed (creation-time, working-set bytes) for a fixed PID."""
+    process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+    if not process:
+        raise _err("OpenProcess daemon PID")
+    try:
+        created, exited, kernel_time, user_time = (
+            FILETIME(), FILETIME(), FILETIME(), FILETIME()
+        )
+        if not GetProcessTimes(process, ctypes.byref(created), ctypes.byref(exited),
+                               ctypes.byref(kernel_time), ctypes.byref(user_time)):
+            raise _err("GetProcessTimes daemon")
+        rss, _ = process_working_set(process)
+        return created.as_int(), rss
+    finally:
+        _close(process)
 
 
 def assert_not_reparse(path: Path) -> None:
@@ -352,7 +381,8 @@ class ChildResult:
 def run_job(*, executable: Path, argv: list[str], cwd: Path,
             stdout_path: Path, stderr_path: Path, memory_cap: int,
             cpu_percent: int, wall_seconds: int, runtime_free_floor: int,
-            forced_test_stop: bool = False) -> ChildResult:
+            forced_test_stop: bool = False,
+            occupancy_guard: Callable[[int], None] | None = None) -> ChildResult:
     """Launch suspended, assign to bounded Job, then resume; fail closed.
 
     Job commit limit does not cap file-backed RSS; host RAM is monitored too.
@@ -446,6 +476,11 @@ def run_job(*, executable: Path, argv: list[str], cwd: Path,
         in_job = w.BOOL(False)
         if not IsProcessInJob(child.hProcess, job, ctypes.byref(in_job)) or not in_job.value:
             raise Win32Hold("OS did not verify process membership before resume")
+        if occupancy_guard is not None:
+            # The sole Job-owned child is not an unrelated competing runner.
+            # Its PID is retained on a real OS process HANDLE, not claimed by
+            # the caller; every other llama-cli PID remains disallowed.
+            occupancy_guard(int(child.dwProcessId))
         if available_physical_bytes() < runtime_free_floor + memory_cap:
             raise Win32Hold("host RAM fell before ResumeThread: child remains suspended")
         if ResumeThread(child.hThread) == WAIT_FAILED:
@@ -470,6 +505,12 @@ def run_job(*, executable: Path, argv: list[str], cwd: Path,
             if rss > memory_cap:
                 reason = "PROCESS_RSS_LIMIT"
                 break
+            if occupancy_guard is not None:
+                try:
+                    occupancy_guard(int(child.dwProcessId))
+                except Exception:
+                    reason = "CONCURRENT_MODEL_OR_OCCUPANCY_UNVERIFIED"
+                    break
             if (os.fstat(out.fileno()).st_size > 1024 * 1024 or
                     os.fstat(err.fileno()).st_size > 1024 * 1024):
                 reason = "OUTPUT_FILE_LIMIT"
