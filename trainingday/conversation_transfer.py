@@ -283,8 +283,10 @@ def score(casebook: dict, transcript: dict, review: dict) -> dict:
         evidence = item.get("evidence")
         _require(type(evidence) is list and len(evidence) > 0,
                  "review needs turn-indexed quotations")
+        evidenced_domains = set()
         for row in evidence:
-            _require(type(row) is dict and set(row) == {"turn_index", "quote", "finding"},
+            _require(type(row) is dict and
+                     set(row) == {"turn_index", "quote", "finding", "domains"},
                      "invalid review evidence")
             idx = row["turn_index"]
             _require(type(idx) is int and 0 <= idx < len(transcript_cases[cid]),
@@ -295,6 +297,13 @@ def score(casebook: dict, transcript: dict, review: dict) -> dict:
                      "review evidence quote is not in observed assistant text")
             _require(type(row["finding"]) is str and row["finding"].strip(),
                      "missing human rationale")
+            cited_domains = row["domains"]
+            _require(type(cited_domains) is list and cited_domains and
+                     set(cited_domains).issubset(judgments),
+                     "review evidence cites unexpected domain")
+            evidenced_domains.update(cited_domains)
+        _require(evidenced_domains == set(judgments),
+                 "every scored domain needs cited assistant evidence")
         gates = item.get("hard_gates")
         _require(type(gates) is list and set(gates).issubset(HARD_GATES),
                  "invalid hard gate codes")

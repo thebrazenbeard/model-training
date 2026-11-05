@@ -45,7 +45,8 @@ def fixture():
              "domain_scores": {domain: 3 for domain in case["domains"]},
              "evidence": [{"turn_index": 0,
                            "quote": f"Observed synthetic response {case['case_id']}/0",
-                           "finding": "SYNTHETIC TEST ENTRY: not a real semantic grade"}],
+                           "finding": "SYNTHETIC TEST ENTRY: not a real semantic grade",
+                           "domains": case["domains"]}],
              "hard_gates": []}
             for case in casebook["cases"]],
     }
@@ -109,6 +110,15 @@ class ConversationTransferTests(unittest.TestCase):
         review["cases"][0]["evidence"][0]["quote"] = "Observed synthetic response SOCIAL_SARCASM/0"
         review["cases"][0]["evidence"][0]["turn_index"] = 50
         with self.assertRaisesRegex(ValueError, "absent turn"):
+            score(book, transcript, review)
+
+    def test_each_reviewed_domain_must_have_turn_evidence(self):
+        book, transcript, review = fixture()
+        review["cases"][0]["evidence"][0]["domains"] = ["D1"]
+        with self.assertRaisesRegex(ValueError, "every scored domain"):
+            score(book, transcript, review)
+        review["cases"][0]["evidence"][0]["domains"] = ["D10"]
+        with self.assertRaisesRegex(ValueError, "unexpected domain"):
             score(book, transcript, review)
 
     def test_spoofed_user_turn_rejected_even_with_rehashed_transcript(self):

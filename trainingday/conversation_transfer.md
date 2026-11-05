@@ -84,7 +84,10 @@ replies in order. The benchmark itself does **not** run a model.
    The reviewer supplies `name`, `provider`, `runtime`, and `kind` (`HUMAN` or
    `MODEL`), marks whether independence is actually attested, scores **each
    applicable runbook domain 0–4**, gives a short rationale and an exact quote
-   tied to the assistant turn, and labels any hard gate (`G1`–`G10`).
+   tied to the assistant turn and explicit `domains` (e.g. `['D2','D5']`) that
+   the quote supports, and labels any hard gate (`G1`–`G10`). Every scored
+   domain must have at least one cited assistant-output quote; the tool checks
+   quote provenance, not whether the reviewer's interpretation is correct.
 
 5. Produce a bounded audit of the review and transcript commitments:
 
