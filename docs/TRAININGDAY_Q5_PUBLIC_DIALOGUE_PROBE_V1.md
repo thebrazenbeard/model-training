@@ -144,4 +144,7 @@ They exercise opt-in, strict URL gating, role/finish filtering, multi-turn
 context formation, private output flags, censoring, seed/case counts, and a
 request body that excludes the reviewer rubric. The slow-drip regression
 asserts that an upstream which never finishes cannot extend the wall budget
-by sending one byte just before each socket timeout.
+by sending one byte just before each socket timeout. A separate end-to-end
+CLI regression runs all three turns through a **fake loopback HTTP server**
+and checks that no raw replies leave via stdout. All 14 tests remain
+synthetic; no physical Q5 inference is part of that passing count.
