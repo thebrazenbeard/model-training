@@ -243,6 +243,8 @@ def self_test() -> dict:
             "job_active_processes_after": result.job_active_processes_after,
             "child_handle_signaled": result.process_handle_signaled,
             "peak_working_set_bytes": result.peak_working_set_bytes,
+            "accounting_poll_count": result.accounting_poll_count,
+            "accounting_wait_seconds": round(result.accounting_wait_seconds, 4),
         }
         _receipt(receipt_path, body)
         if status != "PASS":
@@ -314,6 +316,8 @@ def run_public_q4_baseline() -> dict:
                     "job_active_processes_after": result.job_active_processes_after,
                     "child_handle_signaled": result.process_handle_signaled,
                     "peak_working_set_bytes": result.peak_working_set_bytes,
+                    "accounting_poll_count": result.accounting_poll_count,
+                    "accounting_wait_seconds": round(result.accounting_wait_seconds, 4),
                     "ollama_observed_idle_daemon": occupancy.daemon_seen,
                     "occupancy_guard_checks": occupancy.check_count,
                 }
