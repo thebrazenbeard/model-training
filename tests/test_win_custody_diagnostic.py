@@ -135,6 +135,50 @@ class PortablePolicyTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "native Win32 ACL tests require Windows")
 class NativeWindowsSyntheticFileTests(unittest.TestCase):
+    def _protect_synthetic_directory(self, path: Path, *, foreign_full=False):
+        # Keep the *test-owned* parent private. Standard Windows hosted-runner
+        # TEMP may grant another well-known group full control; the diagnostic
+        # must correctly reject that ancestry, not whitelist the trustee.
+        import win32api
+        import win32con
+        import win32security
+
+        token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(), win32con.TOKEN_QUERY,
+        )
+        try:
+            owner = win32security.GetTokenInformation(
+                token, win32security.TokenUser,
+            )[0]
+        finally:
+            token.Close()
+        acl = win32security.ACL()
+        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0x03,
+                                  win32con.GENERIC_ALL, owner)
+        system = win32security.ConvertStringSidToSid(subject.SYSTEM_SID)
+        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0x03,
+                                  win32con.GENERIC_ALL, system)
+        if foreign_full:
+            world = win32security.ConvertStringSidToSid(EVERYONE)
+            acl.AddAccessAllowedAce(win32security.ACL_REVISION,
+                                    win32con.GENERIC_ALL, world)
+        win32security.SetNamedSecurityInfo(
+            str(path), win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION |
+            win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+            None, None, acl, None,
+        )
+        descriptor = win32security.GetNamedSecurityInfo(
+            str(path), win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION,
+        )
+        control = descriptor.GetSecurityDescriptorControl()
+        control_bits = control[0] if isinstance(control, tuple) else control
+        self.assertTrue(
+            control_bits & win32security.SE_DACL_PROTECTED,
+            "synthetic fixture directory must have protected DACL",
+        )
+
     def _fixture(self, root: Path, *, foreign_allow: bool):
         import win32api
         import win32con
@@ -303,96 +347,25 @@ class NativeWindowsSyntheticFileTests(unittest.TestCase):
     def test_full_read_only_diagnostic_on_synthetic_private_file(self):
         # This exercises the actual drive, ancestor, handle and DACL APIs on
         # Windows CI. A blocked result is a test failure, not a synthetic PASS.
-        with tempfile.TemporaryDirectory(prefix="w8-custody-path-") as temp:
+        # Use a unique private synthetic directory under runner's profile,
+        # not hosted TEMP whose default DACL granted an unrelated principal
+        # full control in native run 42098994267.
+        with tempfile.TemporaryDirectory(prefix="w8-custody-private-",
+                                         dir=Path.home()) as temp:
+            self._protect_synthetic_directory(Path(temp))
             path, _ = self._fixture(Path(temp), foreign_allow=False)
-            try:
-                result = subject.check_private_file(str(path), max_bytes=514)
-            except subject.CustodyBlocked:
-                # Ephemeral public Windows CI synthetic-path diagnosis only.
-                # Print *only* the ordinal of the first refused ancestor and
-                # ACE type/flags/mask/well-known category. Never print names,
-                # paths, token/user SIDs, private file bytes or prompt text.
-                import sys
-                import win32api
-                import win32con
-                import win32file
-                import win32security
-
-                token = win32security.OpenProcessToken(
-                    win32api.GetCurrentProcess(), win32con.TOKEN_QUERY,
-                )
-                try:
-                    user = win32security.GetTokenInformation(
-                        token, win32security.TokenUser,
-                    )[0]
-                    process_sid = win32security.ConvertSidToStringSid(user)
-                finally:
-                    token.Close()
-                root, segments = subject._segments(str(path))
-                candidate = root
-                known = {
-                    "S-1-1-0": "Everyone", "S-1-5-11": "AuthenticatedUsers",
-                    "S-1-5-32-545": "Users", "S-1-3-0": "CreatorOwner",
-                    subject.SYSTEM_SID: "LOCAL_SYSTEM",
-                    subject.ADMINISTRATORS_SID: "BUILTIN_ADMINISTRATORS",
-                    subject.TRUSTEDINSTALLER_SID: "TRUSTEDINSTALLER",
-                    process_sid: "CURRENT_TOKEN_USER",
-                }
-
-                def synthetic_sid_category(sid):
-                    sid_text = win32security.ConvertSidToStringSid(sid)
-                    if sid_text in known:
-                        return known[sid_text]
-                    try:
-                        _name, domain, usage = win32security.LookupAccountSid(None, sid)
-                        public_domain = domain if domain in (
-                            "NT AUTHORITY", "BUILTIN", "NT SERVICE",
-                        ) else "OTHER_DOMAIN"
-                        return f"OTHER_SID_TYPE_{int(usage)}_{public_domain}"
-                    except Exception:
-                        return "OTHER_UNRESOLVED"
-
-                for ordinal in range(len(segments)):
-                    if ordinal:
-                        candidate = os.path.join(candidate, segments[ordinal - 1])
-                    handle = win32file.CreateFile(
-                        candidate,
-                        win32con.READ_CONTROL | subject._FILE_READ_ATTRIBUTES,
-                        win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
-                        None, win32file.OPEN_EXISTING,
-                        win32file.FILE_FLAG_BACKUP_SEMANTICS |
-                        win32file.FILE_FLAG_OPEN_REPARSE_POINT, None,
-                    )
-                    try:
-                        try:
-                            subject._verify_descriptor(
-                                handle, process_sid=process_sid, directory=True,
-                                security=win32security,
-                            )
-                        except subject.CustodyBlocked:
-                            desc = win32security.GetSecurityInfo(
-                                handle, win32security.SE_FILE_OBJECT,
-                                win32security.DACL_SECURITY_INFORMATION |
-                                win32security.OWNER_SECURITY_INFORMATION,
-                            )
-                            acl = desc.GetSecurityDescriptorDacl()
-                            print("synthetic_ci_ancestor_owner_class:", ordinal,
-                                  synthetic_sid_category(
-                                      desc.GetSecurityDescriptorOwner(),
-                                  ), file=sys.stderr)
-                            for i in range(min(acl.GetAceCount(), 20)):
-                                header, mask, sid = acl.GetAce(i)
-                                label = synthetic_sid_category(sid)
-                                print("synthetic_ci_ancestor_ace:", ordinal,
-                                      int(header[0]), int(header[1]),
-                                      hex(int(mask)), label, file=sys.stderr)
-                            break
-                    finally:
-                        handle.Close()
-                raise
+            result = subject.check_private_file(str(path), max_bytes=514)
             self.assertEqual(result["status"], "SINGLE_POINT_ACL_SNAPSHOT_PASS")
             self.assertFalse(result["contents_read"])
             self.assertFalse(result["windows_q5_run_qualified"])
+
+    def test_foreign_full_control_synthetic_parent_blocks_private_file(self):
+        with tempfile.TemporaryDirectory(prefix="w8-custody-deny-",
+                                         dir=Path.home()) as temp:
+            self._protect_synthetic_directory(Path(temp), foreign_full=True)
+            path, _ = self._fixture(Path(temp), foreign_allow=False)
+            with self.assertRaises(subject.CustodyBlocked):
+                subject.check_private_file(str(path), max_bytes=514)
 
 
 if __name__ == "__main__":
