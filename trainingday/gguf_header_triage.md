@@ -49,9 +49,10 @@ automatically trust or import metadata as a trained-base manifest.
 
 ## What would make the local Q5 an eligible *candidate* for R13?
 
-1. Host custodian reads back the exact file and its external download/creation
-   manifest. Record actual source URL, immutable upstream repository/revision,
-   original source-shard SHA receipts and tokenizer revision.
+1. **File identity passed (W48):** the host custodian independently hashed the
+   existing Q5 file and matched the full SHA-256 and byte count to a public HF
+   LFS pointer. Recover the creation/download manifest and exact upstream
+   repository/revision, original source-shard SHA and tokenizer custody.
 2. Match those external manifests to R13's **actual** `adapter_config.json`
    donor and `D:\VERA\models\latest-trained\base` shard custody, not just the
    model family or name. Historical R13 donor is
@@ -62,12 +63,13 @@ automatically trust or import metadata as a trained-base manifest.
    bounded technical load and separately blinded conversational comparison.
 
 Until all these are satisfied, R13+standard Q4 is **HARD NO-GO**, and the
-preexisting Q5 is **UNKNOWN / NOT QUALIFIED**. The separate official
+preexisting Q5 has **verified GGUF binary identity but UNKNOWN trained-base
+compatibility / NOT QUALIFIED for R13**. The separate official
 `Qwen/Qwen3.5-4B@851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a` + R16
 lineage is a different experiment; its 496-tensor correct8 LoRA remains
 unconverted/unqualified for a GGUF adapter at the cited checkpoints.
 
-### Public provenance lead (not a match receipt)
+### Verified GGUF binary identity, not trained-base compatibility
 
 The public repository at
 [`tinyopsec/Qwen3.5-4B-Uncensored-Aggressive-GGUF`](https://huggingface.co/tinyopsec/Qwen3.5-4B-Uncensored-Aggressive-GGUF)
@@ -80,12 +82,19 @@ The primary [Git LFS raw pointer](https://huggingface.co/tinyopsec/Qwen3.5-4B-Un
 exposes exact `size 3072993056` and the same SHA-256 OID.
 The **narrative model card contradicts** its file listing: it says Q5_K_S is
 `~2.5 GB` and "Qwen2 (28 layers)", whereas the automatically shown GGUF
-summary says `qwen35`. The unrelated Lappy Q5 has the same generic basename
-and is **3,072,993,056 bytes**, an **exact byte-count match** to that pointer.
-Matching file size and generic filename is still a **SEARCH LEAD ONLY**, not
-an independently verified SHA-256 file identity, repository revision,
-source-weight match, tokenizer match, or license/custody proof. No model or
-file was downloaded, moved, fully hashed, or loaded in this investigation.
+summary says `qwen35`. W48's **separate live host custodian readback** hashed
+the actual preexisting Lappy file
+`D:\VERA\models\gguf\model_q5_k_s.gguf`: **3,072,993,056 bytes**, SHA-256
+`15150f534dc90ee15c82320ccc014463db7985205a7161228cff89b925fd1216`,
+using a bounded, idle-priority read-only PowerShell operation lasting 48.18 s.
+The file's binary digest and length therefore **match the HF LFS pointer**.
+This evidence is `LIVE_HOST_FILE_SHA256 + PUBLIC_REMOTE_LFS_POINTER`, not a
+training-source tensor comparison. The GGUF publisher's claim of deriving
+from `rodrigomt` does not establish exact donor revision `d61dd146...`,
+checkpoint tensor mapping, tokenizer equivalence, LoRA target compatibility,
+or evaluated conversational benefit. No GGUF load, inference, file transfer,
+download, or model mutation was performed. This source-only inspector itself
+has not yet been exercised on the physical Q5 file.
 
 Reference format specification: [ggml GGUF v3](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md)
 and [gguf.h](https://github.com/ggml-org/ggml/blob/master/include/gguf.h).
