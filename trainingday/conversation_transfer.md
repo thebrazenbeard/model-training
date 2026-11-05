@@ -120,18 +120,34 @@ itself does **not** run a model.
    Even a declared pair match requires independent physical custody and
    blinded behavior comparison before any causal benefit claim.
 
-   **Concrete NO-GO (2026-11-05):** Lappy's R13 `adapter_config.json` points
-   to a local base whose `MODEL_MANIFEST.json` identifies
-   `rodrigomt/Qwen3.5-4B-Uncensored-Aggressive` at
-   `d61dd146c8fd44c9a49cdb7f59f34e17b61902d8`; the proposed Q4_K_M
-   comparator is hosted by `lmstudio-community/Qwen3.5-4B-GGUF` and declares
-   the standard `Qwen/Qwen3.5-4B` as its upstream. These are not established
-   to be identical training weights. Successful `llama_load_exit0` does *not*
-   repair the ancestry gap. The older unlabeled `model_q5_k_s.gguf` has no
-   proven source lineage; it also cannot be presumed an R13-matched base.
-   Do **not** interpret either pairing as a causal adapter A/B until separately
-   qualified. An official Q4 *prompt-only BASE* experiment is a different,
-   permissible question and must not be presented as proof of LoRA benefit.
+   **W50 corrected artifact split (2026-11-05, live-host source readback):**
+   `D:\\VERA\\models\\latest-trained\\MODEL_MANIFEST.json` describes the
+   **H07 rule-transfer V2** Aggressive package (ID
+   `vera-qwen35-h07-v2-r4-20260925`, adapter SHA-256
+   `2b628e90c9ceee52bf4ddcba3f7d77187265f6d62813f8cdcd1265792f531d7f`),
+   with declared donor
+   `rodrigomt/Qwen3.5-4B-Uncensored-Aggressive@d61dd146c8fd44c9a49cdb7f59f34e17b61902d8`.
+   This is **H07, not R13**; its manifest retains obsolete `C:\\Vera` paths
+   even though physical files reside under `D:\\VERA`.
+
+   The **distinct R13 qualification profile** at
+   `D:\\VERA\\model-profiles\\vera-qwen35-r13-20261029\\qualification.json`
+   instead names `lmstudio-community/Qwen3.5-4B-GGUF@f9f88ac3e234be915e23811a6d28ea287bdb927e`
+   as its base (Q4 SHA-256
+   `25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c`),
+   with a separately converted adapter SHA-256
+   `0211e111b712053a45e5014bec4436207fa83b8344247f4e4b92a5c203d1eeb6`.
+   The profile self-reports `RUNNABLE_WITH_ADAPTER_NOT_BEHAVIORALLY_QUALIFIED`
+   but does **not** establish immutable R13 training-base lineage.
+
+   Consequently neither `R13 + local tinyopsec Q5` nor
+   `H07 + local tinyopsec Q5` is qualified for causal adapted-vs-base
+   comparison. Matching model-family names, a binary SHA, or a successful
+   `llama_load_exit0` cannot repair the separate ancestry and tensor-map gaps.
+   The R13 profile on its own pinned Q4 is a *source-described technical
+   candidate*, not behavioral qualification. A Q5 *prompt-only BASE* trial is
+   a separate question and may proceed only after a physical host lease.
+   [Exact host-evidence correction](https://github.com/thebrazenbeard/chat-communication-bus/issues/404#issuecomment-6650655645).
 
 4. Give an independent reviewer the read-only casebook and complete transcript.
    Generate a deliberately unscored form:
