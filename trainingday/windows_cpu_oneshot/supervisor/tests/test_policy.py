@@ -9,8 +9,10 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from policy import (GIB, Hold, MIN_FREE_BYTES, MODEL_SHA256, PROMPT,
+                    REVIEWED_RUNNER_SHA256, REVIEWED_RUNTIME_FILES_SHA256,
                     TRIAL_ROOT, parse_plan, required_prelaunch_free,
-                    state_root_for_mode, blocking_processes_for_mode)
+                    state_root_for_mode, blocking_processes_for_mode,
+                    ollama_inventory_empty, competing_model_workers)
 
 
 def valid():
@@ -38,16 +40,29 @@ class PolicyTests(unittest.TestCase):
         ):
             return parse_plan(json.dumps(record))
 
+    def test_official_release_binary_manifest_is_frozen(self):
+        self.assertEqual(len(REVIEWED_RUNTIME_FILES_SHA256), 19)
+        self.assertEqual(REVIEWED_RUNNER_SHA256,
+                         "02042615249dd4852f47cc2d4dd5caabba91766b5161dd4642ed6272f788172e")
+        self.assertEqual(REVIEWED_RUNTIME_FILES_SHA256["llama-cli.exe"],
+                         REVIEWED_RUNNER_SHA256)
+        self.assertEqual(REVIEWED_RUNTIME_FILES_SHA256["llama.dll"],
+                         "669c47bee16dcad5f6e6d0755f16c9d0969508c1ac1983f3e2f74280ab44822a")
+
     def test_normal_fixed_cpu_only_plan(self):
         plan = self.parse(valid())
         argv = plan.args()
         self.assertEqual(argv[0], valid()["executable"])
-        self.assertEqual(argv[argv.index("-ngl") + 1], "0")
-        self.assertEqual(argv[argv.index("-c") + 1], "1024")
-        self.assertEqual(argv[argv.index("-n") + 1], "64")
+        self.assertEqual(argv[argv.index("--gpu-layers") + 1], "0")
+        self.assertEqual(argv[argv.index("--ctx-size") + 1], "1024")
+        self.assertEqual(argv[argv.index("--predict") + 1], "64")
         self.assertEqual(argv[argv.index("--seed") + 1], "0")
         self.assertEqual(argv[argv.index("--temp") + 1], "0")
-        self.assertEqual(argv[argv.index("-p") + 1], PROMPT)
+        self.assertEqual(argv[argv.index("--prompt") + 1], PROMPT)
+        self.assertEqual(argv[argv.index("--fit") + 1], "off")
+        self.assertEqual(argv[argv.index("--reasoning") + 1], "off")
+        self.assertIn("--offline", argv)
+        self.assertIn("--single-turn", argv)
         self.assertGreaterEqual(required_prelaunch_free(plan), MIN_FREE_BYTES)
         self.assertGreaterEqual(required_prelaunch_free(plan) - plan.job_memory_bytes,
                                 1536 * 1024 ** 2)
@@ -133,6 +148,29 @@ class PolicyTests(unittest.TestCase):
             self.assertIn(actual_worker, physical)
         with self.assertRaises(Hold):
             blocking_processes_for_mode("--unknown")
+
+    def test_ollama_api_requires_unambiguous_empty_loaded_models(self):
+        self.assertTrue(ollama_inventory_empty(b'{"models": []}'))
+        for response in (
+            b'{"models": [{"name": "qwen3.5:4b"}]}',
+            b'{"models": null}', b'{}', b'{"running": []}',
+            b'invalid JSON', b'["models"]', b'{"models": ""}',
+            b' ' * 65537,
+        ):
+            with self.subTest(response=response[:70]):
+                with self.assertRaises(Hold):
+                    ollama_inventory_empty(response)
+
+    def test_only_exact_owned_llama_cli_pid_is_exempt(self):
+        processes = {"ollama.exe": {5300}, "llama-cli.exe": {111, 222}}
+        self.assertEqual(competing_model_workers(processes), ["llama-cli.exe"])
+        self.assertEqual(competing_model_workers(processes, 111), ["llama-cli.exe"])
+        self.assertEqual(competing_model_workers({"llama-cli.exe": {111}}, 111), [])
+        self.assertEqual(competing_model_workers({"llama-cli.exe": {222}}, 111), ["llama-cli.exe"])
+        self.assertEqual(competing_model_workers({"ollama_llama_server.exe": {444}}, 111),
+                         ["ollama_llama_server.exe"])
+        with self.assertRaises(Hold):
+            competing_model_workers({}, owner_pid=0)
 
 
 if __name__ == "__main__":
