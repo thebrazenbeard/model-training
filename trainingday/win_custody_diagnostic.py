@@ -38,6 +38,9 @@ _DIRECTORY_MUTATION = (
 _ALLOW_ACE = 0
 _DENY_ACE = 1
 _INHERIT_ONLY_ACE = 0x08
+# Win32 FILE_READ_ATTRIBUTES: 0x0080. pywin32 312 does not export this
+# file-specific right from win32con; it is not a generic READ permission.
+_FILE_READ_ATTRIBUTES = 0x0080
 
 
 class CustodyBlocked(ValueError):
@@ -166,7 +169,7 @@ def check_private_file(path: str, *, max_bytes: int = 514) -> dict:
         token.Close()
 
     flags = fileapi.FILE_FLAG_OPEN_REPARSE_POINT
-    read_control = con.READ_CONTROL | con.FILE_READ_ATTRIBUTES
+    read_control = con.READ_CONTROL | _FILE_READ_ATTRIBUTES
     # Keep every ancestor handle open until the target has been inspected;
     # omitting FILE_SHARE_DELETE prevents ordinary rename/delete races.
     with ExitStack() as held:

@@ -149,12 +149,16 @@ class NativeWindowsSyntheticFileTests(unittest.TestCase):
         import win32con
         import win32file
         import win32security
+        import ntsecuritycon
+
+        self.assertEqual(subject._FILE_READ_ATTRIBUTES,
+                         ntsecuritycon.FILE_READ_ATTRIBUTES)
 
         with tempfile.TemporaryDirectory(prefix="w8-custody-") as temp:
             for foreign in (False, True):
                 path, sid = self._fixture(Path(temp), foreign_allow=foreign)
                 handle = win32file.CreateFile(
-                    str(path), win32con.READ_CONTROL | win32con.FILE_READ_ATTRIBUTES,
+                    str(path), win32con.READ_CONTROL | subject._FILE_READ_ATTRIBUTES,
                     0, None, win32con.OPEN_EXISTING,
                     win32file.FILE_FLAG_OPEN_REPARSE_POINT, None,
                 )
