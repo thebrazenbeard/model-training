@@ -20,6 +20,10 @@ import sys
 SYSTEM_SID = "S-1-5-18"
 ADMINISTRATORS_SID = "S-1-5-32-544"
 CREATOR_OWNER_SID = "S-1-3-0"
+# The OS-protected Windows drive root in a native hosted Windows test is owned
+# by NT SERVICE\TrustedInstaller. This SID is trusted for directory ancestry
+# only, never for a private owner-supplied key or prompt file.
+TRUSTEDINSTALLER_SID = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 
 # An untrusted principal must not be able to alter a directory entry, change
 # its ACL, or replace a path component while a key handle is being inspected.
@@ -86,11 +90,12 @@ def _acl_allows_only_trusted(
     For the actual file, all foreign ALLOW ACEs block, including read-only.
     """
     privileged = {process_user, SYSTEM_SID, ADMINISTRATORS_SID}
+    ancestor_privileged = privileged | {TRUSTEDINSTALLER_SID}
     if not owner:
         raise CustodyBlocked("file security owner missing")
     if not aces:
         raise CustodyBlocked("empty or unavailable DACL entries")
-    if owner != process_user and (not is_directory or owner not in privileged):
+    if owner != process_user and (not is_directory or owner not in ancestor_privileged):
         raise CustodyBlocked("owner outside explicit trust set")
     for entry in aces:
         if (not isinstance(entry, tuple) or len(entry) != 4
@@ -102,7 +107,7 @@ def _acl_allows_only_trusted(
             raise CustodyBlocked("unrecognized ACL entry type")
         if ace_type == _DENY_ACE:
             continue  # A deny entry does not grant confidentiality or mutation.
-        if sid in privileged:
+        if sid in (ancestor_privileged if is_directory else privileged):
             continue
         if (is_directory and sid == CREATOR_OWNER_SID
                 and flags & _INHERIT_ONLY_ACE):

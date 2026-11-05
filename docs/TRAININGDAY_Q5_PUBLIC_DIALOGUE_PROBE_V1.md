@@ -40,7 +40,9 @@ Its sole output on an admitted snapshot is a generic JSON status with
 model. It checks a fixed local NTFS drive (rejecting aliases/UNC), drive-root
 and ancestor directory handles, file reparse/hardlink status, size, actual
 token owner SID and DACL from the **same file handle**. It treats the current
-user, LOCAL_SYSTEM and BUILTIN\Administrators as privileged filesystem trust;
+user, LOCAL_SYSTEM, BUILTIN\Administrators and the exact OS service SID of
+NT SERVICE\TrustedInstaller as privileged **directory ancestor** trust;
+TrustedInstaller is *not* accepted as the owner of a private key/prompt file;
 others' read/traverse on ancestors may be legitimate, but foreign directory
 mutation grants and any foreign file allow ACE block. It does not protect
 against already privileged administrators, same-owner malware, future ACL

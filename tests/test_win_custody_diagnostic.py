@@ -54,6 +54,24 @@ class PortablePolicyTests(unittest.TestCase):
                 aces=entries, is_directory=False,
             )
 
+    def test_trustedinstaller_is_known_os_ancestor_not_private_file_owner(self):
+        entries = (allowed(OWNER), allowed(subject.TRUSTEDINSTALLER_SID))
+        subject._acl_allows_only_trusted(
+            owner=subject.TRUSTEDINSTALLER_SID, process_user=OWNER,
+            aces=entries, is_directory=True,
+        )
+        with self.assertRaises(subject.CustodyBlocked):
+            subject._acl_allows_only_trusted(
+                owner=subject.TRUSTEDINSTALLER_SID, process_user=OWNER,
+                aces=entries, is_directory=False,
+            )
+        near_match = subject.TRUSTEDINSTALLER_SID[:-1] + "5"
+        with self.assertRaises(subject.CustodyBlocked):
+            subject._acl_allows_only_trusted(
+                owner=near_match, process_user=OWNER,
+                aces=(allowed(OWNER), allowed(near_match)), is_directory=True,
+            )
+
     def test_foreign_read_is_file_blocker_but_not_ancestor_mutation(self):
         entries = (allowed(OWNER), allowed(USERS, mask=0x00000001))
         subject._acl_allows_only_trusted(owner=OWNER, process_user=OWNER,
@@ -186,41 +204,7 @@ class NativeWindowsSyntheticFileTests(unittest.TestCase):
         # Windows CI. A blocked result is a test failure, not a synthetic PASS.
         with tempfile.TemporaryDirectory(prefix="w8-custody-path-") as temp:
             path, _ = self._fixture(Path(temp), foreign_allow=False)
-            try:
-                result = subject.check_private_file(str(path), max_bytes=514)
-            except subject.CustodyBlocked:
-                # ONLY in ephemeral public Windows CI: report OS root ACL
-                # classification, never any synthetic file contents, token,
-                # user-profile path, or private Lappy host metadata.
-                import sys
-                import win32con
-                import win32file
-                import win32security
-                root = Path(temp).anchor
-                handle = win32file.CreateFile(
-                    root, win32con.READ_CONTROL | subject._FILE_READ_ATTRIBUTES,
-                    win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
-                    None, win32file.OPEN_EXISTING,
-                    win32file.FILE_FLAG_OPEN_REPARSE_POINT |
-                    win32file.FILE_FLAG_BACKUP_SEMANTICS, None,
-                )
-                try:
-                    descriptor = win32security.GetSecurityInfo(
-                        handle, win32security.SE_FILE_OBJECT,
-                        win32security.OWNER_SECURITY_INFORMATION |
-                        win32security.DACL_SECURITY_INFORMATION,
-                    )
-                    owner = descriptor.GetSecurityDescriptorOwner()
-                    dacl = descriptor.GetSecurityDescriptorDacl()
-                    print("synthetic_ci_root_owner_sid:",
-                          win32security.ConvertSidToStringSid(owner) if owner else "NONE",
-                          file=sys.stderr)
-                    print("synthetic_ci_root_dacl_entries:",
-                          dacl.GetAceCount() if dacl else "NULL",
-                          file=sys.stderr)
-                finally:
-                    handle.Close()
-                raise
+            result = subject.check_private_file(str(path), max_bytes=514)
             self.assertEqual(result["status"], "SINGLE_POINT_ACL_SNAPSHOT_PASS")
             self.assertFalse(result["contents_read"])
             self.assertFalse(result["windows_q5_run_qualified"])
