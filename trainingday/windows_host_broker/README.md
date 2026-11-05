@@ -2,6 +2,10 @@
 
 **Evidence:** Installed LocalSystem Windows service and local named pipe. **Not** an authenticated GPU lease, data-rights issuer, NAS witness, trainer, or model qualification.
 
+For an operator-run, non-mutating readback of current Windows service identity,
+binary hash, and shallow directory ACL evidence when Executor is unavailable,
+see [`HOST_READBACK.md`](HOST_READBACK.md). Its output always remains `HOLD`.
+
 The C# service in this directory is the exact source of the host-installed bootstrap. It runs outside Git under Windows Service Control Manager. Its pipe has SYSTEM/Administrators-only DACL; it attempts to authenticate the actual client Windows token after a completed pipe read. Every operation deliberately returns `HOLD`, zero authorized launches, no GPU lease, no data rights and no NAS witness. It does not open training data or load model weights.
 
 **Do not** modify `trainingday/physical_launch_authority.py` to interpret this status response as approval. The Python hard hold remains unconditional. Only a separately qualified, host-owned service that owns the immutable run plan, exclusive GPU and process handles, rights grants, durable anti-replay witness, and training child job may launch. The authoritative requirements are in `trainingday/WINDOWS_HOST_BROKER_DEPLOYMENT_BOUNDARY.md`.
