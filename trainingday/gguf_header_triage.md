@@ -87,6 +87,9 @@ the actual preexisting Lappy file
 `D:\VERA\models\gguf\model_q5_k_s.gguf`: **3,072,993,056 bytes**, SHA-256
 `15150f534dc90ee15c82320ccc014463db7985205a7161228cff89b925fd1216`,
 using a bounded, idle-priority read-only PowerShell operation lasting 48.18 s.
+The full host identity, preflight measurements and command-level method were
+[read back in Bus #404 witness 6647779973](https://github.com/thebrazenbeard/chat-communication-bus/issues/404#issuecomment-6647779973)
+(a GitHub coordination receipt, **not** an authenticated Blotter entry).
 The file's binary digest and length therefore **match the HF LFS pointer**.
 This evidence is `LIVE_HOST_FILE_SHA256 + PUBLIC_REMOTE_LFS_POINTER`, not a
 training-source tensor comparison. The GGUF publisher's claim of deriving
