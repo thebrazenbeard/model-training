@@ -1,6 +1,6 @@
 beautifulsoup4==4.15.0
 PyYAML==6.0.3
 requests==2.34.2
-pytest==9.1.1
+pytest==9.2.0
 # Keep the zero-cost source acquisition boundary aligned with the vetted Ingest revision.
 vera-ingest @ git+https://github.com/thebrazenbeard/ingest.git@595ec8cacfa8e1b2b92259e925a645a92d125508
