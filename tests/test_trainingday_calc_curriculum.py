@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import re
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -97,6 +99,31 @@ class CalcCurriculumSourceTests(unittest.TestCase):
                     "authorizes_training"):
             self.assertIs(manifest[key], False)
         self.assertIsInstance(json.dumps(manifest, sort_keys=True), str)
+
+    @unittest.skipUnless(importlib.util.find_spec("calc") is not None,
+                         "exact Calc source checkout unavailable")
+    def test_all_1024_derivatives_agree_with_separate_calc_algebra_engine(self):
+        # The curriculum uses calc.symbolic; this second real Calc module uses
+        # exact Fraction-backed coefficient arithmetic, not float evaluation.
+        from calc import algebra
+        from trainingday import calc_eval_commitment
+
+        self.assertEqual(hashlib.sha256(Path(algebra.__file__).read_bytes()).hexdigest(),
+                         calc_eval_commitment.CALC_ALGEBRA_SHA256)
+        pattern = re.compile(
+            r"f\(x\)=\((-?\d+)\)x\^3\+\((-?\d+)\)x\^2"
+            r"\+\((-?\d+)\)x\+\((-?\d+)\); f'\((-?\d+)\)=\?"
+        )
+        rows = curriculum.train_rows()
+        self.assertEqual(len(rows), 1024)
+        for index, row in enumerate(rows):
+            with self.subTest(index=index):
+                match = pattern.fullmatch(row["prompt"])
+                self.assertIsNotNone(match)
+                a, b, c, d, x0 = map(int, match.groups())
+                exact = algebra.Polynomial([d, c, b, a]).differentiate()(x0)
+                self.assertEqual(exact.denominator, 1)
+                self.assertEqual(exact.numerator, int(row["answer"]))
 
 
 if __name__ == "__main__":

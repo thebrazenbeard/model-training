@@ -111,9 +111,12 @@ def _tokenize_one(row: dict, tokenizer, max_sequence_length: int) -> dict:
              and eos not in prefix_ids and eos not in answer_ids)
     joined_ids = prefix_ids + answer_ids
     _require(len(joined_ids) + 1 <= max_sequence_length)
-    # Separate encodes are intentional: a tokenizer must preserve the exact
-    # prompt+answer bytes when token chunks are concatenated. Never silently
-    # shift the answer-label boundary after a context-sensitive BPE merge.
+    # A context-sensitive tokenizer can merge across the answer boundary while
+    # both the canonical and concatenated sequences decode to identical text.
+    # Text round-trip alone therefore cannot prove answer-label alignment.
+    # Reject such sources rather than silently using noncanonical token IDs.
+    whole_ids = _tokens(tokenizer, prefix + answer)
+    _require(whole_ids == joined_ids)
     try:
         decoded = tokenizer.decode(
             joined_ids, skip_special_tokens=False,
