@@ -45,6 +45,45 @@ local journal remains outside its authority model. Do not wire a positive
 training route into this test component; production integration requires the
 independent service, identity, rights, immutable plan and NAS checks above.
 
+### Resource-capped harmless Job child (source-only successor)
+
+The native `JobObjectChildCustody` regression additionally configures a
+**256 MiB job-wide committed-memory cap** and a **25% CPU hard cap** on its
+fixed `ping.exe` loopback child. It reads both limit classes back from the
+Windows kernel **before** creating the child suspended; any missing/incorrect
+limit fails closed before child creation. The test observes job membership,
+limit readback and kill-on-last-job-handle-close using the retained kernel
+process handle, avoiding a PID-reuse termination claim. Failure during setup
+terminates the still-suspended child and closes owned handles.
+
+An additional native **5 GiB memory-cap representability test** applies that
+larger ceiling to the *same tiny ping child*, reads back kernel limits and
+confirms owner-handle cleanup. It never allocates 5 GiB or launches GGUF.
+Zero/overflow, unaligned memory and invalid CPU quotas must reject **before**
+creating a Job. This is API/ABI and fail-closed policy coverage, **not** a
+physical availability test or endorsement that Lappy can spare 5 GiB.
+
+This is an OS-isolation *fixture*, not an inference lease or a live Lappy
+qualification. Its default cap is intentionally far too small for Qwen. It has no
+arbitrary executable/model-path input and does not alter the installed
+deny-only service. A separate owner-scoped inference launcher would require:
+
+1. Live host identity and free-memory/competing-process preflight, with
+   fail-closed resource margin; user-owned process/session and cancellation.
+2. Pinned executable identity, exact artifact hash, tokenizer and adapter
+   lineage; no Q4+R13 pairing without matching training-base proof.
+3. A newly created, preconfigured, *read-back* Windows Job with appropriate
+   job-wide memory/CPU limits, suspended child attachment before resumption,
+   retained process/job handles, a strict deadline and witnessed child exit.
+4. A tested error/abort/owner-loss cleanup path, plus host-native stress and
+   contention regression under an owner-approved maintenance window.
+
+Until those are implemented and **physically verified on the target host**,
+bounded GGUF conversation load remains **NO-GO**. WSL `systemd-run` is a
+separate possible Linux-process route, not a substitute for Windows host
+memory and workload checks or proof that the current distro has usable
+delegated cgroup controllers.
+
 ## R162 source-only bounded request hardening
 
 The successor source adds `BoundedPipeRequest.Read`: a total 1,500 ms input deadline, maximum 128 printable ASCII bytes, CRLF/LF framing validation, and cooperative service-stop cancellation. On timeout it disposes the active pipe, waits for native overlapped I/O completion before closing its event handle, and never interprets the request as authorization. Windows native tests exercise normal requests, 128/129-byte boundaries, malformed controls, idle and slow-drip clients, stop cancellation, and a healthy request after a timeout.
