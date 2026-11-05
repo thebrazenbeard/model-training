@@ -1,0 +1,76 @@
+name: TRAININGDAY official Qwen3.5 CPU meta-only PEFT names
+
+on:
+  push:
+    branches: ["fix/trainingday-qwen35-meta-skeleton-*"]
+  pull_request:
+    branches: [main, "fix/trainingday-qwen35-adapter-coverage-20261103"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  official-meta-peft-names:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CUDA_VISIBLE_DEVICES: "-1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned CPU-only meta/PEFT libraries
+        shell: bash
+        run: |
+          python -m pip install --no-cache-dir --only-binary=:all: \
+            --index-url https://download.pytorch.org/whl/cpu \
+            'torch==2.9.1+cpu'
+          python -m pip install --no-cache-dir --only-binary=:all: \
+            'transformers==5.22.1' 'accelerate==1.12.0' 'peft==0.21.2'
+          python -m pip check
+      - name: Fetch only official pinned config metadata (64 KiB cap)
+        shell: bash
+        run: |
+          curl --fail --location --silent --show-error --retry 2 --max-time 60 \
+            --max-filesize 65536 --proto '=https' --proto-redir '=https' \
+            'https://huggingface.co/Qwen/Qwen3.5-4B/resolve/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/config.json' \
+            --output "$RUNNER_TEMP/qwen35-official-config.json"
+          printf '%s  %s\n' \
+            'ddc63e1c717afa86c865bb5e01313d89d72bb53b97ad4a8a03ba8510c0621670' \
+            "$RUNNER_TEMP/qwen35-official-config.json" | sha256sum --check --status
+      - name: Execute meta-only official text/PEFT name qualification
+        shell: bash
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          timeout --signal=TERM 150s python -m trainingday.qwen35_meta_skeleton_probe \
+            --config "$RUNNER_TEMP/qwen35-official-config.json" \
+            | tee "$RUNNER_TEMP/qwen35-official-meta-evidence.json"
+          python - "$RUNNER_TEMP/qwen35-official-meta-evidence.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+          result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          expected = {
+              "status": "PINNED_OFFICIAL_QWEN35_TEXT_META_PEFT_NAMES_VERIFIED_ONLY",
+              "meta_only": True,
+              "pretrained_weights_loaded": False,
+              "weight_shards_authenticated": False,
+              "cuda_used": False,
+              "optimizer_steps_observed": 0,
+              "physical_training_authorized": False,
+              "hardware_fit": "UNKNOWN",
+          }
+          if any(result.get(key) != value for key, value in expected.items()):
+              raise SystemExit("meta-only evidence omitted or overclaimed a protected effect")
+          PY

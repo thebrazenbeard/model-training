@@ -239,6 +239,10 @@ def one_step_kernel(base_binding_path):
     model = get_peft_model(model, LoraConfig(
         r=4, lora_alpha=8, lora_dropout=0, bias="none", task_type="CAUSAL_LM",
         target_modules=["q_proj", "v_proj"]))
+    from trainingday.qwen35_adapter_coverage import audit_loaded_minimal_lora_model
+    # A nonempty trainable set is insufficient: PEFT can silently skip missing
+    # target names. Refuse a wrong decoder or partial q/v adapter installation.
+    coverage = audit_loaded_minimal_lora_model(model, text_config.layer_types)
     if any(p.device.type != "cuda" for p in model.parameters()):
         raise LowMemoryExperimentError("unqualified CPU/disk device placement")
     placement = getattr(model, "hf_device_map", None) or {}
@@ -278,7 +282,7 @@ def one_step_kernel(base_binding_path):
         step_allocated=step_peak_cuda_allocated_bytes,
         step_reserved=step_peak_cuda_reserved_bytes))
     witness.update(actual_cpu_offload_used=False, checkpoint_written=False,
-                   eval_access=False)
+                   eval_access=False, adapter_coverage=coverage)
     return witness
 
 

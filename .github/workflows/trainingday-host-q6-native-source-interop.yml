@@ -1,0 +1,48 @@
+name: TRAININGDAY host Q6 native canonical source interoperability HOLD
+
+on:
+  push:
+    branches: ["fix/**", "test/**", "feat/**"]
+    paths:
+      - ".github/workflows/trainingday-host-q6-native-source-interop.yml"
+      - "trainingday/windows_host_broker/HostQ6CanonicalSourceInterop.cs"
+      - "tests/native_broker_q6_source_interop.cs"
+      - "tests/fixtures/trainingday_q6_host_source_vector_v1.json"
+  pull_request:
+    branches: [main, "fix/**", "test/**", "feat/**", "trainingday/**"]
+    paths:
+      - ".github/workflows/trainingday-host-q6-native-source-interop.yml"
+      - "trainingday/windows_host_broker/HostQ6CanonicalSourceInterop.cs"
+      - "tests/native_broker_q6_source_interop.cs"
+      - "tests/fixtures/trainingday_q6_host_source_vector_v1.json"
+
+permissions:
+  contents: read
+
+jobs:
+  native-python-q6-subject-hold:
+    if: ${{ github.event.repository.private == false }}
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compile and execute actual .NET Framework 4.8 canonical source comparison
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { throw 'Native .NET 4.8 compiler missing' }
+          $exe = Join-Path $env:RUNNER_TEMP 'HostQ6CanonicalSourceInteropNative.exe'
+          $source = Join-Path $PWD 'trainingday/windows_host_broker/HostQ6CanonicalSourceInterop.cs'
+          $tests = Join-Path $PWD 'tests/native_broker_q6_source_interop.cs'
+          $fixture = Join-Path $PWD 'tests/fixtures/trainingday_q6_host_source_vector_v1.json'
+          & $csc /nologo /target:exe /optimize+ ('/out:'+$exe) /r:System.Web.Extensions.dll $source $tests
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) { throw 'Native source test compile FAILED' }
+          $result = & $exe $fixture
+          if ($LASTEXITCODE -ne 0 -or $result -notmatch 'NATIVE_HOST_Q6_SOURCE_INTEROP_HOLD_PASS') {
+            throw 'Native host-Q6 source test FAILED'
+          }
+          Write-Output $result
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'Source fixture digest parity only; NO installed signature verifier, witness, GPU lease, or training grant.'
