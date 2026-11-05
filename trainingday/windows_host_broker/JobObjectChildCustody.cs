@@ -1,4 +1,4 @@
-// Real Windows JobObject custody of a harmless test child only.
+// Real Windows JobObject custody of a harmless, bounded test child only.
 // No rights, GPU, NAS, broker authorization or training launch is granted.
 using System;
 using System.ComponentModel;
@@ -10,7 +10,14 @@ namespace Vera.TrainingDay.HostBroker {
 internal sealed class JobObjectChildCustody : IDisposable {
     const uint CREATE_SUSPENDED=0x00000004, CREATE_NO_WINDOW=0x08000000;
     const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE=0x00002000;
+    const uint JOB_OBJECT_LIMIT_JOB_MEMORY=0x00000200;
+    const uint JOB_OBJECT_CPU_RATE_CONTROL_ENABLE=0x00000001;
+    const uint JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP=0x00000004;
     const int JobObjectExtendedLimitInformation=9;
+    const int JobObjectCpuRateControlInformation=15;
+    // A conservative harmless-probe fixture, never a model memory estimate.
+    internal const ulong ProbeJobMemoryBytes=256UL*1024UL*1024UL;
+    internal const uint ProbeCpuRate=2500; // 25% of host CPU capacity
     const uint STILL_ACTIVE=259;
     const uint WAIT_OBJECT_0=0, WAIT_FAILED=0xFFFFFFFF;
     IntPtr job, process, thread;
@@ -39,6 +46,10 @@ internal sealed class JobObjectChildCustody : IDisposable {
         public UIntPtr ProcessMemoryLimit, JobMemoryLimit;
         public UIntPtr PeakProcessMemoryUsed, PeakJobMemoryUsed;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    struct CpuRateLimits {
+        public uint ControlFlags, CpuRate;
+    }
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
     struct StartupInfo {
         public int cb;
@@ -54,9 +65,18 @@ internal sealed class JobObjectChildCustody : IDisposable {
     }
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     static extern IntPtr CreateJobObject(IntPtr attrs, string name);
-    [DllImport("kernel32.dll", SetLastError=true)]
-    static extern bool SetInformationJobObject(IntPtr handle, int kind,
+    [DllImport("kernel32.dll", EntryPoint="SetInformationJobObject", SetLastError=true)]
+    static extern bool SetJobExtendedLimits(IntPtr handle, int kind,
         ref ExtendedLimits info, int length);
+    [DllImport("kernel32.dll", EntryPoint="SetInformationJobObject", SetLastError=true)]
+    static extern bool SetJobCpuRateLimits(IntPtr handle, int kind,
+        ref CpuRateLimits info, int length);
+    [DllImport("kernel32.dll", EntryPoint="QueryInformationJobObject", SetLastError=true)]
+    static extern bool GetJobExtendedLimits(IntPtr handle, int kind,
+        out ExtendedLimits info, int length, out uint returned);
+    [DllImport("kernel32.dll", EntryPoint="QueryInformationJobObject", SetLastError=true)]
+    static extern bool GetJobCpuRateLimits(IntPtr handle, int kind,
+        out CpuRateLimits info, int length, out uint returned);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
     static extern bool CreateProcessW(string application, StringBuilder cmd,
         IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles,
@@ -88,10 +108,22 @@ internal sealed class JobObjectChildCustody : IDisposable {
             owner.job=CreateJobObject(IntPtr.Zero, null);
             if (owner.job==IntPtr.Zero) throw NativeError("CreateJobObject");
             var limits=new ExtendedLimits();
-            limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if (!SetInformationJobObject(owner.job, JobObjectExtendedLimitInformation,
+            limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                | JOB_OBJECT_LIMIT_JOB_MEMORY;
+            limits.JobMemoryLimit=new UIntPtr(ProbeJobMemoryBytes);
+            if (!SetJobExtendedLimits(owner.job, JobObjectExtendedLimitInformation,
                     ref limits, Marshal.SizeOf(typeof(ExtendedLimits))))
-                throw NativeError("SetInformationJobObject");
+                throw NativeError("SetInformationJobObject memory/termination");
+            var cpu=new CpuRateLimits();
+            cpu.ControlFlags=JOB_OBJECT_CPU_RATE_CONTROL_ENABLE|JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+            cpu.CpuRate=ProbeCpuRate;
+            if (!SetJobCpuRateLimits(owner.job, JobObjectCpuRateControlInformation,
+                    ref cpu, Marshal.SizeOf(typeof(CpuRateLimits))))
+                throw NativeError("SetInformationJobObject CPU hard cap");
+            // Read back the actual kernel Job limits before allowing any child
+            // to exist. A successful SetInformation call alone is insufficient.
+            if (!owner.HasExpectedLimits)
+                throw new InvalidOperationException("native Job limits failed readback; HOLD");
             var start=new StartupInfo();
             start.cb=Marshal.SizeOf(typeof(StartupInfo));
             ProcessInfo child;
@@ -112,6 +144,31 @@ internal sealed class JobObjectChildCustody : IDisposable {
             if (owner.process!=IntPtr.Zero) TerminateProcess(owner.process, 1);
             owner.Dispose();
             throw;
+        }
+    }
+    internal bool HasExpectedLimits {
+        get {
+            if (disposed) throw new ObjectDisposedException("JobObjectChildCustody");
+            if (job==IntPtr.Zero) return false;
+            ExtendedLimits memory;
+            CpuRateLimits cpu;
+            uint returned;
+            if (!GetJobExtendedLimits(job, JobObjectExtendedLimitInformation,
+                    out memory, Marshal.SizeOf(typeof(ExtendedLimits)), out returned))
+                throw NativeError("QueryInformationJobObject memory");
+            if (returned < Marshal.SizeOf(typeof(ExtendedLimits)))
+                throw new InvalidOperationException("native Job memory readback truncated");
+            if (!GetJobCpuRateLimits(job, JobObjectCpuRateControlInformation,
+                    out cpu, Marshal.SizeOf(typeof(CpuRateLimits)), out returned))
+                throw NativeError("QueryInformationJobObject CPU");
+            if (returned < Marshal.SizeOf(typeof(CpuRateLimits)))
+                throw new InvalidOperationException("native Job CPU readback truncated");
+            return (memory.BasicLimitInformation.LimitFlags &
+                        (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE|JOB_OBJECT_LIMIT_JOB_MEMORY))
+                       == (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE|JOB_OBJECT_LIMIT_JOB_MEMORY)
+                && memory.JobMemoryLimit.ToUInt64()==ProbeJobMemoryBytes
+                && cpu.ControlFlags==(JOB_OBJECT_CPU_RATE_CONTROL_ENABLE|JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP)
+                && cpu.CpuRate==ProbeCpuRate;
         }
     }
     public bool IsInJob {
