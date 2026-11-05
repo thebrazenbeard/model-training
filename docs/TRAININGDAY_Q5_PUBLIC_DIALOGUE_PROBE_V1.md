@@ -30,7 +30,15 @@ borrow an unleased Lappy CPU/GPU budget, or send data to a remote server.
 
 The current hard hold remains: do not run against Lappy until an authorized
 host witness establishes resource/port exclusivity, the exact executable,
-model binding and a safe lifecycle. The script's declared model hash is
+model binding, **owner-protected raw loopback endpoint**, hard JobObject
+lifecycle/TTL and safe teardown. This is intentionally a *raw llama.cpp
+OpenAI-compatible* probe; it is **NOT compatible with the current v-e-r-a
+Draft #30 LoopbackModelBridge schema**, which requires the exact keys model,
+messages, stream and max_tokens and rejects the temperature/seed fields used
+here. Do not route this script through that bridge, and do not assume a raw
+loopback port is authenticated just because it is local. The separate web
+gateway needs its own reviewed integration contract.
+The script's declared model hash is
 **not** evidence that the upstream process loaded those bytes. No R13 or
 official-base/R16 adapter is involved in this experiment.
 
@@ -73,13 +81,19 @@ of separately approved short leases, not one continuous batch or a GO claim.
 The operator is responsible for actual CPU, token, wall, process and
 concurrency budgets. Each response requests at most 96 output tokens; a
 session has at most three scripted turns here, with a 30-second HTTP timeout
-per turn and a 120-second session gate (leave enough time for teardown within
-the host broker's reported 180-second lease maximum). Capture
+per turn and a 120-second session gate (the asynchronous HTTP transport has
+a hard wall deadline across connection, write, headers and body, including
+slow-drip responses; leave time for teardown within the host broker's
+reported 180-second lease maximum). This deliberately requires a complete
+Content-Length JSON response and rejects chunked/ambiguous upstream framing.
+Capture
 independent host process/model witnesses outside this tool if attribution
 is needed.
 
-Use a preexisting owner-only output directory (0700 on POSIX; Windows owner
-ACL set separately). The CLI writes two no-overwrite owner-local JSON files
+Use a preexisting owner-only output directory (0700 on POSIX; **on Windows
+the 0600 open mode DOES NOT enforce an owner ACL—set and inspect the NTFS
+directory and file ACL outside this script before sharing**). The CLI writes
+two no-overwrite owner-local JSON files
 per run:
 
 - review_(opaque).json — fictional user turns, completed model replies or
@@ -128,4 +142,6 @@ These tests use only scripted fake responses and a loopback in-process HTTP
 test server, with no downloaded model, user transcript or paid inference.
 They exercise opt-in, strict URL gating, role/finish filtering, multi-turn
 context formation, private output flags, censoring, seed/case counts, and a
-request body that excludes the reviewer rubric.
+request body that excludes the reviewer rubric. The slow-drip regression
+asserts that an upstream which never finishes cannot extend the wall budget
+by sending one byte just before each socket timeout.
