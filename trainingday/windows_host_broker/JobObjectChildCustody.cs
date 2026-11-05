@@ -18,9 +18,14 @@ internal sealed class JobObjectChildCustody : IDisposable {
     // A conservative harmless-probe fixture, never a model memory estimate.
     internal const ulong ProbeJobMemoryBytes=256UL*1024UL*1024UL;
     internal const uint ProbeCpuRate=2500; // 25% of host CPU capacity
+    internal const ulong LargeProbeJobMemoryBytes=5UL*1024UL*1024UL*1024UL;
+    const ulong MinimumTestJobMemoryBytes=64UL*1024UL*1024UL;
+    const ulong MaximumTestJobMemoryBytes=6UL*1024UL*1024UL*1024UL;
     const uint STILL_ACTIVE=259;
     const uint WAIT_OBJECT_0=0, WAIT_FAILED=0xFFFFFFFF;
     IntPtr job, process, thread;
+    ulong requestedMemoryBytes;
+    uint requestedCpuRate;
     bool disposed;
     public int ProcessId { get; private set; }
     private JobObjectChildCustody() {}
@@ -99,24 +104,38 @@ internal sealed class JobObjectChildCustody : IDisposable {
     // A test-only, fixed executable and loopback target. Intentionally no
     // public arbitrary-command or training launch method exists here.
     public static JobObjectChildCustody LaunchHarmlessProbe() {
+        return LaunchHarmlessProbeWithTestLimits(ProbeJobMemoryBytes, ProbeCpuRate);
+    }
+    // An OS-limit representability test only: even the 5 GiB case still
+    // launches the same tiny ping child and never allocates that memory.
+    internal static JobObjectChildCustody LaunchHarmlessProbeWithTestLimits(
+            ulong jobMemoryBytes, uint cpuRate) {
+        // Validate strictly before even creating a kernel JobObject.
+        if (IntPtr.Size!=8 || jobMemoryBytes<MinimumTestJobMemoryBytes
+                || jobMemoryBytes>MaximumTestJobMemoryBytes
+                || jobMemoryBytes%4096!=0 || cpuRate<100 || cpuRate>5000)
+            throw new ArgumentOutOfRangeException("jobMemoryBytes/cpuRate",
+                "test limits invalid; HOLD");
         string system=Environment.GetFolderPath(Environment.SpecialFolder.System);
         string executable=Path.Combine(system, "ping.exe");
         if (!File.Exists(executable))
             throw new InvalidOperationException("Windows ping test child absent");
         JobObjectChildCustody owner=new JobObjectChildCustody();
+        owner.requestedMemoryBytes=jobMemoryBytes;
+        owner.requestedCpuRate=cpuRate;
         try {
             owner.job=CreateJobObject(IntPtr.Zero, null);
             if (owner.job==IntPtr.Zero) throw NativeError("CreateJobObject");
             var limits=new ExtendedLimits();
             limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
                 | JOB_OBJECT_LIMIT_JOB_MEMORY;
-            limits.JobMemoryLimit=new UIntPtr(ProbeJobMemoryBytes);
+            limits.JobMemoryLimit=new UIntPtr(jobMemoryBytes);
             if (!SetJobExtendedLimits(owner.job, JobObjectExtendedLimitInformation,
                     ref limits, Marshal.SizeOf(typeof(ExtendedLimits))))
                 throw NativeError("SetInformationJobObject memory/termination");
             var cpu=new CpuRateLimits();
             cpu.ControlFlags=JOB_OBJECT_CPU_RATE_CONTROL_ENABLE|JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
-            cpu.CpuRate=ProbeCpuRate;
+            cpu.CpuRate=cpuRate;
             if (!SetJobCpuRateLimits(owner.job, JobObjectCpuRateControlInformation,
                     ref cpu, Marshal.SizeOf(typeof(CpuRateLimits))))
                 throw NativeError("SetInformationJobObject CPU hard cap");
@@ -166,9 +185,9 @@ internal sealed class JobObjectChildCustody : IDisposable {
             return (memory.BasicLimitInformation.LimitFlags &
                         (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE|JOB_OBJECT_LIMIT_JOB_MEMORY))
                        == (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE|JOB_OBJECT_LIMIT_JOB_MEMORY)
-                && memory.JobMemoryLimit.ToUInt64()==ProbeJobMemoryBytes
+                && memory.JobMemoryLimit.ToUInt64()==requestedMemoryBytes
                 && cpu.ControlFlags==(JOB_OBJECT_CPU_RATE_CONTROL_ENABLE|JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP)
-                && cpu.CpuRate==ProbeCpuRate;
+                && cpu.CpuRate==requestedCpuRate;
         }
     }
     public bool IsInJob {
