@@ -1,0 +1,48 @@
+name: TrainingDay owner GGUF source-only HOLD checks
+
+on:
+  push:
+    paths:
+      - ".github/workflows/trainingday-owner-llama-candidate.yml"
+      - "trainingday/windows_host_broker/OwnerLlamaServerLaunchCandidate.cs"
+      - "tests/native_owner_llama_candidate.cs"
+  pull_request:
+    paths:
+      - ".github/workflows/trainingday-owner-llama-candidate.yml"
+      - "trainingday/windows_host_broker/OwnerLlamaServerLaunchCandidate.cs"
+      - "tests/native_owner_llama_candidate.cs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-source-hold:
+    runs-on: windows-latest
+    timeout-minutes: 7
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Compile source-only candidate and execute negative regressions
+        shell: pwsh
+        run: |
+          $expected = '${{ github.event.pull_request.head.sha || github.sha }}'
+          $actual = (git rev-parse --verify HEAD).Trim()
+          if ($actual -ne $expected) { throw "Wrong source HEAD: $actual" }
+          $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+          if (-not (Test-Path -LiteralPath $compiler)) { throw 'Native compiler missing' }
+          $source = Join-Path $PWD 'trainingday/windows_host_broker/OwnerLlamaServerLaunchCandidate.cs'
+          $test = Join-Path $PWD 'tests/native_owner_llama_candidate.cs'
+          $exe = Join-Path $env:RUNNER_TEMP 'OwnerLlamaCandidateSourceTests.exe'
+          & $compiler /nologo /target:exe ('/out:'+$exe) $source $test
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exe)) {
+            throw 'Candidate compile failed'
+          }
+          $out = & $exe
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch 'OWNER_LLAMA_SOURCE_HOLD_PASS') {
+            throw 'Candidate failed to HOLD'
+          }
+          Write-Output "Source HEAD: $actual; $out"
