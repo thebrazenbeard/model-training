@@ -76,11 +76,14 @@ Its exact [`model_q5_k_s.gguf` file page](https://huggingface.co/tinyopsec/Qwen3
 reports rounded **3.07 GB**, SHA-256
 `15150f534dc90ee15c82320ccc014463db7985205a7161228cff89b925fd1216`,
 Xet hash `85203e0c3b62cd99aa40a671c40d9d711a81dfb999f678bbeee0ba52c72aad67`.
+The primary [Git LFS raw pointer](https://huggingface.co/tinyopsec/Qwen3.5-4B-Uncensored-Aggressive-GGUF/raw/main/model_q5_k_s.gguf)
+exposes exact `size 3072993056` and the same SHA-256 OID.
 The **narrative model card contradicts** its file listing: it says Q5_K_S is
 `~2.5 GB` and "Qwen2 (28 layers)", whereas the automatically shown GGUF
 summary says `qwen35`. The unrelated Lappy Q5 has the same generic basename
-and is **3,072,993,056 bytes**. Matching an approximate number and filename
-is a **SEARCH LEAD ONLY**, not an exact byte identity, repository revision,
+and is **3,072,993,056 bytes**, an **exact byte-count match** to that pointer.
+Matching file size and generic filename is still a **SEARCH LEAD ONLY**, not
+an independently verified SHA-256 file identity, repository revision,
 source-weight match, tokenizer match, or license/custody proof. No model or
 file was downloaded, moved, fully hashed, or loaded in this investigation.
 
