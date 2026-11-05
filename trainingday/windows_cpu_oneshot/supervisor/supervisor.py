@@ -16,13 +16,16 @@ import os
 from pathlib import Path
 import sys
 import time
+import urllib.error
+import urllib.request
 import uuid
 import policy
 
 from policy import (
     GIB, HOST, Hold, MIN_RUNTIME_FREE_BYTES, RUNNER_ROOT,
     SELFTEST_STATE_ROOT, STATE_ROOT, parse_plan, required_prelaunch_free,
-    state_root_for_mode, blocking_processes_for_mode,
+    state_root_for_mode, blocking_processes_for_mode, ollama_inventory_empty,
+    competing_model_workers,
 )
 
 if os.name != "nt":
@@ -31,7 +34,8 @@ if os.name != "nt":
 from windows_job import (  # noqa: E402 - Windows-only import
     PinnedReadFile, Win32Hold, assert_not_reparse,
     available_physical_bytes, host_cpu_percent, run_job,
-    running_executable_names, observed_windows_identity,
+    running_executable_names, running_named_processes,
+    observed_process_snapshot, observed_windows_identity,
 )
 
 
@@ -76,19 +80,91 @@ def _receipt(path: Path, body: dict) -> None:
             tmp.unlink()
 
 
-def _host_preflight(required_free: int, mode: str) -> dict:
+class _RejectLoopbackRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise Hold("Ollama occupancy endpoint redirect forbidden")
+
+
+def _ollama_local_inventory_empty() -> None:
+    """GET-only, fixed loopback API; never starts/stops/loads Ollama."""
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _RejectLoopbackRedirect()
+    )
+    request = urllib.request.Request("http://127.0.0.1:11434/api/ps", method="GET")
+    try:
+        with opener.open(request, timeout=0.6) as response:
+            if response.status != 200:
+                raise Hold("Ollama API /api/ps did not return HTTP 200")
+            payload = response.read(65537)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise Hold("unable to read current local Ollama model occupancy") from exc
+    ollama_inventory_empty(payload)
+
+
+class OllamaOccupancyGuard:
+    """Conservative cooperative occupancy screen, not a host lease.
+
+    API emptiness can be stale/incorrect; supplement with OS-observed PID,
+    creation time, RSS, known workers, before-resume and 1-second rechecks.
+    """
+
+    def __init__(self):
+        self.daemon_identity: tuple[int, int] | tuple[()] | None = None
+        self.check_count = 0
+        self.daemon_seen = False
+
+    def check(self, owner_pid: int | None = None) -> None:
+        proc = running_named_processes()
+        # Kernel-owned suspended Job child may be excluded by exact PID only.
+        # All other worker PIDs remain competing processes.
+        actual_workers = competing_model_workers(proc, owner_pid)
+        if actual_workers:
+            raise Hold(f"active inference/trainer executable: {', '.join(actual_workers)}")
+        pids = proc.get("ollama.exe", set())
+        if len(pids) > 1:
+            raise Hold("multiple Ollama daemons/runners are not distinguishable")
+        if pids:
+            pid = next(iter(pids))
+            created, rss = observed_process_snapshot(pid)
+            if rss > 128 * 1024 ** 2:
+                raise Hold("resident Ollama process exceeds idle RSS ceiling")
+            identity: tuple[int, int] | tuple[()] = (pid, created)
+            if self.daemon_identity is not None and self.daemon_identity != identity:
+                raise Hold("Ollama process identity changed during bounded run")
+            self.daemon_identity = identity
+            self.daemon_seen = True
+            _ollama_local_inventory_empty()
+        else:
+            if self.daemon_identity not in (None, ()):
+                raise Hold("Ollama daemon disappeared during model run")
+            self.daemon_identity = ()
+        self.check_count += 1
+
+
+def _host_preflight(required_free: int, mode: str,
+                    occupancy_guard: OllamaOccupancyGuard | None = None) -> dict:
     _require_owner_identity()
     if os.name != "nt" or sys.maxsize <= 2 ** 32:
         raise Hold("64-bit Windows Python required")
     free = available_physical_bytes()
     if free < required_free:
         raise Hold(f"insufficient available RAM: {free} < {required_free} bytes")
+    if mode == "--run":
+        if occupancy_guard is None:
+            raise Hold("model run requires independent current Ollama occupancy guard")
+        occupancy_guard.check()
     present = sorted(running_executable_names() & blocking_processes_for_mode(mode))
+    if mode == "--run":
+        # The single observed idle daemon is admitted only by the guard,
+        # never by a general process-name exception.
+        present = [name for name in present if name != "ollama.exe"]
     if present:
         raise Hold(f"existing model/training workload detected: {', '.join(present)}")
     cpu_busy = host_cpu_percent()
     if cpu_busy > 60:
         raise Hold(f"host occupied: {cpu_busy:.1f}% CPU over one second")
+    if occupancy_guard is not None:
+        occupancy_guard.check()
     return {"free_physical_bytes": free, "cpu_busy_percent": round(cpu_busy, 2),
             "conflicting_processes": present}
 
@@ -176,6 +252,7 @@ def self_test() -> dict:
 
 def run_public_q4_baseline() -> dict:
     with single_slot():
+        occupancy = OllamaOccupancyGuard()
         assert_not_reparse(PLAN_PATH)
         with open(PLAN_PATH, "rb") as plan_file:
             raw = plan_file.read(4097)
@@ -183,7 +260,7 @@ def run_public_q4_baseline() -> dict:
             raise Hold("plan exceeds 4096-byte maximum")
         plan = parse_plan(raw)
         plan_sha = hashlib.sha256(raw).hexdigest()
-        host = _host_preflight(required_prelaunch_free(plan), "--run")
+        host = _host_preflight(required_prelaunch_free(plan), "--run", occupancy)
         # Source-only policy checks are necessary but not sufficient; held OS
         # file handles block mutation/rename until the child is reaped.
         with _verified_runtime_bundle(), PinnedReadFile(Path(str(plan.model))) as model:
@@ -191,8 +268,7 @@ def run_public_q4_baseline() -> dict:
                 raise Hold("Q4 artifact bytes do not match published SHA-256")
             if available_physical_bytes() < required_prelaunch_free(plan):
                 raise Hold("available RAM fell below floor during hash verification")
-            if running_executable_names() & blocking_processes_for_mode("--run"):
-                raise Hold("a conflicting model/training process appeared after pinning")
+            occupancy.check()
 
             # Consume the plan atomically before any CreateProcessW call;
             # crash/ambiguous outcome permanently prevents automatic replay.
@@ -219,6 +295,7 @@ def run_public_q4_baseline() -> dict:
                     cpu_percent=plan.cpu_rate_percent,
                     wall_seconds=plan.wall_seconds,
                     runtime_free_floor=MIN_RUNTIME_FREE_BYTES,
+                    occupancy_guard=occupancy.check,
                 )
                 body = {
                     "schema": "VERA_VN1_Q4_BASELINE_RECEIPT_V1",
@@ -237,6 +314,8 @@ def run_public_q4_baseline() -> dict:
                     "job_active_processes_after": result.job_active_processes_after,
                     "child_handle_signaled": result.process_handle_signaled,
                     "peak_working_set_bytes": result.peak_working_set_bytes,
+                    "ollama_observed_idle_daemon": occupancy.daemon_seen,
+                    "occupancy_guard_checks": occupancy.check_count,
                 }
             except Exception as exc:
                 body = {
