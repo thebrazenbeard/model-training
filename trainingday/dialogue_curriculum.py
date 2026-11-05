@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
+import unicodedata
 
 
 SCHEMA = "VERA_DIALOGUE_PILOT_CANDIDATE_V1"
@@ -20,6 +21,11 @@ FAMILIES = (
 TRAIN_PER_FAMILY = 8
 DEV_PER_FAMILY = 2
 ALLOWED_SPLITS = ("train", "dev")
+ROW_FIELDS = frozenset({
+    "id", "scenario_id", "family", "split", "messages", "source_kind",
+    "rights_status", "training_authorized", "heldout",
+})
+MESSAGE_FIELDS = frozenset({"role", "content"})
 
 # Independently written, imaginary scenes. There are no personal-chat exports,
 # real user histories, live runtime claims, or proprietary persona phrases here.
@@ -154,6 +160,11 @@ def _canonical_bytes(obj: object) -> bytes:
                        separators=(",", ":")) + "\n").encode("utf-8")
 
 
+def _normalized_prompt(prompt: str) -> str:
+    """Detect obvious public TRAIN/DEV aliasing; not semantic disjointness."""
+    return " ".join(unicodedata.normalize("NFKC", prompt).casefold().split())
+
+
 def candidate_rows(split: str | None = None) -> list[dict]:
     """Return source candidates only. 'heldout' is intentionally impossible."""
     if split is not None and split not in ALLOWED_SPLITS:
@@ -189,6 +200,18 @@ def candidate_rows(split: str | None = None) -> list[dict]:
 
 
 def validate(rows: list[dict], split: str | None = None) -> None:
+    if type(rows) is not list:
+        raise ValueError("candidate rows must be a list")
+    for row in rows:
+        if type(row) is not dict or set(row) != ROW_FIELDS:
+            raise ValueError("candidate row fields mismatch")
+        messages = row["messages"]
+        if type(messages) is not list or len(messages) not in (2, 4):
+            raise ValueError("dialogue shape invalid")
+        if any(type(m) is not dict or set(m) != MESSAGE_FIELDS or
+               type(m["role"]) is not str or type(m["content"]) is not str
+               for m in messages):
+            raise ValueError("dialogue message fields mismatch")
     expected_count = {None: 80, "train": 64, "dev": 16}[split]
     if len(rows) != expected_count or len({r["id"] for r in rows}) != len(rows):
         raise ValueError("candidate cardinality/identity mismatch")
@@ -196,6 +219,8 @@ def validate(rows: list[dict], split: str | None = None) -> None:
         raise ValueError("fictional scenario collision")
     if len({r["messages"][-2]["content"] for r in rows}) != len(rows):
         raise ValueError("prompt collision")
+    if len({_normalized_prompt(r["messages"][-2]["content"]) for r in rows}) != len(rows):
+        raise ValueError("normalized prompt collision")
     per_family = Counter((r["split"], r["family"]) for r in rows)
     for family in FAMILIES:
         if split in (None, "train") and per_family["train", family] != TRAIN_PER_FAMILY:
