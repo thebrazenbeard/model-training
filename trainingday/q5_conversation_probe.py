@@ -150,10 +150,12 @@ def _client_api_key_file(path: Path) -> str:
     if not path.is_file():
         raise ValueError("existing client API-key file required")
     if os.name != "nt":
+        if not hasattr(os, "O_NOFOLLOW"):
+            raise ValueError("no-follow file opening required on this POSIX host")
         parent = path.parent.stat()
         if (parent.st_uid != os.geteuid() or parent.st_mode & 0o077):
             raise ValueError("client API-key parent must be owner-only")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDONLY | os.O_NOFOLLOW
         fd = os.open(path, flags)
         try:
             identity = os.fstat(fd)
