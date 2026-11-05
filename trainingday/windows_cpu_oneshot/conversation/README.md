@@ -87,3 +87,50 @@ or blind causal study. No semantic score is generated automatically.
 If the 1,024-token context cannot fit the prompt, required system instructions,
 and history, do not silently truncate and treat the result as valid evidence.
 That needs a physical owner receipt and separate review.
+
+## Official Windows CLI b12125 contract (source inspected, NOT executed)
+
+An offline, deterministic **first-turn-only** argument-list constructor is
+available in cli_contract.py. It accepts only known public prompts; it cannot
+execute any process. The inspected source is the pinned official
+ggml-org/llama.cpp tools/cli/README.md at tag b12125:
+
+https://github.com/ggml-org/llama.cpp/blob/b12125/tools/cli/README.md
+
+The official release Windows x64 CPU artifact is:
+
+- https://github.com/ggml-org/llama.cpp/releases/download/b12125/llama-b12125-bin-win-cpu-x64.zip
+- Attested archive SHA-256: 968091ccb8c230e0cf7e0eed386310703bebae4a4fd4375f0c57db53958307d8
+- GitHub attestation: https://github.com/ggml-org/llama.cpp/attestations/63933469
+
+The source-confirmed flag set is equivalent to:
+
+    llama-cli.exe --model [LOCAL_VERIFIED_GGUF]
+      --gpu-layers 0 --ctx-size 1024 --predict 64
+      --temp 0 --seed 0 --threads 2 --threads-batch 2
+      --fit off --offline --no-display-prompt --log-disable
+      --simple-io --no-show-timings --no-context-shift
+      --reasoning off --reasoning-budget 0
+      --single-turn --prompt [ONE_APPROVED_PUBLIC_FIRST_TURN]
+
+Use a process argument array (no shell interpolation). A prompt supplied this
+way is visible in the process command line, which is why the constructor
+rejects arbitrary/private prompts. Generated text still appears in CLI
+stdout and MUST NOT be included in shared process logs or issue comments.
+Only an owner-qualified private capture can retain it.
+
+**Hard evaluation caveat:** --single-turn exits after one predefined prompt.
+Launching that command separately for all eight turns does NOT preserve
+conversation state and must never be scored as correction carryover. The full
+four-session matrix requires independently verified same-process interactive
+history or a separately approved local loopback server. The latter would
+violate the current no-listener trial unless explicitly separately authorized.
+The smallest properly scoped physical pilot is just one first-turn output.
+
+The exact binary's real --help and behavior remain untested; the archive
+digest proves only the release asset if checked after download, not the loaded
+DLL/exe contents or their provenance. Release tag b12125 displays commit
+7d516e2, while the attestation page reports build workflow/source digest
+3259ab6: review this difference before treating a signed release description
+as compiled-code equivalence. Model GGUF chat-template correctness and any
+actual reasoning-disable effect require physical runtime verification.
