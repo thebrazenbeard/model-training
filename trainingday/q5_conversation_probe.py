@@ -138,8 +138,32 @@ def _endpoint(url: str) -> tuple[str, int, str]:
     return "127.0.0.1", port, parsed.path
 
 
+def _client_api_key_file(path: Path) -> str:
+    """Read one owner-supplied client token, never a multi-key server file.
+
+    The caller is responsible for independently qualifying Windows NTFS ACLs.
+    POSIX file modes are checked here; no token value enters a receipt/log.
+    """
+    path = path.resolve(strict=True)
+    if not path.is_file():
+        raise ValueError("existing client API-key file required")
+    if not 1 <= path.stat().st_size <= 514:
+        raise ValueError("client API-key file exceeds size bound")
+    if os.name != "nt" and (path.stat().st_mode & 0o077):
+        raise ValueError("client API-key file must be owner-only")
+    raw = path.read_bytes()
+    if raw.endswith(b"\n"):
+        raw = raw[:-1]
+    if raw.endswith(b"\r"):
+        raw = raw[:-1]
+    if not 1 <= len(raw) <= 512 or raw.startswith(b"#") or any(
+            b < 33 or b > 126 for b in raw):
+        raise ValueError("invalid client API-key file format")
+    return raw.decode("ascii")
+
+
 def local_chat(url: str, messages: list[dict], seed: int,
-               timeout: float = 30) -> dict:
+               timeout: float = 30, *, api_key: str) -> dict:
     """One total wall deadline across connect, write, headers and body.
 
     A socket's per-read timeout is insufficient: a drip server could send
@@ -148,6 +172,10 @@ def local_chat(url: str, messages: list[dict], seed: int,
     host, port, path = _endpoint(url)
     if type(timeout) not in (int, float) or not 0 < timeout <= 30:
         raise ValueError("invalid request timeout")
+    if (type(api_key) is not str or not 1 <= len(api_key) <= 512
+            or api_key.startswith("#") or any(
+                ord(ch) < 33 or ord(ch) > 126 for ch in api_key)):
+        raise ValueError("invalid client API-key format")
     payload = _canonical({
         "messages": messages,
         "temperature": GENERATION["temperature"],
@@ -164,6 +192,7 @@ def local_chat(url: str, messages: list[dict], seed: int,
                 "Host: 127.0.0.1\r\n"
                 "Content-Type: application/json\r\n"
                 "Accept: application/json\r\n"
+                "Authorization: Bearer " + api_key + "\r\n"
                 "Content-Length: " + str(len(payload)) + "\r\n"
                 "Connection: close\r\n\r\n"
             ).encode("ascii")
@@ -312,6 +341,7 @@ def main(argv=None) -> int:
     run.add_argument("--seed", required=True, type=int, choices=SEEDS)
     run.add_argument("--endpoint", required=True)
     run.add_argument("--system-prompt-file", required=True, type=Path)
+    run.add_argument("--client-api-key-file", required=False, type=Path)
     run.add_argument("--private-output-dir", required=True, type=Path)
     run.add_argument("--consent-to-local-inference", action="store_true")
     args = parser.parse_args(argv)
@@ -322,11 +352,15 @@ def main(argv=None) -> int:
         if not args.consent_to_local_inference:
             raise ValueError("explicit model-call opt-in required")
         _endpoint(args.endpoint)
+        if args.client_api_key_file is None:
+            raise ValueError("owner-protected client API-key file required")
+        api_key = _client_api_key_file(args.client_api_key_file)
         prompt = args.system_prompt_file.read_text(encoding="utf-8")
         review, receipt = execute(
             args.case, args.seed, prompt,
             lambda messages, seed, timeout:
-                local_chat(args.endpoint, messages, seed, timeout=timeout))
+                local_chat(args.endpoint, messages, seed, timeout=timeout,
+                           api_key=api_key))
         private_write(args.private_output_dir, review, receipt)
     except (ValueError, OSError, UnicodeError, TypeError) as exc:
         # The system prompt and user-owned output may be sensitive.
@@ -338,7 +372,9 @@ def main(argv=None) -> int:
         "complete_turn_count": receipt["complete_turn_count"],
         "semantic_persona_pass": False,
     }, sort_keys=True))
-    return 0
+    # A censored/unauthorized run writes a forensic receipt but must not look
+    # successful to a caller that only examines the CLI's exit code.
+    return 0 if receipt["complete_turn_count"] == len(dict(CASES)[args.case]) else 3
 
 
 if __name__ == "__main__":

@@ -24,7 +24,8 @@ not a runtime process or actual response attestation.
 The probe **never launches a model server** and never loads model weights.
 It requires an already-qualified owner-local service on literal
 127.0.0.1:port implementing /v1/chat/completions, explicit operator opt-in,
-an owner-provided system prompt file, and a precreated private output folder.
+an owner-provided system prompt file, a private one-token **client** API-key
+file, and a precreated private output folder.
 It does not call cloud inference, install dependencies, restart services,
 borrow an unleased Lappy CPU/GPU budget, or send data to a remote server.
 
@@ -38,6 +39,17 @@ messages, stream and max_tokens and rejects the temperature/seed fields used
 here. Do not route this script through that bridge, and do not assume a raw
 loopback port is authenticated just because it is local. The separate web
 gateway needs its own reviewed integration contract.
+In addition, the native raw server itself must be launched by the owner with
+an authenticated interface (e.g. llama.cpp `--api-key-file`) and explicit
+`--parallel 1` under the independent host lease. The probe now sends a
+`Authorization: Bearer` header to that raw endpoint. It reads one token from
+an existing client-only file, **not a copy of the server's multi-key file**.
+The client token is never accepted as a CLI argument or placed in transcripts,
+review or custody JSON, and HTTP 401 is never converted to a completed reply.
+An incomplete/unauthorized collection still writes a censored evidence record,
+but returns exit code 3 rather than silently reporting CLI success.
+This is source-side request support only; the server's actual auth, process,
+Windows ACLs, and loaded model remain unverified.
 The script's declared model hash is
 **not** evidence that the upstream process loaded those bytes. No R13 or
 official-base/R16 adapter is involved in this experiment.
@@ -72,7 +84,7 @@ Seed repetition checks variability, not statistical proof of a model trait.
 
 The following is an **example command**, not evidence of execution:
 
-    python -m trainingday.q5_conversation_probe run --case blender_orchestra --seed 17 --endpoint http://127.0.0.1:11435/v1/chat/completions --system-prompt-file C:\owner-private\vera-system.txt --private-output-dir C:\owner-private\probe-output --consent-to-local-inference
+    python -m trainingday.q5_conversation_probe run --case blender_orchestra --seed 17 --endpoint http://127.0.0.1:11435/v1/chat/completions --client-api-key-file C:\owner-private\client-api-key.txt --system-prompt-file C:\owner-private\vera-system.txt --private-output-dir C:\owner-private\probe-output --consent-to-local-inference
 
 Run the 12 case IDs with all three seeds separately rather than kicking off
 36 unsupervised sessions. **First collect one owner-attended 1–3-turn smoke
@@ -89,6 +101,15 @@ Content-Length JSON response and rejects chunked/ambiguous upstream framing.
 Capture
 independent host process/model witnesses outside this tool if attribution
 is needed.
+
+Use a preexisting, separately protected client API-key file containing a
+single printable ASCII token with an optional trailing line ending. No token
+file, bearer value, or source copy belongs in GitHub. POSIX clients reject
+group/other-readable key files; on Windows the owner must independently inspect
+NTFS ACLs for the client key and its parent directory before use. The CLI
+refuses inference if the key file is absent, malformed, or the operator has not
+explicitly opted in. The owner must also test that the raw endpoint rejects
+missing/wrong keys before any real model run.
 
 Use a preexisting owner-only output directory (0700 on POSIX; **on Windows
 the 0600 open mode DOES NOT enforce an owner ACL—set and inspect the NTFS
@@ -146,5 +167,7 @@ request body that excludes the reviewer rubric. The slow-drip regression
 asserts that an upstream which never finishes cannot extend the wall budget
 by sending one byte just before each socket timeout. A separate end-to-end
 CLI regression runs all three turns through a **fake loopback HTTP server**
-and checks that no raw replies leave via stdout. All 14 tests remain
+and checks that no raw replies or client bearer value leave via stdout. An
+unauthorized 401 regression confirms nonzero exit and no token in receipts.
+All 19 tests remain
 synthetic; no physical Q5 inference is part of that passing count.
