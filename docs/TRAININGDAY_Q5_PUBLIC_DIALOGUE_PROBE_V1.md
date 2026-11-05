@@ -29,6 +29,26 @@ module does not qualify those operations. The `plan` command and synthetic
 tests remain available on Windows. Do not bypass this source gate; restoring
 Windows support requires handle-bound owner/DACL/reparse checks and
 restricted-DACL file creation, native tests, and an independent host witness.
+
+An experimental **read-only Windows ACL diagnostic** is available separately:
+
+    python -m trainingday.win_custody_diagnostic check-file --kind key --path C:\owner-private\synthetic-key.txt
+
+Its sole output on an admitted snapshot is a generic JSON status with
+`contents_read=false`, `model_inference_performed=false` and
+`windows_q5_run_qualified=false`. It neither reads the file bytes nor loads a
+model. It checks a fixed local NTFS drive (rejecting aliases/UNC), drive-root
+and ancestor directory handles, file reparse/hardlink status, size, actual
+token owner SID and DACL from the **same file handle**. It treats the current
+user, LOCAL_SYSTEM and BUILTIN\Administrators as privileged filesystem trust;
+others' read/traverse on ancestors may be legitimate, but foreign directory
+mutation grants and any foreign file allow ACE block. It does not protect
+against already privileged administrators, same-owner malware, future ACL
+changes or a future process lease. A successful one-time diagnostic **is not**
+authorization to bypass the Windows Q5 `run` refusal, and it does not test
+secure private transcript creation. Test it only with synthetic files until
+native Windows CI and owner-host custody are independently qualified.
+
 It requires an already-qualified owner-local service on literal
 127.0.0.1:port implementing /v1/chat/completions, explicit operator opt-in,
 an owner-provided system prompt file, a private one-token **client** API-key
