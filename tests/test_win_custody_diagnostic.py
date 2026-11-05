@@ -333,7 +333,25 @@ class NativeWindowsSyntheticFileTests(unittest.TestCase):
                 known = {
                     "S-1-1-0": "Everyone", "S-1-5-11": "AuthenticatedUsers",
                     "S-1-5-32-545": "Users", "S-1-3-0": "CreatorOwner",
+                    subject.SYSTEM_SID: "LOCAL_SYSTEM",
+                    subject.ADMINISTRATORS_SID: "BUILTIN_ADMINISTRATORS",
+                    subject.TRUSTEDINSTALLER_SID: "TRUSTEDINSTALLER",
+                    process_sid: "CURRENT_TOKEN_USER",
                 }
+
+                def synthetic_sid_category(sid):
+                    sid_text = win32security.ConvertSidToStringSid(sid)
+                    if sid_text in known:
+                        return known[sid_text]
+                    try:
+                        _name, domain, usage = win32security.LookupAccountSid(None, sid)
+                        public_domain = domain if domain in (
+                            "NT AUTHORITY", "BUILTIN", "NT SERVICE",
+                        ) else "OTHER_DOMAIN"
+                        return f"OTHER_SID_TYPE_{int(usage)}_{public_domain}"
+                    except Exception:
+                        return "OTHER_UNRESOLVED"
+
                 for ordinal in range(len(segments)):
                     if ordinal:
                         candidate = os.path.join(candidate, segments[ordinal - 1])
@@ -354,15 +372,17 @@ class NativeWindowsSyntheticFileTests(unittest.TestCase):
                         except subject.CustodyBlocked:
                             desc = win32security.GetSecurityInfo(
                                 handle, win32security.SE_FILE_OBJECT,
-                                win32security.DACL_SECURITY_INFORMATION,
+                                win32security.DACL_SECURITY_INFORMATION |
+                                win32security.OWNER_SECURITY_INFORMATION,
                             )
                             acl = desc.GetSecurityDescriptorDacl()
+                            print("synthetic_ci_ancestor_owner_class:", ordinal,
+                                  synthetic_sid_category(
+                                      desc.GetSecurityDescriptorOwner(),
+                                  ), file=sys.stderr)
                             for i in range(min(acl.GetAceCount(), 20)):
                                 header, mask, sid = acl.GetAce(i)
-                                label = known.get(
-                                    win32security.ConvertSidToStringSid(sid),
-                                    "OTHER",
-                                )
+                                label = synthetic_sid_category(sid)
                                 print("synthetic_ci_ancestor_ace:", ordinal,
                                       int(header[0]), int(header[1]),
                                       hex(int(mask)), label, file=sys.stderr)
