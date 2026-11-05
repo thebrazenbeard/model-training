@@ -73,6 +73,82 @@ itself does **not** run a model.
    A BASE arm must not silently carry any adapter fields. The base and adapter
    arms share the same casebook commitment but have separate transcript hashes.
 
+   **Adapter ancestry is a mandatory fail-closed preflight.** An ADAPTER arm
+   must also carry **both** `model.base_lineage` (the actual GGUF's *underlying
+   unquantized checkpoint*) and `model.adapter_trained_base_lineage` (the
+   checkpoint on which the adapter was trained), each in this format:
+
+   ```json
+   {
+     "upstream_model_id": "owner/repository",
+     "upstream_revision": "<exact 40-hex source commit>",
+     "source_weights_sha256": "<64-hex SHA-256 of curated source-weight manifest>",
+     "tokenizer_sha256": "<64-hex SHA-256 of curated tokenizer manifest>",
+     "evidence_sha256": "<64-hex SHA-256 of separate custody evidence receipt>"
+   }
+   ```
+
+   The four identity fields (repository, revision, source-weight manifest
+   digest, tokenizer manifest digest) must match exactly across the two
+   objects. The evidence receipts can differ, since their custodians and
+   sampling methods can differ. An unknown/missing provenance item, a mutable
+   branch instead of a commit, or any mismatch rejects the entire ADAPTER
+   transcript **before semantic scoring**. An ordinary GGUF SHA-256 is *not*
+   `source_weights_sha256`: quantization changes tensor bytes, and the
+   quantizer's hosting repository need not be the underlying checkpoint repo.
+   The separate evidence receipt must be audited against original file/manifests
+   and physical tensors outside this source-only tool. Matching *self-declared*
+   strings is **not** independent proof of compatible ancestry; the evaluator
+   returns `DECLARED_MATCH_NOT_INDEPENDENTLY_VERIFIED` and
+   `physical_adapter_ancestry_verified_by_this_code: false` even on a match.
+   Repository IDs are compared **exactly, including case**; alias or case
+   equivalence must be established separately, never guessed by this code.
+   A single-arm `evaluate` always reports
+   `paired_arm_comparability_verified_by_this_score: false` and
+   `causal_adapter_effect_established: false`. For a proposed A/B result,
+   both arms must separately pass source validation **and** the additional
+   Python `preflight_comparable_arms(base_model, adapter_model)` check. That
+   rejects different source ancestry, GGUF model SHA, runtime binary, persona,
+   source commit, host, context size, or `shared_runner_config_sha256` and
+   `generation_config_sha256` between arms. The last two are mandatory
+   64-hex commitments to independently preserved, canonical records of the
+   *shared* runtime flags/template (excluding the explicit adapter-loading
+   delta) and sampling parameters, seed, temperature and context policy.
+   Literal `runner` strings may differ by `--lora` versus no adapter, so
+   equality of the strings alone would be the wrong test. All such config
+   receipts remain self-reported until compared with real process/runner logs.
+   Even a declared pair match requires independent physical custody and
+   blinded behavior comparison before any causal benefit claim.
+
+   **W50 corrected artifact split (2026-11-05, live-host source readback):**
+   `D:\\VERA\\models\\latest-trained\\MODEL_MANIFEST.json` describes the
+   **H07 rule-transfer V2** Aggressive package (ID
+   `vera-qwen35-h07-v2-r4-20260925`, adapter SHA-256
+   `2b628e90c9ceee52bf4ddcba3f7d77187265f6d62813f8cdcd1265792f531d7f`),
+   with declared donor
+   `rodrigomt/Qwen3.5-4B-Uncensored-Aggressive@d61dd146c8fd44c9a49cdb7f59f34e17b61902d8`.
+   This is **H07, not R13**; its manifest retains obsolete `C:\\Vera` paths
+   even though physical files reside under `D:\\VERA`.
+
+   The **distinct R13 qualification profile** at
+   `D:\\VERA\\model-profiles\\vera-qwen35-r13-20261029\\qualification.json`
+   instead names `lmstudio-community/Qwen3.5-4B-GGUF@f9f88ac3e234be915e23811a6d28ea287bdb927e`
+   as its base (Q4 SHA-256
+   `25082a7dd3776cc3c741c6347d3bd04523f05796607b3fbc32fa3a25dfa1418c`),
+   with a separately converted adapter SHA-256
+   `0211e111b712053a45e5014bec4436207fa83b8344247f4e4b92a5c203d1eeb6`.
+   The profile self-reports `RUNNABLE_WITH_ADAPTER_NOT_BEHAVIORALLY_QUALIFIED`
+   but does **not** establish immutable R13 training-base lineage.
+
+   Consequently neither `R13 + local tinyopsec Q5` nor
+   `H07 + local tinyopsec Q5` is qualified for causal adapted-vs-base
+   comparison. Matching model-family names, a binary SHA, or a successful
+   `llama_load_exit0` cannot repair the separate ancestry and tensor-map gaps.
+   The R13 profile on its own pinned Q4 is a *source-described technical
+   candidate*, not behavioral qualification. A Q5 *prompt-only BASE* trial is
+   a separate question and may proceed only after a physical host lease.
+   [Exact host-evidence correction](https://github.com/thebrazenbeard/chat-communication-bus/issues/404#issuecomment-6650655645).
+
 4. Give an independent reviewer the read-only casebook and complete transcript.
    Generate a deliberately unscored form:
 
@@ -125,6 +201,7 @@ itself does **not** run a model.
 | Real raw transcript + hashes | A particular model/runtime response if provenance independently read back | Correctness, intent comprehension, or unchanged effective KV context by itself |
 | Review with quoted turn evidence | A named reviewer **reported** a quality judgment | Reviewer independence, semantic truth, or model generalization by itself |
 | `evaluate` output | Valid schema, unchanged prompts, transcript/review commitments, reviewer-reported pass/fail | Autonomous human-quality grading, tool execution, training, deployment, or completed runbook qualification |
+| ADAPTER ancestry preflight | Supplied upstream repository/revision/manifest/tokenizer fields are complete and identical | That those fields are honest, GGUF tensor ancestry was physically proven, or the adapter improved behavior |
 
 The reviewer can be wrong or colluding; a SHA does not make subjective scores
 true. `context_history_verified` and `independence_attested` are assertions

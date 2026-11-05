@@ -176,6 +176,86 @@ def _require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+LINEAGE_FIELDS = frozenset({
+    "upstream_model_id", "upstream_revision", "source_weights_sha256",
+    "tokenizer_sha256", "evidence_sha256",
+})
+
+
+def _lineage(value: object, label: str) -> tuple[str, ...]:
+    """Check a *declared* underlying tensor/tokenizer lineage, not a GGUF hash.
+
+    Quantization changes tensor bytes, so the GGUF file hash cannot identify
+    the original training weights. All digests here need independent custody
+    of original source manifests; the validator cannot prove these assertions.
+    """
+    _require(type(value) is dict and set(value) == LINEAGE_FIELDS,
+             f"{label} requires complete, explicit source lineage")
+    repo = value["upstream_model_id"]
+    _require(type(repo) is str and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo),
+             f"{label} requires an immutable upstream model repository identity")
+    revision = value["upstream_revision"]
+    _require(type(revision) is str and HEX40.fullmatch(revision) is not None,
+             f"{label} requires an exact 40-hex source revision")
+    for name in ("source_weights_sha256", "tokenizer_sha256", "evidence_sha256"):
+        _require(type(value[name]) is str and HEX64.fullmatch(value[name]) is not None,
+                 f"{label} requires valid {name}")
+    return (repo, revision, value["source_weights_sha256"],
+            value["tokenizer_sha256"])
+
+
+def preflight_adapter_lineage(model: dict) -> str:
+    """Reject unsupported adapter/base ancestry; accept only a *declared* match.
+
+    The evidence_sha256 commits an external provenance receipt, not proof that
+    a receipt has been independently inspected or that the tensors match.
+    Real physical ancestry qualification is a separate host-owned gate.
+    """
+    _require(type(model) is dict and model.get("arm") in ("BASE", "ADAPTER"),
+             "lineage preflight requires BASE or ADAPTER arm")
+    if model["arm"] == "BASE":
+        _require(model.get("adapter_trained_base_lineage") is None,
+                 "base arm cannot claim adapter-trained-base lineage")
+        if model.get("base_lineage") is not None:
+            _lineage(model["base_lineage"], "base_lineage")
+        return "NO_ADAPTER"
+    base = _lineage(model.get("base_lineage"), "base_lineage")
+    trained = _lineage(model.get("adapter_trained_base_lineage"),
+                       "adapter_trained_base_lineage")
+    _require(base == trained,
+             "ADAPTER_BASE_LINEAGE_MISMATCH: upstream weights/revision/tokenizer differ")
+    return "DECLARED_MATCH_NOT_INDEPENDENTLY_VERIFIED"
+
+
+def preflight_comparable_arms(base_model: dict, adapter_model: dict) -> str:
+    """Reject an A/B pairing unless both arms declare the *same* base artifact.
+
+    This checks source declarations, not actual model behavior or a physical
+    base/adapter load. Call the full transcript/review validator for each arm.
+    """
+    _require(type(base_model) is dict and base_model.get("arm") == "BASE" and
+             type(adapter_model) is dict and adapter_model.get("arm") == "ADAPTER",
+             "paired comparison requires BASE and ADAPTER models in order")
+    preflight_adapter_lineage(adapter_model)
+    preflight_adapter_lineage(base_model)
+    base_origin = _lineage(base_model.get("base_lineage"), "paired BASE lineage")
+    adapter_origin = _lineage(adapter_model.get("base_lineage"),
+                              "paired ADAPTER lineage")
+    _require(base_origin == adapter_origin,
+             "PAIRED_BASE_LINEAGE_MISMATCH: comparison arms have different ancestors")
+    for name in ("model_sha256", "runtime_binary_sha256", "persona_source_sha256",
+                 "source_commit_sha", "host", "context_tokens",
+                 "shared_runner_config_sha256", "generation_config_sha256"):
+        _require(name in base_model and name in adapter_model and
+                 base_model[name] == adapter_model[name],
+                 f"PAIRED_BASE_CONFIG_MISMATCH: {name}")
+    for name in ("shared_runner_config_sha256", "generation_config_sha256"):
+        _require(type(base_model[name]) is str and
+                 HEX64.fullmatch(base_model[name]) is not None,
+                 f"invalid paired {name}")
+    return "DECLARED_MATCH_NOT_INDEPENDENTLY_VERIFIED_NOT_CAUSAL"
+
+
 def validate_casebook(casebook: dict) -> None:
     _require(type(casebook) is dict, "invalid casebook")
     _require(casebook.get("protocol") == PROTOCOL, "protocol mismatch")
@@ -248,6 +328,7 @@ def score(casebook: dict, transcript: dict, review: dict) -> dict:
         _require(all(model.get(name) in (None, "") for name in
                      ("adapter_id", "adapter_sha256", "adapter_bytes")),
                  "base arm cannot silently bind an adapter")
+    lineage_status = preflight_adapter_lineage(model)
     _require(type(model["source_commit_sha"]) is str and
              HEX40.fullmatch(model["source_commit_sha"]) is not None,
              "invalid source_commit_sha")
@@ -390,6 +471,10 @@ def score(casebook: dict, transcript: dict, review: dict) -> dict:
         "external_holdout_status": "NOT_TESTED",
         "global_vera_qualification": "NOT_ASSESSED",
         "reviewer_independence": "ATTESTED_NOT_TECHNICALLY_PROVEN",
+        "adapter_base_lineage_preflight": lineage_status,
+        "physical_adapter_ancestry_verified_by_this_code": False,
+        "paired_arm_comparability_verified_by_this_score": False,
+        "causal_adapter_effect_established": False,
         "model_behavior_verified_by_this_code": False,
     }
 
