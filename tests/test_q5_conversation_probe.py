@@ -186,7 +186,11 @@ class Q5ProbeContractTests(unittest.TestCase):
         from trainingday import q5_conversation_probe as subject
         review, receipt = execute(CASES[0][0], SEEDS[0], "mock",
                                   lambda m, s, t: completed())
-        with self.assertRaisesRegex(ValueError, "source repository"):
+        # On Windows the global private-file refusal intentionally precedes
+        # source-repository output validation; neither permits a write.
+        reason = ("Windows private-file DACL enforcement unavailable"
+                  if os.name == "nt" else "source repository")
+        with self.assertRaisesRegex(ValueError, reason):
             private_write(Path(subject.__file__).resolve().parents[1], review, receipt)
         if os.name != "nt":
             with tempfile.TemporaryDirectory() as tmp:
