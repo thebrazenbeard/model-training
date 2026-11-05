@@ -56,8 +56,15 @@ limit readback and kill-on-last-job-handle-close using the retained kernel
 process handle, avoiding a PID-reuse termination claim. Failure during setup
 terminates the still-suspended child and closes owned handles.
 
+An additional native **5 GiB memory-cap representability test** applies that
+larger ceiling to the *same tiny ping child*, reads back kernel limits and
+confirms owner-handle cleanup. It never allocates 5 GiB or launches GGUF.
+Zero/overflow, unaligned memory and invalid CPU quotas must reject **before**
+creating a Job. This is API/ABI and fail-closed policy coverage, **not** a
+physical availability test or endorsement that Lappy can spare 5 GiB.
+
 This is an OS-isolation *fixture*, not an inference lease or a live Lappy
-qualification. Its caps are intentionally far too small for Qwen. It has no
+qualification. Its default cap is intentionally far too small for Qwen. It has no
 arbitrary executable/model-path input and does not alter the installed
 deny-only service. A separate owner-scoped inference launcher would require:
 
