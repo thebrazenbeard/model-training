@@ -80,10 +80,26 @@ class PortablePolicyTests(unittest.TestCase):
             subject._acl_allows_only_trusted(owner=OWNER, process_user=OWNER,
                                              aces=entries, is_directory=False)
 
-    def test_foreign_inherited_or_generic_write_denied_on_ancestor(self):
-        for mask in (0x2, 0x4, 0x40, 0x10000, 0x40000, 0x80000,
-                     0x10000000, 0x40000000):
-            entries = (allowed(OWNER), allowed(USERS, mask=mask, flags=0x08))
+    def test_ancestor_sibling_create_and_inherit_only_are_not_effective_mutation(self):
+        for mask, flags in ((0x2, 0), (0x4, 0), (0x6, 0),
+                            (0xE0010000, 0x0B)):
+            entries = (allowed(OWNER), allowed(USERS, mask=mask, flags=flags))
+            with self.subTest(mask=hex(mask), flags=hex(flags)):
+                subject._acl_allows_only_trusted(
+                    owner=OWNER, process_user=OWNER,
+                    aces=entries, is_directory=True,
+                )
+                if flags:
+                    with self.assertRaises(subject.CustodyBlocked):
+                        subject._acl_allows_only_trusted(
+                            owner=OWNER, process_user=OWNER,
+                            aces=entries, is_directory=False,
+                        )
+
+    def test_effective_foreign_path_mutation_still_denied_on_ancestor(self):
+        for mask in (0x10, 0x40, 0x100, 0x10000, 0x40000, 0x80000,
+                     0x10000000, 0x40000000, 0x4 | 0x40):
+            entries = (allowed(OWNER), allowed(USERS, mask=mask))
             with self.subTest(mask=hex(mask)), self.assertRaises(subject.CustodyBlocked):
                 subject._acl_allows_only_trusted(
                     owner=OWNER, process_user=OWNER,
@@ -199,48 +215,97 @@ class NativeWindowsSyntheticFileTests(unittest.TestCase):
                 finally:
                     handle.Close()
 
+    def test_inherited_foreign_write_on_child_is_not_hidden_by_parent(self):
+        # Native, synthetic NTFS inheritance check. Parent has only a harmless
+        # foreign ADD_SUBDIRECTORY effective grant, plus an INHERIT_ONLY write
+        # grant that MUST be re-evaluated on the existing child directory.
+        import win32api
+        import win32con
+        import win32file
+        import win32security
+
+        token = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(), win32con.TOKEN_QUERY,
+        )
+        try:
+            owner = win32security.GetTokenInformation(
+                token, win32security.TokenUser,
+            )[0]
+        finally:
+            token.Close()
+        owner_sid = win32security.ConvertSidToStringSid(owner)
+        with tempfile.TemporaryDirectory(prefix="w8-native-inheritance-") as temp:
+            parent = Path(temp) / "controlled-parent"
+            parent.mkdir()
+            acl = win32security.ACL()
+            acl.AddAccessAllowedAce(win32security.ACL_REVISION,
+                                    win32con.GENERIC_ALL, owner)
+            system = win32security.ConvertStringSidToSid(subject.SYSTEM_SID)
+            acl.AddAccessAllowedAce(win32security.ACL_REVISION,
+                                    win32con.GENERIC_ALL, system)
+            everyone = win32security.ConvertStringSidToSid(EVERYONE)
+            acl.AddAccessAllowedAce(win32security.ACL_REVISION, 0x0004, everyone)
+            acl.AddAccessAllowedAceEx(
+                win32security.ACL_REVISION, 0x0B, win32con.GENERIC_WRITE,
+                everyone,
+            )
+            sd = win32security.SECURITY_DESCRIPTOR()
+            sd.SetSecurityDescriptorOwner(owner, False)
+            sd.SetSecurityDescriptorDacl(True, acl, False)
+            sd.SetSecurityDescriptorControl(
+                win32security.SE_DACL_PROTECTED,
+                win32security.SE_DACL_PROTECTED,
+            )
+            win32security.SetFileSecurity(
+                str(parent), win32security.DACL_SECURITY_INFORMATION, sd,
+            )
+            child = parent / "inherited-child"
+            child.mkdir()
+            for path, should_block in ((parent, False), (child, True)):
+                handle = win32file.CreateFile(
+                    str(path), win32con.READ_CONTROL | subject._FILE_READ_ATTRIBUTES,
+                    win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
+                    None, win32con.OPEN_EXISTING,
+                    win32file.FILE_FLAG_BACKUP_SEMANTICS |
+                    win32file.FILE_FLAG_OPEN_REPARSE_POINT, None,
+                )
+                try:
+                    if should_block:
+                        descriptor = win32security.GetSecurityInfo(
+                            handle, win32security.SE_FILE_OBJECT,
+                            win32security.DACL_SECURITY_INFORMATION,
+                        )
+                        child_acl = descriptor.GetSecurityDescriptorDacl()
+                        self.assertIsNotNone(child_acl)
+                        self.assertTrue(any(
+                            header[0] == subject._ALLOW_ACE
+                            and not header[1] & subject._INHERIT_ONLY_ACE
+                            and win32security.ConvertSidToStringSid(ace_sid) == EVERYONE
+                            and mask & subject._DIRECTORY_MUTATION
+                            for header, mask, ace_sid in (
+                                child_acl.GetAce(i)
+                                for i in range(child_acl.GetAceCount())
+                            )
+                        ), "child must actually inherit an effective foreign write grant")
+                        with self.assertRaises(subject.CustodyBlocked):
+                            subject._verify_descriptor(
+                                handle, process_sid=owner_sid, directory=True,
+                                security=win32security,
+                            )
+                    else:
+                        subject._verify_descriptor(
+                            handle, process_sid=owner_sid, directory=True,
+                            security=win32security,
+                        )
+                finally:
+                    handle.Close()
+
     def test_full_read_only_diagnostic_on_synthetic_private_file(self):
         # This exercises the actual drive, ancestor, handle and DACL APIs on
         # Windows CI. A blocked result is a test failure, not a synthetic PASS.
         with tempfile.TemporaryDirectory(prefix="w8-custody-path-") as temp:
             path, _ = self._fixture(Path(temp), foreign_allow=False)
-            try:
-                result = subject.check_private_file(str(path), max_bytes=514)
-            except subject.CustodyBlocked:
-                # Ephemeral *public GitHub Windows CI only*: inspect OS drive
-                # root ACE bitfields. No source host, key, prompt, profile or
-                # filesystem path enters logs; remove after policy diagnosis.
-                import sys
-                import win32con
-                import win32file
-                import win32security
-                handle = win32file.CreateFile(
-                    Path(temp).anchor,
-                    win32con.READ_CONTROL | subject._FILE_READ_ATTRIBUTES,
-                    win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
-                    None, win32file.OPEN_EXISTING,
-                    win32file.FILE_FLAG_OPEN_REPARSE_POINT |
-                    win32file.FILE_FLAG_BACKUP_SEMANTICS, None,
-                )
-                try:
-                    descriptor = win32security.GetSecurityInfo(
-                        handle, win32security.SE_FILE_OBJECT,
-                        win32security.DACL_SECURITY_INFORMATION,
-                    )
-                    dacl = descriptor.GetSecurityDescriptorDacl()
-                    known = {
-                        "S-1-1-0": "Everyone", "S-1-5-11": "AuthenticatedUsers",
-                        "S-1-5-32-545": "Users", "S-1-3-0": "CreatorOwner",
-                    }
-                    for index in range(min(dacl.GetAceCount(), 20)):
-                        header, mask, sid = dacl.GetAce(index)
-                        sid_text = win32security.ConvertSidToStringSid(sid)
-                        print("synthetic_ci_root_ace:",
-                              int(header[0]), int(header[1]), hex(int(mask)),
-                              known.get(sid_text, "OTHER"), file=sys.stderr)
-                finally:
-                    handle.Close()
-                raise
+            result = subject.check_private_file(str(path), max_bytes=514)
             self.assertEqual(result["status"], "SINGLE_POINT_ACL_SNAPSHOT_PASS")
             self.assertFalse(result["contents_read"])
             self.assertFalse(result["windows_q5_run_qualified"])

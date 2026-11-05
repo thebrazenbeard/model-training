@@ -43,8 +43,12 @@ token owner SID and DACL from the **same file handle**. It treats the current
 user, LOCAL_SYSTEM, BUILTIN\Administrators and the exact OS service SID of
 NT SERVICE\TrustedInstaller as privileged **directory ancestor** trust;
 TrustedInstaller is *not* accepted as the owner of a private key/prompt file;
-others' read/traverse on ancestors may be legitimate, but foreign directory
-mutation grants and any foreign file allow ACE block. It does not protect
+others' read/traverse or the ability to create unrelated sibling entries on
+ancestors may be legitimate. Inheritance-only ACEs do not grant access to
+the containing directory; effective ACLs on each existing child are checked.
+Foreign DELETE/DELETE_CHILD, ACL/owner/attribute/EA writes, or generic write
+grants on ancestors, and any foreign file allow ACE, still block. This is not
+a proof against every Windows rename or concurrent ACL race. It does not protect
 against already privileged administrators, same-owner malware, future ACL
 changes or a future process lease. A successful one-time diagnostic **is not**
 authorization to bypass the Windows Q5 `run` refusal, and it does not test

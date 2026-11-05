@@ -19,18 +19,19 @@ import sys
 
 SYSTEM_SID = "S-1-5-18"
 ADMINISTRATORS_SID = "S-1-5-32-544"
-CREATOR_OWNER_SID = "S-1-3-0"
 # The OS-protected Windows drive root in a native hosted Windows test is owned
 # by NT SERVICE\TrustedInstaller. This SID is trusted for directory ancestry
 # only, never for a private owner-supplied key or prompt file.
 TRUSTEDINSTALLER_SID = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 
-# An untrusted principal must not be able to alter a directory entry, change
-# its ACL, or replace a path component while a key handle is being inspected.
+# An untrusted principal must not be able to delete/replace an existing path
+# entry or modify the inspected directory ACL/attributes. ADD_FILE and
+# ADD_SUBDIRECTORY alone create unrelated siblings, not overwrite held path
+# components; DELETE on target or DELETE_CHILD on its parent remains denied.
+# INHERIT_ONLY ACEs are ineffective on this directory, but every existing
+# descendant has its own effective descriptor inspected below.
 _DIRECTORY_MUTATION = (
-    0x00000002  # FILE_ADD_FILE
-    | 0x00000004  # FILE_ADD_SUBDIRECTORY
-    | 0x00000010  # FILE_WRITE_EA
+    0x00000010  # FILE_WRITE_EA
     | 0x00000040  # FILE_DELETE_CHILD
     | 0x00000100  # FILE_WRITE_ATTRIBUTES
     | 0x00010000  # DELETE
@@ -84,9 +85,11 @@ def _acl_allows_only_trusted(
     """Conservative ACL classifier; no access-mask/name heuristics.
 
     ACE input is (type, flags, mask, canonical SID).  On path ancestors,
-    foreign READ/TRAVERSE is tolerated but *any mutation grant*, including an
-    INHERIT_ONLY child grant, blocks. Admins are an explicit privileged trust
-    boundary; they can take ownership even without a discretionary allow ACE.
+    foreign READ/TRAVERSE and creation of unrelated sibling entries are
+    tolerated, but deleting/replacing existing entries or ACL/attribute writes
+    block. An INHERIT_ONLY ACE is ineffective on the current directory; each
+    existing descendant's effective DACL is checked using its own handle.
+    Admins are an explicit privileged trust boundary; they can take ownership.
     For the actual file, all foreign ALLOW ACEs block, including read-only.
     """
     privileged = {process_user, SYSTEM_SID, ADMINISTRATORS_SID}
@@ -109,10 +112,9 @@ def _acl_allows_only_trusted(
             continue  # A deny entry does not grant confidentiality or mutation.
         if sid in (ancestor_privileged if is_directory else privileged):
             continue
-        if (is_directory and sid == CREATOR_OWNER_SID
-                and flags & _INHERIT_ONLY_ACE):
-            # It grants to a future child's creator, not foreign directory
-            # mutation. Foreign creation was separately blocked above.
+        if is_directory and flags & _INHERIT_ONLY_ACE:
+            # Not effective on this ancestor, including for CreatorOwner.
+            # We verify descendants rather than trusting inherited grants.
             continue
         if not is_directory or mask & _DIRECTORY_MUTATION:
             raise CustodyBlocked("untrusted ACL access grant")
