@@ -86,10 +86,12 @@ def _acl_allows_only_trusted(
     For the actual file, all foreign ALLOW ACEs block, including read-only.
     """
     privileged = {process_user, SYSTEM_SID, ADMINISTRATORS_SID}
-    if (not owner or not aces
-            or (owner != process_user and
-                (not is_directory or owner not in privileged))):
-        raise CustodyBlocked("private owner/DACL not established")
+    if not owner:
+        raise CustodyBlocked("file security owner missing")
+    if not aces:
+        raise CustodyBlocked("empty or unavailable DACL entries")
+    if owner != process_user and (not is_directory or owner not in privileged):
+        raise CustodyBlocked("owner outside explicit trust set")
     for entry in aces:
         if (not isinstance(entry, tuple) or len(entry) != 4
                 or type(entry[0]) is not int or type(entry[1]) is not int
