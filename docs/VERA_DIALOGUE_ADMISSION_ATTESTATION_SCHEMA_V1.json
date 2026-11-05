@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/thebrazenbeard/model-training/blob/main/docs/VERA_DIALOGUE_ADMISSION_ATTESTATION_SCHEMA_V1.json",
+  "title": "Source-bound, owner-attended dialogue admission assertion (format only)",
+  "description": "A format contract only: signature and rights verification MUST be performed by a separate host-owned verifier. No embedded assertion confers admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "candidate_sha256", "train_sha256", "dev_sha256", "generator_commit", "model_id", "base_revision", "signing_contract", "signing_payload_sha256", "rights_holder", "data_steward", "lawful_basis", "human_review", "allowed_use", "excluded_material", "retention_and_removal", "processor_scope", "signatures", "signed_at_utc"],
+  "properties": {
+    "schema_version": {"const": "VERA_DIALOGUE_ADMISSION_ATTESTATION_V1"},
+    "candidate_sha256": {"$ref": "#/$defs/sha256"},
+    "train_sha256": {"$ref": "#/$defs/sha256"},
+    "dev_sha256": {"$ref": "#/$defs/sha256"},
+    "generator_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "model_id": {"const": "Qwen/Qwen3.5-4B"},
+    "base_revision": {"type": "string", "pattern": "^[a-f0-9]{40}$", "description": "Immutable candidate digest only; a qualified external verifier MUST match it against the separately authenticated official Qwen3.5-4B revision allowlist. Schema alone does not authenticate it."},
+    "signing_contract": {"const": "VERA_DIALOGUE_ATTESTATION_V1_RFC8785_EXCLUDE_SIGNATURES_DOMAIN_SEPARATED"},
+    "signing_payload_sha256": {"$ref": "#/$defs/sha256"},
+    "rights_holder": {"$ref": "#/$defs/actor"},
+    "data_steward": {"$ref": "#/$defs/actor"},
+    "lawful_basis": {"type": "string", "minLength": 20},
+    "human_review": {"type": "string", "minLength": 20},
+    "allowed_use": {"const": "noncommercial local Qwen3.5 Vera model-training research"},
+    "excluded_material": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 3}},
+    "retention_and_removal": {"type": "string", "minLength": 10},
+    "processor_scope": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 2}},
+    "signed_at_utc": {"type": "string", "format": "date-time"},
+    "signatures": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rights_holder", "data_steward"],
+      "properties": {
+        "rights_holder": {"$ref": "#/$defs/signature"},
+        "data_steward": {"$ref": "#/$defs/signature"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "actor": {"type": "object", "additionalProperties": false, "required": ["identifier", "authority_statement"], "properties": {"identifier": {"type": "string", "minLength": 2}, "authority_statement": {"type": "string", "minLength": 20}}},
+    "signature": {"type": "object", "additionalProperties": false, "required": ["algorithm", "key_identifier", "signature_base64"], "properties": {"algorithm": {"const": "Ed25519"}, "key_identifier": {"type": "string", "minLength": 4}, "signature_base64": {"type": "string", "minLength": 40}}}
+  }
+}
