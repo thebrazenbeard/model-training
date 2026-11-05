@@ -153,6 +153,10 @@ class NativeWindowsSyntheticFileTests(unittest.TestCase):
 
         self.assertEqual(subject._FILE_READ_ATTRIBUTES,
                          ntsecuritycon.FILE_READ_ATTRIBUTES)
+        self.assertEqual(subject._FILE_ATTRIBUTE_DIRECTORY,
+                         win32con.FILE_ATTRIBUTE_DIRECTORY)
+        self.assertEqual(subject._FILE_ATTRIBUTE_REPARSE_POINT,
+                         win32con.FILE_ATTRIBUTE_REPARSE_POINT)
 
         with tempfile.TemporaryDirectory(prefix="w8-custody-") as temp:
             for foreign in (False, True):

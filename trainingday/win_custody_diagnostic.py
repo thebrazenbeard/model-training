@@ -41,6 +41,10 @@ _INHERIT_ONLY_ACE = 0x08
 # Win32 FILE_READ_ATTRIBUTES: 0x0080. pywin32 312 does not export this
 # file-specific right from win32con; it is not a generic READ permission.
 _FILE_READ_ATTRIBUTES = 0x0080
+# FILE_ATTRIBUTE_DIRECTORY and FILE_ATTRIBUTE_REPARSE_POINT are Win32 SDK
+# bits, not attributes exported by pywin32 312's win32file module.
+_FILE_ATTRIBUTE_DIRECTORY = 0x0010
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 
 
 class CustodyBlocked(ValueError):
@@ -180,8 +184,8 @@ def check_private_file(path: str, *, max_bytes: int = 514) -> dict:
         )
         held.callback(root_handle.Close)
         root_info = fileapi.GetFileInformationByHandle(root_handle)
-        if (root_info[0] & fileapi.FILE_ATTRIBUTE_REPARSE_POINT
-                or not root_info[0] & fileapi.FILE_ATTRIBUTE_DIRECTORY):
+        if (root_info[0] & _FILE_ATTRIBUTE_REPARSE_POINT
+                or not root_info[0] & _FILE_ATTRIBUTE_DIRECTORY):
             raise CustodyBlocked("reparse or non-directory drive root")
         _verify_descriptor(root_handle, process_sid=process_sid,
                            directory=True, security=security)
@@ -195,8 +199,8 @@ def check_private_file(path: str, *, max_bytes: int = 514) -> dict:
             )
             held.callback(handle.Close)
             info = fileapi.GetFileInformationByHandle(handle)
-            if (info[0] & fileapi.FILE_ATTRIBUTE_REPARSE_POINT
-                    or not info[0] & fileapi.FILE_ATTRIBUTE_DIRECTORY):
+            if (info[0] & _FILE_ATTRIBUTE_REPARSE_POINT
+                    or not info[0] & _FILE_ATTRIBUTE_DIRECTORY):
                 raise CustodyBlocked("non-directory or reparse ancestor")
             _verify_descriptor(handle, process_sid=process_sid,
                                directory=True, security=security)
@@ -206,8 +210,8 @@ def check_private_file(path: str, *, max_bytes: int = 514) -> dict:
         )
         held.callback(target_handle.Close)
         info = fileapi.GetFileInformationByHandle(target_handle)
-        if (info[0] & fileapi.FILE_ATTRIBUTE_REPARSE_POINT
-                or info[0] & fileapi.FILE_ATTRIBUTE_DIRECTORY
+        if (info[0] & _FILE_ATTRIBUTE_REPARSE_POINT
+                or info[0] & _FILE_ATTRIBUTE_DIRECTORY
                 or info[7] != 1):
             raise CustodyBlocked("reparse, directory or multiply-linked file")
         length = (info[5] << 32) | info[6]
