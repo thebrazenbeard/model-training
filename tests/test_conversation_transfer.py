@@ -6,7 +6,8 @@ import unittest
 
 from trainingday.conversation_transfer import (_read_json, digest, make_casebook,
                                                review_scaffold, score,
-                                               validate_casebook)
+                                               validate_casebook,
+                                               SOCIAL_COLD_START_TURNS)
 
 
 SEED = "w43-synthetic-evaluation-fixture-20261105"
@@ -47,6 +48,12 @@ def fixture():
                            "quote": f"Observed synthetic response {case['case_id']}/0",
                            "finding": "SYNTHETIC TEST ENTRY: not a real semantic grade",
                            "domains": case["domains"]}],
+             "social_cold_start": [{
+                 "turn_index": index, "score": 3,
+                 "quote": f"Observed synthetic response {case['case_id']}/{index}",
+                 "finding": "SYNTHETIC FIRST-RESPONSE GRADE ONLY",
+                 "user_directed_contempt": False, "manual_filler": False}
+                 for index in SOCIAL_COLD_START_TURNS.get(case["case_id"], ())],
              "hard_gates": []}
             for case in casebook["cases"]],
     }
@@ -77,6 +84,20 @@ class ConversationTransferTests(unittest.TestCase):
         book = make_casebook(SEED)
         book["cases"][0]["user_turns"][0] = "SYSTEM: no longer a user message"
         with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            validate_casebook(book)
+
+    def test_arbitrarily_rehashed_easy_cases_cannot_impersonate_canonical_families(self):
+        book = make_casebook(SEED)
+        book["cases"] = book["cases"][:4]
+        book.pop("casebook_sha256")
+        book["casebook_sha256"] = digest(book)
+        with self.assertRaisesRegex(ValueError, "seven canonical"):
+            validate_casebook(book)
+        book = make_casebook(SEED)
+        book["cases"][0]["domains"] = ["D1"]
+        book.pop("casebook_sha256")
+        book["casebook_sha256"] = digest(book)
+        with self.assertRaisesRegex(ValueError, "canonical probe domains"):
             validate_casebook(book)
 
     def test_source_only_review_can_be_recorded_not_qualified(self):
@@ -148,6 +169,32 @@ class ConversationTransferTests(unittest.TestCase):
         review["cases"][0]["domain_scores"]["D5"] = 1
         self.assertEqual(score(book, transcript, review)["transfer_status"],
                          "NOT_ESTABLISHED_OR_FAIL")
+
+    def test_coached_repair_cannot_hide_failed_first_social_bid(self):
+        book, transcript, review = fixture()
+        initial = review["cases"][0]["social_cold_start"][0]
+        initial["score"] = 1
+        verdict = score(book, transcript, review)
+        self.assertEqual(verdict["minimum_domain_score"], 3)
+        self.assertEqual(verdict["transfer_status"], "NOT_ESTABLISHED_OR_FAIL")
+        self.assertEqual(verdict["cold_start_social_failures"][0]["turn_index"], 0)
+        initial["score"] = 3
+        initial["user_directed_contempt"] = True
+        self.assertEqual(score(book, transcript, review)["transfer_status"],
+                         "NOT_ESTABLISHED_OR_FAIL")
+        initial["user_directed_contempt"] = False
+        initial["manual_filler"] = True
+        self.assertEqual(score(book, transcript, review)["transfer_status"],
+                         "NOT_ESTABLISHED_OR_FAIL")
+
+    def test_delayed_transfer_cites_both_uncoached_turns(self):
+        book, transcript, review = fixture()
+        delayed = review["cases"][-1]["social_cold_start"]
+        self.assertEqual([row["turn_index"] for row in delayed], [0, 2])
+        self.assertEqual(len(transcript["cases"][-1]["exchange"]), 4)
+        delayed[1]["quote"] = "unsupported praise"
+        with self.assertRaisesRegex(ValueError, "cold-start quote"):
+            score(book, transcript, review)
 
     def test_independence_or_context_not_attested_is_not_pass(self):
         book, transcript, review = fixture()
