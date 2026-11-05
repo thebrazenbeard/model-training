@@ -9,6 +9,7 @@ import time
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
+from unittest.mock import patch
 
 from trainingday.q5_conversation_probe import (
     CASES, LOCAL_Q5_FILE_SHA256, SEEDS, _client_api_key_file, _endpoint, _reply,
@@ -22,6 +23,79 @@ def completed(text="Mock answer"):
 
 
 class Q5ProbeContractTests(unittest.TestCase):
+    def test_windows_private_key_and_output_fail_closed_before_access(self):
+        # Linux-hosted negative simulation, not Windows NTFS qualification.
+        from trainingday import q5_conversation_probe as subject
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp) / "synthetic-key.txt"
+            key.write_text("SYNTHETIC_NOT_AN_OWNER_KEY")
+            folder = Path(tmp)
+            with patch.object(subject.os, "name", "nt"):
+                with self.assertRaisesRegex(ValueError, "Windows private-file"):
+                    _client_api_key_file(key)
+                with self.assertRaisesRegex(ValueError, "Windows private-file"):
+                    private_write(folder, {"review_id": "synthetic"}, {})
+            self.assertFalse(list(folder.glob("review_*.json")))
+
+    def test_preflight_output_custody_before_model_or_key_access(self):
+        from trainingday import q5_conversation_probe as subject
+        from contextlib import redirect_stderr
+        from io import StringIO
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prompt = root / "synthetic-system.txt"
+            prompt.write_text("SYNTHETIC_PRIVATE_PROMPT")
+            token = root / "synthetic-token.txt"
+            token.write_text("SYNTHETIC_KEY")
+            args = ["run", "--case", CASES[0][0], "--seed", str(SEEDS[0]),
+                    "--endpoint", "http://127.0.0.1:11435/v1/chat/completions",
+                    "--system-prompt-file", str(prompt),
+                    "--client-api-key-file", str(token),
+                    "--private-output-dir", str(root),
+                    "--consent-to-local-inference"]
+            with patch.object(subject, "_validate_private_output_dir",
+                              side_effect=ValueError("PRIVATE_OUTPUT_TEST_BLOCK")):
+                with patch.object(subject, "_client_api_key_file",
+                                  side_effect=AssertionError("key must not be touched")):
+                    with patch.object(subject, "execute",
+                                      side_effect=AssertionError("model must not be called")):
+                        with redirect_stderr(StringIO()) as stderr:
+                            self.assertEqual(main(args), 2)
+                        self.assertNotIn("SYNTHETIC_PRIVATE_PROMPT", stderr.getvalue())
+                        self.assertNotIn("SYNTHETIC_KEY", stderr.getvalue())
+
+    def test_windows_cli_run_blocks_before_key_prompt_and_model(self):
+        from trainingday import q5_conversation_probe as subject
+        from contextlib import redirect_stderr
+        from io import StringIO
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prompt = root / "synthetic-system.txt"
+            prompt.write_text("SYNTHETIC_SECRET_PROMPT")
+            key = root / "synthetic-key.txt"
+            key.write_text("SYNTHETIC_SECRET_BEARER")
+            args = ["run", "--case", CASES[0][0], "--seed", str(SEEDS[0]),
+                    "--endpoint", "http://127.0.0.1:11435/v1/chat/completions",
+                    "--system-prompt-file", str(prompt),
+                    "--client-api-key-file", str(key),
+                    "--private-output-dir", str(root),
+                    "--consent-to-local-inference"]
+            native_path_class = type(root)
+            stderr = StringIO()
+            # Keep native Path construction valid while simulating Windows on
+            # the Linux test host; no native Windows DACL claim is made.
+            with patch.object(subject, "Path", native_path_class):
+                with patch.object(subject.os, "name", "nt"):
+                    with patch.object(subject, "_client_api_key_file",
+                                      side_effect=AssertionError("key accessed")):
+                        with patch.object(subject, "execute",
+                                          side_effect=AssertionError("model called")):
+                            with redirect_stderr(stderr):
+                                self.assertEqual(main(args), 2)
+            self.assertNotIn("SYNTHETIC_SECRET_BEARER", stderr.getvalue())
+            self.assertNotIn("SYNTHETIC_SECRET_PROMPT", stderr.getvalue())
+            self.assertFalse(list(root.glob("review_*.json")))
+
     def test_public_plan_is_12_by_3_and_not_inference(self):
         value = plan()
         self.assertEqual(value["case_count"], 12)
@@ -88,6 +162,7 @@ class Q5ProbeContractTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertEqual(_reply(bad), ("upstream_error", None))
 
+    @unittest.skipIf(os.name == "nt", "Windows private I/O explicitly blocked")
     def test_private_output_is_no_overwrite_and_blinded(self):
         review, receipt = execute(CASES[0][0], SEEDS[0], "PRIVATE_TEST_PROMPT",
                                   lambda m, s, t: completed())
@@ -261,6 +336,7 @@ class Q5ProbeContractTests(unittest.TestCase):
                 monotonic=lambda: next(clock))
         self.assertEqual(budgets, [30, 20.5, 0.25])
 
+    @unittest.skipIf(os.name == "nt", "Windows private I/O explicitly blocked")
     def test_owner_opt_in_cli_collects_one_three_turn_http_smoke_only(self):
         from contextlib import redirect_stdout
         from io import StringIO
@@ -323,6 +399,7 @@ class Q5ProbeContractTests(unittest.TestCase):
             self.assertNotIn(token, review[0].read_text())
             self.assertNotIn(token, custody[0].read_text())
 
+    @unittest.skipIf(os.name == "nt", "Windows private I/O explicitly blocked")
     def test_owner_key_file_format_and_posix_permissions(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "key.txt"
@@ -396,6 +473,7 @@ class Q5ProbeContractTests(unittest.TestCase):
             self.assertEqual(result, 2)
             self.assertFalse(list(root.glob("review_*.json")))
 
+    @unittest.skipIf(os.name == "nt", "Windows private I/O explicitly blocked")
     def test_cli_unauthorized_http_returns_nonzero_without_token_in_receipts(self):
         from contextlib import redirect_stdout, redirect_stderr
         from io import StringIO

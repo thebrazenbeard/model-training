@@ -22,6 +22,13 @@ matching the tinyopsec public GGUF LFS pointer. That is **file identity**,
 not a runtime process or actual response attestation.
 
 The probe **never launches a model server** and never loads model weights.
+**Current source gate: Windows `run` is deliberately disabled.** The CLI
+cannot safely attest a Windows key file or create transcript files with a
+protected NTFS DACL. A separate human inspection or an importable pywin32
+module does not qualify those operations. The `plan` command and synthetic
+tests remain available on Windows. Do not bypass this source gate; restoring
+Windows support requires handle-bound owner/DACL/reparse checks and
+restricted-DACL file creation, native tests, and an independent host witness.
 It requires an already-qualified owner-local service on literal
 127.0.0.1:port implementing /v1/chat/completions, explicit operator opt-in,
 an owner-provided system prompt file, a private one-token **client** API-key
@@ -82,9 +89,11 @@ Seed repetition checks variability, not statistical proof of a model trait.
 
 ## One session (after physical GO)
 
-The following is an **example command**, not evidence of execution:
+The following is a **POSIX example command**, not evidence of execution.
+Windows `run` currently returns exit 2 before reading a bearer, prompt, or
+calling an endpoint, even when an external host witness reports private ACLs:
 
-    python -m trainingday.q5_conversation_probe run --case blender_orchestra --seed 17 --endpoint http://127.0.0.1:11435/v1/chat/completions --client-api-key-file C:\owner-private\client-api-key.txt --system-prompt-file C:\owner-private\vera-system.txt --private-output-dir C:\owner-private\probe-output --consent-to-local-inference
+    python -m trainingday.q5_conversation_probe run --case blender_orchestra --seed 17 --endpoint http://127.0.0.1:11435/v1/chat/completions --client-api-key-file /home/owner/private/client-api-key.txt --system-prompt-file /home/owner/private/vera-system.txt --private-output-dir /home/owner/private/probe-output --consent-to-local-inference
 
 Run the 12 case IDs with all three seeds separately rather than kicking off
 36 unsupervised sessions. **First collect one owner-attended 1–3-turn smoke
@@ -109,15 +118,19 @@ symlinks, non-absolute key paths, non-owner key files, and key files whose
 immediate parent is not owned by the current user and mode 0700. POSIX keys
 are opened with `O_NOFOLLOW` and inspected via `fstat` before a bounded read.
 This does not attest every ancestor in a hostile writable filesystem or
-establish runtime endpoint identity. On Windows the owner must independently inspect
-NTFS ACLs for the client key and its parent directory before use. The CLI
-refuses inference if the key file is absent, malformed, or the operator has not
-explicitly opted in. The owner must also test that the raw endpoint rejects
+establish runtime endpoint identity. On Windows the CLI **always rejects the
+`run` operation before reading any key** because current source has no
+handle-based NTFS confidentiality enforcement. The CLI also refuses inference
+on POSIX if the key file is absent, malformed, or the operator has not
+explicitly opted in. The owner must separately test that the raw endpoint rejects
 missing/wrong keys before any real model run.
 
-Use a preexisting owner-only output directory (0700 on POSIX; **on Windows
-the 0600 open mode DOES NOT enforce an owner ACL—set and inspect the NTFS
-directory and file ACL outside this script before sharing**). The CLI writes
+Use a preexisting POSIX output directory owned by the current user with
+mode 0700. The CLI now checks this directory **before** reading the key or
+system prompt and before model HTTP, then checks again at write time.
+**Windows 0600 modes cannot establish NTFS private ACLs, so Windows output
+and model collection remain blocked** until source-enforced secure creation
+and same-handle readback exist. On qualified POSIX hosts, the CLI writes
 two no-overwrite owner-local JSON files
 per run:
 
@@ -132,6 +145,9 @@ Share only review files with human/model reviewers and keep custody mappings
 sealed until judging is complete. The script refuses writing inside its source
 tree, omits raw replies from stdout, and never records partial text as a
 completed response or forwards it into later conversation context.
+POSIX no-overwrite output is not an atomic two-file transaction: a disk/full
+or second-file failure may leave a lone first file. Treat such a run as
+incomplete and keep any surviving file private; do not infer a valid pair.
 
 ## Review and falsification
 
@@ -173,5 +189,5 @@ by sending one byte just before each socket timeout. A separate end-to-end
 CLI regression runs all three turns through a **fake loopback HTTP server**
 and checks that no raw replies or client bearer value leave via stdout. An
 unauthorized 401 regression confirms nonzero exit and no token in receipts.
-All 19 tests remain
+All 22 tests remain
 synthetic; no physical Q5 inference is part of that passing count.
