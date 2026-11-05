@@ -166,6 +166,122 @@ function Assert-Q4FileIntegrity {
     return [pscustomobject]@{ Bytes = [long]$bytes; Sha256 = $actual }
 }
 
+function Assert-Q4ReadOnlyStageSource {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$SourceStage)
+
+    if (-not [System.IO.Path]::IsPathRooted($SourceStage)) {
+        throw 'Existing stage source must be an absolute user-profile directory.'
+    }
+    $profileRoot = [System.IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
+    $full = [System.IO.Path]::GetFullPath($SourceStage).TrimEnd('\')
+    if (-not $full.StartsWith($profileRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Existing stage source must remain within the current user profile.'
+    }
+    if (-not [System.IO.Directory]::Exists($full)) { throw 'Existing stage source does not exist.' }
+    $check = $full
+    while ($check.Length -ge $profileRoot.Length) {
+        $item = Get-Item -LiteralPath $check -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Existing stage source directory traverses a reparse point.'
+        }
+        if ($check.Equals($profileRoot, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+        $check = [System.IO.Path]::GetDirectoryName($check)
+        if ([string]::IsNullOrEmpty($check)) { throw 'Invalid existing stage ancestry.' }
+    }
+    foreach ($rel in @('downloads\llama-b12125-bin-win-cpu-x64.zip', 'models\Qwen3.5-4B-Q4_K_M.gguf')) {
+        $sourceFile = [System.IO.Path]::Combine($full, $rel)
+        $sourceDirectory = [System.IO.Path]::GetDirectoryName($sourceFile)
+        $directoryItem = Get-Item -LiteralPath $sourceDirectory -Force -ErrorAction Stop
+        if (($directoryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not $directoryItem.PSIsContainer) {
+            throw 'Existing stage artifact parent is not an ordinary directory.'
+        }
+        $fileItem = Get-Item -LiteralPath $sourceFile -Force -ErrorAction Stop
+        if (($fileItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $fileItem.PSIsContainer) {
+            throw 'Existing staged artifact is not an ordinary file.'
+        }
+    }
+    return $full
+}
+
+function Assert-Q4SiblingStagePair {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ExistingStage,
+        [Parameter(Mandatory)][string]$NewStage
+    )
+
+    if (-not [System.IO.Path]::IsPathRooted($ExistingStage) -or
+        -not [System.IO.Path]::IsPathRooted($NewStage)) {
+        throw 'Existing and new stage paths must both be absolute.'
+    }
+    $existingFull = [System.IO.Path]::GetFullPath($ExistingStage).TrimEnd('\')
+    $newFull = [System.IO.Path]::GetFullPath($NewStage).TrimEnd('\')
+    if ($existingFull.Equals($newFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Verified source and new stage must be different directories.'
+    }
+    $existingParent = [System.IO.Path]::GetDirectoryName($existingFull)
+    $newParent = [System.IO.Path]::GetDirectoryName($newFull)
+    if ([string]::IsNullOrEmpty($existingParent) -or
+        [string]::IsNullOrEmpty($newParent) -or
+        -not $existingParent.Equals($newParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Verified source and new stage must be siblings under the same canonical parent.'
+    }
+}
+
+function Copy-Q4PinnedArtifact {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Target,
+        [Parameter(Mandatory)][long]$ExpectedBytes,
+        [Parameter(Mandatory)][string]$ExpectedSha256
+    )
+
+    # This path is for a new sibling stage, NEVER for modifying a prior stage.
+    # Both the previous source and the new copied bytes must match the same
+    # pinned manifest. The original file is only ever opened for reading.
+    [void](Assert-Q4FileIntegrity -Path $Source -ExpectedBytes $ExpectedBytes -ExpectedSha256 $ExpectedSha256)
+    if ([System.IO.File]::Exists($Target)) { throw 'Verified-copy destination already exists.' }
+    $partial = $Target + '.partial-' + ([guid]::NewGuid().ToString('N'))
+    $sourceStream = $null
+    $sink = $null
+    try {
+        $sourceStream = [System.IO.FileStream]::new(
+            $Source, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read, 1048576,
+            [System.IO.FileOptions]::SequentialScan
+        )
+        $sink = [System.IO.FileStream]::new(
+            $partial, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None, 1048576,
+            [System.IO.FileOptions]::SequentialScan
+        )
+        $buffer = New-Object byte[] 1048576
+        [long]$count = 0
+        while (($read = $sourceStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $count += [long]$read
+            if ($count -gt $ExpectedBytes) { throw 'Verified-copy source grew unexpectedly.' }
+            $sink.Write($buffer, 0, $read)
+        }
+        $sink.Flush()
+        $sink.Dispose()
+        $sink = $null
+        if ($count -ne $ExpectedBytes) { throw 'Verified-copy source truncated unexpectedly.' }
+        $verified = Assert-Q4FileIntegrity -Path $partial -ExpectedBytes $ExpectedBytes -ExpectedSha256 $ExpectedSha256
+        [System.IO.File]::Move($partial, $Target)
+        return $verified
+    } finally {
+        if ($null -ne $sink) { $sink.Dispose() }
+        if ($null -ne $sourceStream) { $sourceStream.Dispose() }
+        if ([System.IO.File]::Exists($partial)) {
+            Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Test-Q4SafeZipEntries {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ArchivePath)
@@ -205,12 +321,36 @@ function Test-Q4SafeZipEntries {
             if ($uncompressed -gt 536870912) { throw 'ZIP exceeds extraction size budget.' }
             if ($name.EndsWith('/')) { continue }
             $base = $entry.Name
-            if ($base -match '^(?i:llama-cli\.exe|llama\.dll|ggml(?:-base|-cpu(?:-[a-z0-9_]+)?)?\.dll|libomp(?:140(?:\.x86_64)?)?\.dll)$') {
+            # b12125 Windows MSVC uses BUILD_SHARED_LIBS=ON. Its 9,728-byte
+            # llama-cli.exe is a launcher, not a self-contained executable:
+            # llama-cli-impl -> llama-server-impl, llama-common -> mtmd and
+            # the core llama/ggml CPU libraries. Each named DLL below is from
+            # the exact, independently SHA-pinned official release ZIP.
+            # Do not broaden this to all ZIP DLLs or unrelated executables.
+            if ($base -match '^(?i:llama-cli\.exe|llama-cli-impl\.dll|llama-server-impl\.dll|llama-common\.dll|mtmd\.dll|llama\.dll|ggml(?:-base|-cpu(?:-[a-z0-9_]+)?)?\.dll|libomp(?:140(?:\.x86_64)?)?\.dll)$') {
                 if (-not $found.Add($base)) { throw 'Duplicate selected ZIP binary filename.' }
                 [void]$selected.Add($entry)
             }
         }
-        if (-not $found.Contains('llama-cli.exe')) { throw 'Pinned runner ZIP lacks llama-cli.exe.' }
+        # Incomplete dependency closure must fail BEFORE opening any output
+        # file in Expand-Q4PinnedRunner. A successful archive hash alone does
+        # not prove an allowlist preserved the PE loader's dependency chain.
+        $mandatory = @(
+            'llama-cli.exe',
+            'llama-cli-impl.dll',
+            'llama-server-impl.dll',
+            'llama-common.dll',
+            'mtmd.dll',
+            'llama.dll',
+            'ggml.dll',
+            'ggml-base.dll',
+            'ggml-cpu-x64.dll'
+        )
+        foreach ($required in $mandatory) {
+            if (-not $found.Contains($required)) {
+                throw ('Pinned runner ZIP lacks required executable dependency: ' + $required)
+            }
+        }
         # Return names, not ZipArchiveEntry instances (archive is disposed on return).
         return @($selected | ForEach-Object { $_.FullName })
     } finally {
