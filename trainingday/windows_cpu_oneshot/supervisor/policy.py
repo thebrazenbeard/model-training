@@ -27,6 +27,9 @@ TRIAL_ROOT = PureWindowsPath(r"C:\Users\Vera\BT2ModelArtifacts\w56-q4-oneshot")
 MODEL_ROOT = TRIAL_ROOT / "models"
 RUNNER_ROOT = TRIAL_ROOT / "bin"
 STATE_ROOT = TRIAL_ROOT / "state"
+# Harmless JobObject validation never creates TRIAL_ROOT or any child beneath
+# it. The atomically staging writer must see the trial leaf as nonexistent.
+SELFTEST_STATE_ROOT = PureWindowsPath(r"C:\Users\Vera\AppData\Local\Temp\w56-q4-selftest")
 PROMPT = (
     "Please introduce yourself in your own words. If you do not know who you "
     "are, say so without inventing memories, achievements, or a personal history."
@@ -140,3 +143,11 @@ def parse_plan(raw: str | bytes) -> Plan:
 
 def required_prelaunch_free(plan: Plan) -> int:
     return max(MIN_FREE_BYTES, plan.job_memory_bytes + MIN_POST_JOB_RESERVE)
+
+
+def state_root_for_mode(mode: str) -> PureWindowsPath:
+    if mode == "--self-test":
+        return SELFTEST_STATE_ROOT
+    if mode == "--run":
+        return STATE_ROOT
+    raise Hold("unrecognized one-shot mode")

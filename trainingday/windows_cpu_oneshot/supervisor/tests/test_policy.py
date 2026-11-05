@@ -9,7 +9,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from policy import (GIB, Hold, MIN_FREE_BYTES, MODEL_SHA256, PROMPT,
-                    parse_plan, required_prelaunch_free)
+                    TRIAL_ROOT, parse_plan, required_prelaunch_free,
+                    state_root_for_mode)
 
 
 def valid():
@@ -109,6 +110,17 @@ class PolicyTests(unittest.TestCase):
     def test_uninstalled_policy_holds_even_valid_manifest(self):
         with self.assertRaisesRegex(Hold, "not independently approved"):
             parse_plan(json.dumps(valid()))
+
+    def test_harmless_selftest_does_not_populate_atomic_trial_leaf(self):
+        selftest = state_root_for_mode("--self-test")
+        model_run = state_root_for_mode("--run")
+        self.assertNotEqual(selftest, model_run)
+        self.assertNotEqual(selftest, TRIAL_ROOT)
+        self.assertNotIn(TRIAL_ROOT, selftest.parents)
+        self.assertEqual(model_run.parent, TRIAL_ROOT)
+        self.assertEqual(selftest.name, "w56-q4-selftest")
+        with self.assertRaises(Hold):
+            state_root_for_mode("--unknown")
 
 
 if __name__ == "__main__":

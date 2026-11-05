@@ -13,6 +13,10 @@ any existing `physical_launch_authority.py` HOLD.
 * Windows host/account are exactly `VERA-NODE-1` / `Vera`.
 * No network listener, server, dynamic command line, arbitrary model path,
   user-supplied prompt, GPU layers, private chat, or training operation.
+* Harmless `--self-test` writes its lock, outputs and receipt **only** under
+  `C:\Users\Vera\AppData\Local\Temp\w56-q4-selftest`, never under the
+  model trial leaf. The staging writer may therefore create
+  `C:\Users\Vera\BT2ModelArtifacts\w56-q4-oneshot` atomically afterward.
 * Pinned runner path
   `C:\Users\Vera\BT2ModelArtifacts\w56-q4-oneshot\bin\llama-cli.exe`;
   pinned model path
@@ -54,12 +58,14 @@ any existing `physical_launch_authority.py` HOLD.
 3. Pin/qualify the exact Windows `llama-cli.exe` binary, provider, SHA-256,
    and supported CLI flags. An arbitrary `llama-cli.exe` renamed from another
    binary must not be trusted merely because the path matches.
-4. Install Python3.13 source into the scoped directory, then run exactly
+4. Install Python3.13 source in a separately approved temporary source
+   directory outside the `w56-q4-oneshot` leaf, then run exactly
    `py -3.13 supervisor.py --self-test` under the bounded host window. Verify
    returned `PASS`, child PID exited, process tree reaped, CPU cap and memory
    cap read back from Windows, and no other workloads disrupted. This source
    does not substitute for those independent physical observations.
-5. Stage the publisher-pin Q4 only after the reviewer confirms free disk,
+5. Stage the publisher-pin Q4 atomically into its still-nonexistent trial leaf
+   only after the reviewer confirms free disk,
    publisher hash, published license, and explicit third-party lineage label.
 6. Materialize a single `state/approved_q4_baseline_plan.json` with a unique
    32-lowercase-hex `plan_id`, exact pinned runner SHA, fixed model SHA, and

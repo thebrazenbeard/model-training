@@ -20,8 +20,9 @@ import uuid
 import policy
 
 from policy import (
-    GIB, HOST, Hold, MIN_RUNTIME_FREE_BYTES, MODEL_ROOT, RUNNER_ROOT,
-    STATE_ROOT, parse_plan, required_prelaunch_free,
+    GIB, HOST, Hold, MIN_RUNTIME_FREE_BYTES, RUNNER_ROOT,
+    SELFTEST_STATE_ROOT, STATE_ROOT, parse_plan, required_prelaunch_free,
+    state_root_for_mode,
 )
 
 if os.name != "nt":
@@ -35,8 +36,8 @@ from windows_job import (  # noqa: E402 - Windows-only import
 
 
 STATE = Path(str(STATE_ROOT))
+SELFTEST_STATE = Path(str(SELFTEST_STATE_ROOT))
 PLAN_PATH = STATE / "approved_q4_baseline_plan.json"
-LOCK_PATH = STATE / "oneshot.lock"
 BLOCKING_PROCESSES = {
     "llama-cli.exe", "llama-server.exe", "llama-bench.exe", "koboldcpp.exe",
     "ollama.exe", "ollama_llama_server.exe", "torchrun.exe",
@@ -44,9 +45,9 @@ BLOCKING_PROCESSES = {
 
 
 @contextmanager
-def single_slot():
+def single_slot(state: Path):
     # Windows file-region locks are kernel-enforced, released if we die.
-    with open(LOCK_PATH, "a+b") as slot:
+    with open(state / "oneshot.lock", "a+b") as slot:
         slot.seek(0, os.SEEK_END)
         if slot.tell() == 0:
             slot.write(b"0")
@@ -100,11 +101,12 @@ def _require_owner_identity() -> None:
         raise Hold("observed Windows host or security principal did not match approved owner")
 
 
-def _state_ready() -> None:
+def _state_ready(mode: str) -> None:
     # Allowed scoped one-shot installation directory; no preexisting files
     # may be silently overwritten or chosen as an executable/script.
-    STATE.mkdir(parents=False, exist_ok=True)
-    assert_not_reparse(STATE)
+    state = Path(str(state_root_for_mode(mode)))
+    state.mkdir(parents=False, exist_ok=True)
+    assert_not_reparse(state)
 
 
 @contextmanager
@@ -138,8 +140,8 @@ def self_test() -> dict:
     Does not access, hash, load, or infer with any model.
     """
     trial_id = uuid.uuid4().hex
-    receipt_path = STATE / f"selftest-{trial_id}.json"
-    with single_slot():
+    receipt_path = SELFTEST_STATE / f"selftest-{trial_id}.json"
+    with single_slot(SELFTEST_STATE):
         host = _host_preflight(5 * GIB)
         python_exe = Path(sys.executable)
         # Hard-coded harmless child; caller cannot provide a command or path.
@@ -152,9 +154,9 @@ def self_test() -> dict:
             result = run_job(
                 executable=python_exe,
                 argv=[str(python_exe), "-I", "-c", "import time; time.sleep(30)"],
-                cwd=STATE,
-                stdout_path=STATE / f"selftest-{trial_id}.out",
-                stderr_path=STATE / f"selftest-{trial_id}.err",
+                cwd=SELFTEST_STATE,
+                stdout_path=SELFTEST_STATE / f"selftest-{trial_id}.out",
+                stderr_path=SELFTEST_STATE / f"selftest-{trial_id}.err",
                 memory_cap=512 * 1024 ** 2, cpu_percent=20, wall_seconds=6,
                 runtime_free_floor=MIN_RUNTIME_FREE_BYTES, forced_test_stop=True,
             )
@@ -175,7 +177,7 @@ def self_test() -> dict:
 
 
 def run_public_q4_baseline() -> dict:
-    with single_slot():
+    with single_slot(STATE):
         assert_not_reparse(PLAN_PATH)
         with open(PLAN_PATH, "rb") as plan_file:
             raw = plan_file.read(4097)
@@ -258,7 +260,7 @@ def main() -> int:
         return 2
     try:
         _require_owner_identity()
-        _state_ready()
+        _state_ready(sys.argv[1])
         body = self_test() if sys.argv[1] == "--self-test" else run_public_q4_baseline()
         print(json.dumps(body, sort_keys=True))
         return 0 if body.get("state") == "PASS" or body.get("exit_code") == 0 else 1

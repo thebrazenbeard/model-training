@@ -22,7 +22,9 @@ function New-Fixture {
             $entry = $zip.CreateEntry($name)
             if ($Symlink -and $name -eq 'llama-cli.exe') {
                 # Unix type 0120000 (symbolic link) in upper 16 bits.
-                $attr = [uint32]0xA0000000
+                # Windows PowerShell 5.1 parses this hexadecimal literal as a
+                # signed Int32; use its unsigned decimal value explicitly.
+                $attr = [uint32]2684354560
                 $entry.ExternalAttributes = [System.BitConverter]::ToInt32([System.BitConverter]::GetBytes($attr), 0)
             }
             $s = $entry.Open()
