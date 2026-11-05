@@ -376,6 +376,37 @@ class ChildResult:
     job_active_processes_after: int
     process_handle_signaled: bool
     peak_working_set_bytes: int
+    accounting_poll_count: int
+    accounting_wait_seconds: float
+
+
+def bounded_accounting_drain(read_active: Callable[[], int], *,
+                             timeout_seconds: float = 2.0,
+                             interval_seconds: float = 0.05,
+                             clock: Callable[[], float] = time.monotonic,
+                             pause: Callable[[float], None] = time.sleep) -> tuple[int, float]:
+    """Post-handle-release Job active-process reconciliation.
+
+    Windows can retain an exited process in ActiveProcesses while callers
+    retain references. The OS process handle MUST be signaled, its status
+    captured, and its process/thread handles closed BEFORE calling this.
+    """
+    if timeout_seconds <= 0 or interval_seconds <= 0:
+        raise Win32Hold("invalid Job accounting wait budget")
+    began = clock()
+    deadline = began + timeout_seconds
+    polls = 0
+    while True:
+        active = read_active()
+        polls += 1
+        if active == 0:
+            return polls, clock() - began
+        if type(active) is not int or active < 0:
+            raise Win32Hold("invalid Job ActiveProcesses accounting value")
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise Win32Hold(f"Job ActiveProcesses did not drain after handle close: {active}")
+        pause(min(interval_seconds, remaining))
 
 
 def run_job(*, executable: Path, argv: list[str], cwd: Path,
@@ -530,18 +561,34 @@ def run_job(*, executable: Path, argv: list[str], cwd: Path,
         code = DWORD(0)
         if not GetExitCodeProcess(child.hProcess, ctypes.byref(code)):
             raise _err("GetExitCodeProcess")
-        accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
-        if not QueryInformationJobObject(job, 1, ctypes.byref(accounting),
-                                         ctypes.sizeof(accounting), None):
-            raise _err("QueryInformationJobObject active processes")
-        if accounting.ActiveProcesses != 0:
-            raise Win32Hold("Job child still active after signaled process exit")
+        # A signaled process can still count as Job 'ActiveProcesses' until
+        # all references to that process are released. Retain and examine the
+        # original HANDLE through exit, then close thread/process handles
+        # BEFORE waiting for kernel Job accounting to reach zero. Closing the
+        # process handle here is safe: Wait was signaled and exit code latched.
+        if child.hThread:
+            if not CloseHandle(child.hThread):
+                raise _err("CloseHandle exited child thread")
+            child.hThread = None
+        if child.hProcess:
+            if not CloseHandle(child.hProcess):
+                raise _err("CloseHandle exited child process")
+            child.hProcess = None
+
+        def read_active() -> int:
+            accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+            if not QueryInformationJobObject(job, 1, ctypes.byref(accounting),
+                                             ctypes.sizeof(accounting), None):
+                raise _err("QueryInformationJobObject active processes")
+            return int(accounting.ActiveProcesses)
+
+        accounting_polls, accounting_wait = bounded_accounting_drain(read_active)
         final = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         if not QueryInformationJobObject(job, 9, ctypes.byref(final), ctypes.sizeof(final), None):
             raise _err("QueryInformationJobObject")
         return ChildResult(int(child.dwProcessId), int(code.value), reason,
                            int(final.PeakJobMemoryUsed), last_free,
-                           int(accounting.ActiveProcesses), True, peak_rss)
+                           0, True, peak_rss, accounting_polls, accounting_wait)
     finally:
         # Even failure *before* Job assignment cannot strand the suspended
         # child. Verify its retained process HANDLE, not a possibly reused PID.
