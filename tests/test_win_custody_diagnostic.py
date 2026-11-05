@@ -238,11 +238,11 @@ class NativeWindowsSyntheticFileTests(unittest.TestCase):
             parent = Path(temp) / "controlled-parent"
             parent.mkdir()
             acl = win32security.ACL()
-            acl.AddAccessAllowedAce(win32security.ACL_REVISION,
-                                    win32con.GENERIC_ALL, owner)
+            acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0x03,
+                                      win32con.GENERIC_ALL, owner)
             system = win32security.ConvertStringSidToSid(subject.SYSTEM_SID)
-            acl.AddAccessAllowedAce(win32security.ACL_REVISION,
-                                    win32con.GENERIC_ALL, system)
+            acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0x03,
+                                      win32con.GENERIC_ALL, system)
             everyone = win32security.ConvertStringSidToSid(EVERYONE)
             acl.AddAccessAllowedAce(win32security.ACL_REVISION, 0x0004, everyone)
             acl.AddAccessAllowedAceEx(
@@ -305,7 +305,71 @@ class NativeWindowsSyntheticFileTests(unittest.TestCase):
         # Windows CI. A blocked result is a test failure, not a synthetic PASS.
         with tempfile.TemporaryDirectory(prefix="w8-custody-path-") as temp:
             path, _ = self._fixture(Path(temp), foreign_allow=False)
-            result = subject.check_private_file(str(path), max_bytes=514)
+            try:
+                result = subject.check_private_file(str(path), max_bytes=514)
+            except subject.CustodyBlocked:
+                # Ephemeral public Windows CI synthetic-path diagnosis only.
+                # Print *only* the ordinal of the first refused ancestor and
+                # ACE type/flags/mask/well-known category. Never print names,
+                # paths, token/user SIDs, private file bytes or prompt text.
+                import sys
+                import win32api
+                import win32con
+                import win32file
+                import win32security
+
+                token = win32security.OpenProcessToken(
+                    win32api.GetCurrentProcess(), win32con.TOKEN_QUERY,
+                )
+                try:
+                    user = win32security.GetTokenInformation(
+                        token, win32security.TokenUser,
+                    )[0]
+                    process_sid = win32security.ConvertSidToStringSid(user)
+                finally:
+                    token.Close()
+                root, segments = subject._segments(str(path))
+                candidate = root
+                known = {
+                    "S-1-1-0": "Everyone", "S-1-5-11": "AuthenticatedUsers",
+                    "S-1-5-32-545": "Users", "S-1-3-0": "CreatorOwner",
+                }
+                for ordinal in range(len(segments)):
+                    if ordinal:
+                        candidate = os.path.join(candidate, segments[ordinal - 1])
+                    handle = win32file.CreateFile(
+                        candidate,
+                        win32con.READ_CONTROL | subject._FILE_READ_ATTRIBUTES,
+                        win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
+                        None, win32file.OPEN_EXISTING,
+                        win32file.FILE_FLAG_BACKUP_SEMANTICS |
+                        win32file.FILE_FLAG_OPEN_REPARSE_POINT, None,
+                    )
+                    try:
+                        try:
+                            subject._verify_descriptor(
+                                handle, process_sid=process_sid, directory=True,
+                                security=win32security,
+                            )
+                        except subject.CustodyBlocked:
+                            desc = win32security.GetSecurityInfo(
+                                handle, win32security.SE_FILE_OBJECT,
+                                win32security.DACL_SECURITY_INFORMATION,
+                            )
+                            acl = desc.GetSecurityDescriptorDacl()
+                            for i in range(min(acl.GetAceCount(), 20)):
+                                header, mask, sid = acl.GetAce(i)
+                                label = known.get(
+                                    win32security.ConvertSidToStringSid(sid),
+                                    "OTHER",
+                                )
+                                print("synthetic_ci_ancestor_ace:", ordinal,
+                                      int(header[0]), int(header[1]),
+                                      hex(int(mask)), label, file=sys.stderr)
+                            break
+                    finally:
+                        handle.Close()
+                raise
             self.assertEqual(result["status"], "SINGLE_POINT_ACL_SNAPSHOT_PASS")
             self.assertFalse(result["contents_read"])
             self.assertFalse(result["windows_q5_run_qualified"])
