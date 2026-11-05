@@ -22,7 +22,7 @@ import policy
 from policy import (
     GIB, HOST, Hold, MIN_RUNTIME_FREE_BYTES, RUNNER_ROOT,
     SELFTEST_STATE_ROOT, STATE_ROOT, parse_plan, required_prelaunch_free,
-    state_root_for_mode,
+    state_root_for_mode, blocking_processes_for_mode,
 )
 
 if os.name != "nt":
@@ -38,16 +38,14 @@ from windows_job import (  # noqa: E402 - Windows-only import
 STATE = Path(str(STATE_ROOT))
 SELFTEST_STATE = Path(str(SELFTEST_STATE_ROOT))
 PLAN_PATH = STATE / "approved_q4_baseline_plan.json"
-BLOCKING_PROCESSES = {
-    "llama-cli.exe", "llama-server.exe", "llama-bench.exe", "koboldcpp.exe",
-    "ollama.exe", "ollama_llama_server.exe", "torchrun.exe",
-}
 
 
 @contextmanager
-def single_slot(state: Path):
+def single_slot():
+    # Both self-test and model run use the *same* host-owned mutex file. It
+    # lives outside the atomic trial leaf, which self-test cannot create.
     # Windows file-region locks are kernel-enforced, released if we die.
-    with open(state / "oneshot.lock", "a+b") as slot:
+    with open(SELFTEST_STATE / "oneshot.lock", "a+b") as slot:
         slot.seek(0, os.SEEK_END)
         if slot.tell() == 0:
             slot.write(b"0")
@@ -78,14 +76,14 @@ def _receipt(path: Path, body: dict) -> None:
             tmp.unlink()
 
 
-def _host_preflight(required_free: int) -> dict:
+def _host_preflight(required_free: int, mode: str) -> dict:
     _require_owner_identity()
     if os.name != "nt" or sys.maxsize <= 2 ** 32:
         raise Hold("64-bit Windows Python required")
     free = available_physical_bytes()
     if free < required_free:
         raise Hold(f"insufficient available RAM: {free} < {required_free} bytes")
-    present = sorted(running_executable_names() & BLOCKING_PROCESSES)
+    present = sorted(running_executable_names() & blocking_processes_for_mode(mode))
     if present:
         raise Hold(f"existing model/training workload detected: {', '.join(present)}")
     cpu_busy = host_cpu_percent()
@@ -141,8 +139,8 @@ def self_test() -> dict:
     """
     trial_id = uuid.uuid4().hex
     receipt_path = SELFTEST_STATE / f"selftest-{trial_id}.json"
-    with single_slot(SELFTEST_STATE):
-        host = _host_preflight(5 * GIB)
+    with single_slot():
+        host = _host_preflight(5 * GIB, "--self-test")
         python_exe = Path(sys.executable)
         # Hard-coded harmless child; caller cannot provide a command or path.
         if str(python_exe).casefold() != (
@@ -177,7 +175,7 @@ def self_test() -> dict:
 
 
 def run_public_q4_baseline() -> dict:
-    with single_slot(STATE):
+    with single_slot():
         assert_not_reparse(PLAN_PATH)
         with open(PLAN_PATH, "rb") as plan_file:
             raw = plan_file.read(4097)
@@ -185,7 +183,7 @@ def run_public_q4_baseline() -> dict:
             raise Hold("plan exceeds 4096-byte maximum")
         plan = parse_plan(raw)
         plan_sha = hashlib.sha256(raw).hexdigest()
-        host = _host_preflight(required_prelaunch_free(plan))
+        host = _host_preflight(required_prelaunch_free(plan), "--run")
         # Source-only policy checks are necessary but not sufficient; held OS
         # file handles block mutation/rename until the child is reaped.
         with _verified_runtime_bundle(), PinnedReadFile(Path(str(plan.model))) as model:
@@ -193,7 +191,7 @@ def run_public_q4_baseline() -> dict:
                 raise Hold("Q4 artifact bytes do not match published SHA-256")
             if available_physical_bytes() < required_prelaunch_free(plan):
                 raise Hold("available RAM fell below floor during hash verification")
-            if running_executable_names() & BLOCKING_PROCESSES:
+            if running_executable_names() & blocking_processes_for_mode("--run"):
                 raise Hold("a conflicting model/training process appeared after pinning")
 
             # Consume the plan atomically before any CreateProcessW call;

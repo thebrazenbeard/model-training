@@ -10,7 +10,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from policy import (GIB, Hold, MIN_FREE_BYTES, MODEL_SHA256, PROMPT,
                     TRIAL_ROOT, parse_plan, required_prelaunch_free,
-                    state_root_for_mode)
+                    state_root_for_mode, blocking_processes_for_mode)
 
 
 def valid():
@@ -121,6 +121,18 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(selftest.name, "w56-q4-selftest")
         with self.assertRaises(Hold):
             state_root_for_mode("--unknown")
+
+    def test_idle_ollama_daemon_exception_cannot_authorize_model_run(self):
+        harmless = blocking_processes_for_mode("--self-test")
+        physical = blocking_processes_for_mode("--run")
+        self.assertNotIn("ollama.exe", harmless)
+        self.assertIn("ollama.exe", physical)
+        for actual_worker in ("ollama_llama_server.exe", "llama-cli.exe",
+                              "llama-server.exe", "torchrun.exe", "koboldcpp.exe"):
+            self.assertIn(actual_worker, harmless)
+            self.assertIn(actual_worker, physical)
+        with self.assertRaises(Hold):
+            blocking_processes_for_mode("--unknown")
 
 
 if __name__ == "__main__":

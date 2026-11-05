@@ -35,6 +35,12 @@ any existing `physical_launch_authority.py` HOLD.
   reparse points are forbidden.
 * Preflight: >= max(5 GiB, capped job commit + 1.5 GiB) available physical
   memory, no known running model executables, <=60% host CPU over 1 second.
+  The **harmless** fixed `--self-test` alone ignores a resident `ollama.exe`
+  daemon/UI process name while still rejecting `ollama_llama_server.exe` and
+  other model/trainer executables. `--run` continues to reject **any**
+  `ollama.exe` or other listed workload; no daemon is stopped or restarted.
+* Both modes share one kernel file-region lock in the self-test temporary
+  directory; the Q4 run cannot race a concurrent self-test.
 * Launch uses Win32 `CreateProcessW(CREATE_SUSPENDED)`; checks Job membership
   **before** resume. Job has `ACTIVE_PROCESS=1`, `KILL_ON_JOB_CLOSE`,
   `JOB_MEMORY<=4 GiB` and Windows CPU hard cap <=25%; child has below-normal

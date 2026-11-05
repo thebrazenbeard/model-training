@@ -44,6 +44,10 @@ MIN_FREE_BYTES = 5 * GIB
 MIN_POST_JOB_RESERVE = 1536 * 1024 ** 2
 MIN_RUNTIME_FREE_BYTES = 2 * GIB
 MAX_HOST_CPU_PERCENT = 25
+BLOCKING_PROCESSES = frozenset({
+    "llama-cli.exe", "llama-server.exe", "llama-bench.exe", "koboldcpp.exe",
+    "ollama.exe", "ollama_llama_server.exe", "torchrun.exe",
+})
 
 
 class Hold(ValueError):
@@ -150,4 +154,18 @@ def state_root_for_mode(mode: str) -> PureWindowsPath:
         return SELFTEST_STATE_ROOT
     if mode == "--run":
         return STATE_ROOT
+    raise Hold("unrecognized one-shot mode")
+
+
+def blocking_processes_for_mode(mode: str) -> frozenset[str]:
+    """Ollama's idle UI/daemon is harmless only for the fixed self-test.
+
+    Process names cannot prove the Ollama daemon has no loaded model. The
+    self-test remains capped to a harmless Python child, while real `--run`
+    retains the original strict refusal even for resident ollama.exe.
+    """
+    if mode == "--self-test":
+        return BLOCKING_PROCESSES - {"ollama.exe"}
+    if mode == "--run":
+        return BLOCKING_PROCESSES
     raise Hold("unrecognized one-shot mode")
