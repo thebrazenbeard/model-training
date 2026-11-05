@@ -23,7 +23,6 @@ internal sealed class OwnerLlamaObservation {
 
 internal sealed class OwnerLlamaPlanReview {
     internal readonly string[] Holds;
-    internal bool SourceInputsMatch { get { return Holds.Length==0; } }
     // Even matching synthetic inputs cannot authorize a real host operation.
     internal bool CanPhysicalRun { get { return false; } }
     internal string PhysicalRunState { get { return "PHYSICAL_RUN_HOLD"; } }
