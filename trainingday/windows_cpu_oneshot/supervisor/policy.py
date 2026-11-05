@@ -15,14 +15,34 @@ from pathlib import PureWindowsPath
 SCHEMA = "VERA_VN1_CPU_Q4_ONESHOT_V1"
 HOST = "VERA-NODE-1"
 MODEL_SHA256 = "b7508d8b4a652bc020a439aafdd4ce1527d49774865ce3334a43b16dbeaa90ca"
-# Must be filled from a separately reviewed exact pinned Windows runner build.
-# A SHA asserted solely by the caller's mutable JSON has no trust value.
-# Leave blank (HOLD) until the coordinator has an authenticated source/build.
-REVIEWED_RUNNER_SHA256 = ""
-# Exact native DLL/EXE bundle manifest. The empty map is deliberately HOLD.
-# Populate only after independent build provenance and immutable ACL review.
-# Keys are lowercase basenames for every .exe/.dll/.pyd in the staging bin.
-REVIEWED_RUNTIME_FILES_SHA256: dict[str, str] = {}
+# Exact native DLL/EXE bundle from the official ggml-org/llama.cpp b12125
+# Windows x64 CPU archive. SHA-256 of the ZIP was independently checked on
+# VN1 against GitHub's b12125 release attestation subject:
+# 968091ccb8c230e0cf7e0eed386310703bebae4a4fd4375f0c57db53958307d8
+# Staged EXE/DLL files were independently rehashed on VN1 (2026-11-05).
+# The manifest binds exact distributed bytes, NOT formal build-lineage proof.
+REVIEWED_RUNNER_SHA256 = "02042615249dd4852f47cc2d4dd5caabba91766b5161dd4642ed6272f788172e"
+REVIEWED_RUNTIME_FILES_SHA256: dict[str, str] = {
+    "ggml-base.dll": "677e00edd688e5ab2812421a6a8154c0c81385f5aec14664c62275fe0e8ffd26",
+    "ggml-cpu-alderlake.dll": "d38b846776fc75e52d01d859a8f002101dfe7ac8284872fff74864a5c80374f5",
+    "ggml-cpu-cannonlake.dll": "3a123c84da08eff7f76a3f0f684148426f7caf0a3c736ce6824ccefea2756e89",
+    "ggml-cpu-cascadelake.dll": "b5a2b01550ec816435bf53b395b74209e91ab94e91c2bdfe69a9fe2b97bc0a42",
+    "ggml-cpu-cooperlake.dll": "fd38ea8115267677ddf502d3a08317c53acaa3eab2698e75993227a41be87bfc",
+    "ggml-cpu-haswell.dll": "693331b22e0b663fe4ab9d4844a7646620225958749052ace3cdcf2bff4d89ad",
+    "ggml-cpu-icelake.dll": "f288a515c1ffd7bdff439a2bdede533d64247385d237b9c22a019b08005e53d5",
+    "ggml-cpu-ivybridge.dll": "2a32a0e136843402eb9c4f76646370657cbc4c7da042ba272bdfe3733314b48a",
+    "ggml-cpu-piledriver.dll": "e4f621e8392a4ff68a73f7f6fd78cf137a6cd8c51f2d3f1d6a9b9a9297fa1e34",
+    "ggml-cpu-sandybridge.dll": "09b45075a870305182a82ba584429d34ef65f0cc6538440c3393ca47c977223f",
+    "ggml-cpu-sapphirerapids.dll": "8ec5839f1b36fba99cb9850703ff7cfd82867877ce4ba016207ad0cd020db0af",
+    "ggml-cpu-skylakex.dll": "97ac403dbf9a144f572a961521f4a10a53025c05704cc8fcd8cfa2db1df9b8c3",
+    "ggml-cpu-sse42.dll": "bf2d20c091f3ecde50dc642c57d30700dc3ddd83631ebb1ca82f67e4f1da68e9",
+    "ggml-cpu-x64.dll": "34a92dd071e07b979715ec6c28282e7684f8f051dc9604c5191b827a1ea4eace",
+    "ggml-cpu-zen4.dll": "2648e542e5abd061cca5264f303a925353974fba208ee7f16c131e05285c8fba",
+    "ggml.dll": "27c4a9a9b48ebf8d7aa3ec50152b38efecd5afd61d5886023561c1f9823a82f8",
+    "libomp.dll": "a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c",
+    "llama-cli.exe": "02042615249dd4852f47cc2d4dd5caabba91766b5161dd4642ed6272f788172e",
+    "llama.dll": "669c47bee16dcad5f6e6d0755f16c9d0969508c1ac1983f3e2f74280ab44822a",
+}
 TRIAL_ROOT = PureWindowsPath(r"C:\Users\Vera\BT2ModelArtifacts\w56-q4-oneshot")
 MODEL_ROOT = TRIAL_ROOT / "models"
 RUNNER_ROOT = TRIAL_ROOT / "bin"
@@ -71,11 +91,16 @@ class Plan:
     def args(self) -> list[str]:
         """Fixed llama.cpp CLI input; never shell-joined or caller extended."""
         return [
-            str(self.executable), "-m", str(self.model),
-            "-c", str(self.context), "-n", str(self.output_tokens),
-            "-ngl", "0", "-t", str(self.threads),
-            "--seed", "0", "--temp", "0",
-            "-p", PROMPT,
+            str(self.executable), "--model", str(self.model),
+            "--ctx-size", str(self.context),
+            "--predict", str(self.output_tokens),
+            "--gpu-layers", "0", "--threads", str(self.threads),
+            "--threads-batch", str(self.threads),
+            "--seed", "0", "--temp", "0", "--fit", "off",
+            "--offline", "--no-display-prompt", "--log-disable",
+            "--simple-io", "--no-show-timings", "--no-context-shift",
+            "--reasoning", "off", "--reasoning-budget", "0",
+            "--single-turn", "--prompt", PROMPT,
         ]
 
 
@@ -169,3 +194,37 @@ def blocking_processes_for_mode(mode: str) -> frozenset[str]:
     if mode == "--run":
         return BLOCKING_PROCESSES
     raise Hold("unrecognized one-shot mode")
+
+
+def competing_model_workers(processes: dict[str, set[int]], owner_pid: int | None = None) -> list[str]:
+    """Block every known model worker except the one kernel-owned llama-cli PID.
+
+    Never infer ownership from executable name. At preflight owner_pid is None
+    and any preexisting llama-cli must block. The Win32 Job launcher supplies
+    its exact held PROCESS_INFORMATION PID once the suspended child is assigned.
+    """
+    if owner_pid is not None and (type(owner_pid) is not int or owner_pid <= 0):
+        raise Hold("unverified child PID exemption")
+    found: list[str] = []
+    for name in sorted(BLOCKING_PROCESSES - {"ollama.exe"}):
+        pids = set(processes.get(name, ()))
+        if name == "llama-cli.exe" and owner_pid is not None:
+            pids.discard(owner_pid)
+        if pids:
+            found.append(name)
+    return found
+
+
+def ollama_inventory_empty(raw: bytes) -> bool:
+    """Interpret bounded local /api/ps response; missing/invalid is HOLD."""
+    if not isinstance(raw, bytes) or len(raw) > 65536:
+        raise Hold("Ollama inventory response missing or oversized")
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise Hold("Ollama inventory response is not JSON") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+        raise Hold("Ollama inventory response has no authoritative models list")
+    if data["models"]:
+        raise Hold("Ollama has a loaded model")
+    return True
