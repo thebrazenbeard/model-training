@@ -204,7 +204,43 @@ class NativeWindowsSyntheticFileTests(unittest.TestCase):
         # Windows CI. A blocked result is a test failure, not a synthetic PASS.
         with tempfile.TemporaryDirectory(prefix="w8-custody-path-") as temp:
             path, _ = self._fixture(Path(temp), foreign_allow=False)
-            result = subject.check_private_file(str(path), max_bytes=514)
+            try:
+                result = subject.check_private_file(str(path), max_bytes=514)
+            except subject.CustodyBlocked:
+                # Ephemeral *public GitHub Windows CI only*: inspect OS drive
+                # root ACE bitfields. No source host, key, prompt, profile or
+                # filesystem path enters logs; remove after policy diagnosis.
+                import sys
+                import win32con
+                import win32file
+                import win32security
+                handle = win32file.CreateFile(
+                    Path(temp).anchor,
+                    win32con.READ_CONTROL | subject._FILE_READ_ATTRIBUTES,
+                    win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
+                    None, win32file.OPEN_EXISTING,
+                    win32file.FILE_FLAG_OPEN_REPARSE_POINT |
+                    win32file.FILE_FLAG_BACKUP_SEMANTICS, None,
+                )
+                try:
+                    descriptor = win32security.GetSecurityInfo(
+                        handle, win32security.SE_FILE_OBJECT,
+                        win32security.DACL_SECURITY_INFORMATION,
+                    )
+                    dacl = descriptor.GetSecurityDescriptorDacl()
+                    known = {
+                        "S-1-1-0": "Everyone", "S-1-5-11": "AuthenticatedUsers",
+                        "S-1-5-32-545": "Users", "S-1-3-0": "CreatorOwner",
+                    }
+                    for index in range(min(dacl.GetAceCount(), 20)):
+                        header, mask, sid = dacl.GetAce(index)
+                        sid_text = win32security.ConvertSidToStringSid(sid)
+                        print("synthetic_ci_root_ace:",
+                              int(header[0]), int(header[1]), hex(int(mask)),
+                              known.get(sid_text, "OTHER"), file=sys.stderr)
+                finally:
+                    handle.Close()
+                raise
             self.assertEqual(result["status"], "SINGLE_POINT_ACL_SNAPSHOT_PASS")
             self.assertFalse(result["contents_read"])
             self.assertFalse(result["windows_q5_run_qualified"])
