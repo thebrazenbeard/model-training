@@ -5,17 +5,26 @@ read-only, deterministic integration-gap inventory. It intentionally exits 1
 because no complete, independently qualified training-to-serving recovery
 chain has been established by this source command.
 
-The eleven topologically ordered checks distinguish **official model source
+The thirteen topologically ordered checks distinguish **official model source
 metadata** from locally authenticated model bytes; recovered R16 adapter
 provenance; independent destination restore; corpus rights; owner-held
 process/GPU and anti-replay custody; actual **base-model inference**;
-optimizer/checkpoint reload; evaluator custody; **official adapter GGUF
-conversion**; and actual **trained Vera conversation**. Restoration is an
-early, independent preservation track, not something postponed until after
-model serving. Base inference can precede training and protected evaluation;
-serving recovered adapter weights does not itself establish generalization.
+optimizer/checkpoint reload; a **separate independent restore of the newly
+trained checkpoint**; evaluator custody; historical **R16 adapter GGUF
+conversion** versus a distinct **new-run adapter GGUF conversion**; and actual
+**trained Vera conversation**. The early R16 preservation track remains
+independent, but cannot satisfy recovery of a newly produced checkpoint.
+Base inference can precede training and protected evaluation; serving
+recovered adapter weights does not itself establish generalization.
 Synthetic GGUF success never proves official adapter conversion or base
 inference.
+
+The new-run conversion dependency is a **source-only graph correction**.
+It does not bind optimizer adapter bytes to restored or converted bytes: an
+actual one-run controller still needs independently authenticated exact
+checkpoint/adapter digest equality across each handoff, evaluator custody,
+host lease and recovery readback. Synthetic/untrusted matching hashes do not
+constitute those observations. There is still no executable one-run pipeline.
 
 The command does not contact GitHub, Lappy, VN1, VN2, the NAS, the broker or a
 private evaluator. It does not admit a user's self-declared receipt, mutate
