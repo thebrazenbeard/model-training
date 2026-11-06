@@ -2,7 +2,7 @@
 
 Reviewed `neuro-sync` main `89fdef1dd83536cf29875d3de7c2acb07e6f2cfa` and `model-training` main `2b83430dd36076c5f65624709968e372b170ea36` on November 6, 2026.
 
-Proposed eventual paths:
+Source paths in the unmerged TRAININGDAY Draft PR:
 
 - `model-training/trainingday/neurosync_statebus_gate.py`
 - `model-training/tests/test_trainingday_neurosync_statebus_gate.py`
@@ -19,4 +19,8 @@ Test command from this directory: `python -m unittest discover -s tests -p 'test
 
 `model-training/trainingday/physical_launch_authority.py` remains an unconditional **HARD HOLD**. No GPU, checkpoint, launch, optimizer, grant creation, or host effects are supported.
 
-No remote writes, repository integration, service operations or actual physical training were performed. Keep this out of a production PR until the host authentication/custody boundary is established.
+These source files were committed to an **unmerged Draft PR**, not integrated
+into the protected main branch, installed on a host, or deployed. No service
+operation, physical host write, GPU launch or actual training was performed.
+Do not promote this prototype as a production security boundary until the
+host authentication/custody design is independently established and tested.
