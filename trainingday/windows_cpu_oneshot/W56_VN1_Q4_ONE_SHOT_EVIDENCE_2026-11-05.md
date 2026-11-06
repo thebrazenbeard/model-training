@@ -1,0 +1,165 @@
+# VN1 Q4 one-shot — physical evidence and failed first launch
+
+Evidence date: 2026-11-05 UTC. This is not a TRAININGDAY training qualification.
+
+## Scope and authority
+
+- User authorized one bounded CPU-only Windows JobObject experiment on VN1, with
+  no shared service stop/restart, no paid compute, no inference retries after an
+  ambiguous consumed plan.
+- GitHub review artifact: `thebrazenbeard/model-training` Draft PR #347. Branch
+  `work/w56-vn1-cpu-q4-oneshot-20261105`, initial launch revision
+  `4d8cd5d1b946291eeccabccfcee04ce80b5d277f`.
+- Actual host: `VERA-NODE-1`, Windows principal `VERA-NODE-1\Vera`.
+- Local staging leaf: `C:\Users\Vera\BT2ModelArtifacts\w56-q4-oneshot`.
+- Deployed supervisor files independently SHA-256 matched the source reviewed
+  before launch: `policy.py d7a65c7f3b1a6d6...`, `supervisor.py
+  5729e3cefb2ab7cb...`, `windows_job.py dccdc8dfa215b20f...`.
+
+## Artifact integrity — real VN1 readback
+
+| Artifact | On-disk bytes | SHA-256 | Evidence scope |
+|---|---:|---|---|
+| Third-party twoody Qwen3.5-4B-Q4_K_M.gguf | 2,783,446,880 | `b7508d8b4a652bc020a439aafdd4ce1527d49774865ce3334a43b16dbeaa90ca` | Publisher bytes, NOT verified official-Qwen derivation |
+| Official llama.cpp b12125 CPU x64 ZIP | 24,730,921 | `968091ccb8c230e0cf7e0eed386310703bebae4a4fd4375f0c57db53958307d8` | Same digest as published GitHub release attestation |
+| Extracted llama-cli.exe | 9,728 | `02042615249dd4852f47cc2d4dd5caabba91766b5161dd4642ed6272f788172e` | Exact staged binary; its loader dependencies were incomplete |
+
+Nineteen staged EXE/DLL hashes matched the stager receipt on independent
+`Get-FileHash` readback. The official ZIP actually contains 51 distinct native
+EXE/DLL files, and the stager's allowlist extracted only 19. Four missing
+shared-library candidates essential to the CLI dependency closure were found
+in the *already verified* ZIP (no extra download):
+
+| Missing from staged bin | Bytes in ZIP | SHA-256 streamed from ZIP |
+|---|---:|---|
+| `llama-cli-impl.dll` | 3,375,104 | `e60450e7897b025c4ce1eba615dcf66e2d95cea90d022aa161d31ef1d4f13eb1` |
+| `llama-server-impl.dll` | 10,104,320 | `5cb7e275a9a5c3a697c1a6a95da866e28f8ccd379f5b7ba1a3df367ffbe53569` |
+| `llama-common.dll` | 8,360,960 | `9f1e8a5714baabd1fb72187698f1ec358793d86c6be308681fc1dd49b757cf54` |
+| `mtmd.dll` | 2,531,840 | `5713c5478ba954848ae62ed02ecdc49a0524612646f887406483503af95bea71` |
+
+**Important:** ZIP membership and upstream CMake linkage corroborate a broken
+staging allowlist. The exact Windows PE import closure and prior raw child exit
+code were not captured, so DLL-missing remains a likely startup explanation,
+not a conclusively observed exit-code diagnosis.
+
+## Native containment validation
+
+- Revised policy: 12/12 Windows Python offline unit tests PASS.
+- Harmless fixed Windows Job selftest: trial
+  `d684127ab28f40a3af7e758b7830b0f4`, child PID 14284, exit code 90,
+  `SELFTEST_FORCED_STOP`, Job `ActiveProcesses=0`, original process handle
+  signaled; independent readback showed child gone, Ollama PID 5300 alive.
+- Trial staging directories: owner `VERA-NODE-1\Vera`, protected DACLs, no
+  tested model or runner reparse-point files. At preflight Ollama `/api/ps`
+  reported no loaded models. No exclusive host-wide lease was established.
+
+## First model attempt: aborted/unknown, NO REPLAY
+
+- One-use plan nonce: `f48318bf1c3645cba6b6cd6920f13635`.
+- Plan SHA-256: `ef163e4655176bfee8a4b5bc831130e3b473174119d5f0e6a874efd9d6882c27`.
+- `--run` consumed the nonce; `receipt-f48318bf1c3645cba6b6cd6920f13635.json`
+  states `UNKNOWN_NO_REPLAY`, failure_type `Win32Hold`, 0.082-second elapsed.
+- Console error: `Job child still active after signaled process exit`.
+- Both `llama-...out` and `llama-...err` were 0 bytes. The child's numeric
+  exit status was lost to the accounting exception.
+- Subsequent independent host probe found **no llama-cli process**, Ollama
+  PID 5300 still alive, roughly 7.24 GB free memory; no relevant Application
+  Event Log entries during the bounded launch window.
+- No meaningful model inference, conversational response, persona retention,
+  adapter, or official-Qwen lineage has been demonstrated.
+- The consumed plan stays consumed. **Do not relaunch or generate a replacement
+  run nonce without fresh specific authorization.**
+
+## Source repairs after the aborted attempt (not physical qualifications)
+
+1. Win32 Job accounting must confirm signaled child and latch exit code, close
+   process/thread handles, then poll Job accounting to zero with a bounded
+   deadline; the original code queried while retaining process references.
+   Microsoft documents the reference-release dependency for `ActiveProcesses`:
+   https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_accounting_information
+2. Add the four verified shared-library entries, enforce mandatory presence,
+   and stage to a new isolated leaf only. Preserve the original 19-file bin
+   and failure evidence.
+3. Perform a harmless fast-exit JobObject regression (no model) under the
+   corrected accounting source; capture numeric exit code and Job drain.
+4. Before any second model authorization, review the exact PE dependency
+   closure, pin every selected native EXE/DLL SHA-256, qualify loader/CLI
+   behavior in isolation, and inspect no-service-change/host resource gates.
+
+## Evidence taxonomy
+
+`SOURCE_INSPECTION`: two potential defects found. `TEST`: 12 offline Windows
+policy tests passed. `RUNTIME_PROBE`: staging SHA verification and harmless
+Job selftest passed. `RUNTIME_PROBE`: first model launch failed/unknown.
+`MODEL_REVIEW`: independent reviewers challenged process accounting, dependency
+closure, Ollama races, and lack of OS filesystem/network sandboxing. None of
+these sources is formal verification or model personality qualification.
+
+## Follow-up harmless Windows regression (2026-11-05 UTC)
+
+After the failed model attempt, the independent reviewer conditionally approved
+`quick_exit_probe.py` (SHA-256 `e783ddac111e4d2b32af3bab96950a681e5d0ce63b6e1d2b82e59deba93b8e8b`)
+for one harmless Python child test using the repaired Job source. Transferred
+source was independently rehashed on VN1; 17/17 Windows offline tests passed.
+
+The native probe returned `PASS`: nonce `9f9b7e66326a4df5a89e67758b09bba4`,
+child PID 220, exit code 0, `CHILD_EXITED`, process handle signaled,
+`ActiveProcesses=0`, two accounting polls, reconciliation wait 0.05058 seconds.
+The separate host check confirmed PID220 gone and Ollama PID5300 still alive.
+The original failed Q4 receipt was unchanged (SHA-256
+`cf4a47e8a52a877bf574d454773a53d2607ff4eed977416be4885a243fa3ddc6`),
+and its nonce remains consumed. This verifies the fast-exit accounting fix
+on actual Windows, not that the GGUF runner loads or produces text.
+
+## Revised stager source and Windows offline qualification
+
+The first stager's 19-file allowlist was repaired to require four additional
+native DLLs and enforce the nine-file minimum CLI/CPU dependency candidate
+set before any extraction write. A new `-CopyFromVerifiedStage` option requires
+a distinct canonical sibling leaf, refuses an existing destination, refuses
+explicit blank source arguments, reads the original archive/model without
+mutating them, and verifies hashes before and after bounded streaming copy.
+
+Independent hostile review conditionally approved Windows offline tests only.
+Exact source was transferred and SHA-verified on VN1:
+
+- `Q4Stager.Core.ps1` `4deda1e08e0ede2e427e505cbee55102f37cd29d135ebfd513908a88b1b53d3b`
+- `Stage-Q4Trial.ps1` `8015c18593d1a459ebf6b71107a1c437980e7bf6ca66c3a63ec101e8ecc13c87`
+- `Test-Q4Stager.ps1` `14f741b557f546114606e79f5fe5f3ac1171f33124b3f92d10c351a27c855a8e`
+
+`powershell.exe -NoProfile -File Test-Q4Stager.ps1` returned
+`STAGER_V2_OFFLINE_TEST_EXIT=0` and a PASS for archive ZIP path safety,
+exact dependency allowlisting, pre-extraction missing-DLL rejection,
+hash/size failures, sibling copying, collision preservation, private ACLs,
+and concurrent directory creation. This is not a full model runtime test.
+
+## New isolated v2 artifact stage — no model launch
+
+After a separate conditional hostile review of the copy-only path, the
+following exact operation was performed on VN1:
+
+- Source: `C:\Users\Vera\BT2ModelArtifacts\w56-q4-oneshot`
+- New, previously absent sibling destination:
+  `C:\Users\Vera\BT2ModelArtifacts\w56-q4-oneshot-v2`
+- Reused pinned ZIP/model bytes with checksum-gated read-only source access,
+  no download, no service modification, and no new model execution.
+- Stager exited **0**, reporting `STAGED_AND_HASH_VERIFIED` at the new
+  `stage-receipt.json`.
+- v2 receipt schema `bt2.q4.stage.receipt.v2`; runner archive SHA
+  `968091...`, model SHA `b7508d...`, 2,783,446,880 model bytes, **23**
+  native EXE/DLL files. All four previously omitted DLLs were separately
+  rehashed on VN1 and match the official ZIP's streamed SHA values.
+- v2 root, `bin`, `models`, and `state` are owned by
+  `VERA-NODE-1\Vera` with inheritance-protected ACLs. v2 `state` is empty.
+- Receipt explicitly reports `Executed=false`,
+  `WindowsPeLoaderVerified=false`, and `LeaseQualified=false`.
+- The original consumed plan remains under the original v1 stage; no v2
+  model execution plan was created.
+- A second, independent VN1 readback after the stager exited rehashed the
+  complete **2,783,446,880-byte model** (`b7508d8b4a652bc020a439aafdd4ce1527d49774865ce3334a43b16dbeaa90ca`),
+  the complete **24,730,921-byte runner archive** (`968091ccb8c230e0cf7e0eed386310703bebae4a4fd4375f0c57db53958307d8`),
+  and each of the **23 native EXE/DLL files** against the v2 manifest.
+  All passed; the readback process exited 0 in 100.67 seconds.
+
+The v2 artifact is a **staging qualification**, not a loader test, trained
+Vera, an official-base provenance proof, or authority to launch again.
