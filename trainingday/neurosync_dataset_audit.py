@@ -72,6 +72,8 @@ class DatasetAuditReport:
     near_text_pair_count: int
     train_duplicate_text_count: int
     heldout_duplicate_text_count: int
+    train_duplicate_id_count: int
+    heldout_duplicate_id_count: int
     warnings: tuple[str, ...]
 
     @property
@@ -83,6 +85,8 @@ class DatasetAuditReport:
             self.shared_user_prompt_count,
             self.shared_dialogue_prefix_count,
             self.near_text_pair_count,
+            self.train_duplicate_id_count,
+            self.heldout_duplicate_id_count,
         )):
             return "CONTAMINATION_CANDIDATE_HOLD"
         return "NO_MATCH_OBSERVED_UNVERIFIED_HOLD"
@@ -124,6 +128,8 @@ class DatasetAuditReport:
             "near_text_pair_count": self.near_text_pair_count,
             "train_duplicate_text_count": self.train_duplicate_text_count,
             "heldout_duplicate_text_count": self.heldout_duplicate_text_count,
+            "train_duplicate_id_count": self.train_duplicate_id_count,
+            "heldout_duplicate_id_count": self.heldout_duplicate_id_count,
             "disposition": self.disposition,
             "warnings": list(self.warnings),
             "physical_launch_authorized": False,
@@ -423,8 +429,10 @@ def audit_jsonl_overlap(
     h_role = Counter(r.role_text for r in heldout.records)
     t_text = Counter(r.text_only for r in train.records)
     h_text = Counter(r.text_only for r in heldout.records)
-    t_ids = {r.record_id for r in train.records}
-    h_ids = {r.record_id for r in heldout.records}
+    t_id_counts = Counter(r.record_id for r in train.records)
+    h_id_counts = Counter(r.record_id for r in heldout.records)
+    t_ids = set(t_id_counts)
+    h_ids = set(h_id_counts)
     t_prompts = {prompt for r in train.records for prompt in r.user_prompts}
     h_prompts = {prompt for r in heldout.records for prompt in r.user_prompts}
     t_prefixes = {r.prefix for r in train.records if r.prefix is not None}
@@ -449,6 +457,10 @@ def audit_jsonl_overlap(
                                        if count > 1),
         heldout_duplicate_text_count=sum(count - 1 for count in h_text.values()
                                          if count > 1),
+        train_duplicate_id_count=sum(count - 1 for count in t_id_counts.values()
+                                     if count > 1),
+        heldout_duplicate_id_count=sum(count - 1 for count in h_id_counts.values()
+                                       if count > 1),
         warnings=(
             "EXACT_MATCHES_ARE_NORMALIZED_CONTENT_EQUALITY_ONLY",
             "NEAR_MATCHES_ARE_HEURISTIC_NOT_SEMANTIC_PROOF",
