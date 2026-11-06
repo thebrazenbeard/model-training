@@ -155,6 +155,31 @@ class DatasetOverlapTests(unittest.TestCase):
         self.assertEqual(result.train_duplicate_text_count, 1)
         self.assertEqual(result.shared_id_count, 1)
 
+    def test_duplicate_ids_with_different_text_inside_train_split_are_reported(self):
+        self.write(
+            [self.row("duplicate", "North ridge is covered in rain."),
+             self.row("duplicate", "South meadow remains completely dry.")],
+            [self.row("heldout-independent", "A purple lantern is glowing.")],
+        )
+        result = self.audit()
+        self.assertEqual(result.train_duplicate_id_count, 1)
+        self.assertEqual(result.heldout_duplicate_id_count, 0)
+        self.assertEqual(result.shared_id_count, 0)
+        self.assertEqual(result.disposition, "CONTAMINATION_CANDIDATE_HOLD")
+        self.assertEqual(result.as_dict()["train_duplicate_id_count"], 1)
+
+    def test_duplicate_ids_inside_heldout_are_reported_without_disclosing_ids(self):
+        self.write(
+            [self.row("train-independent", "Snow falls beyond the harbor.")],
+            [self.row("duplicate-private", "An iron bell rings at dawn."),
+             self.row("duplicate-private", "A sandstone tower is empty.")],
+        )
+        result = self.audit()
+        self.assertEqual(result.train_duplicate_id_count, 0)
+        self.assertEqual(result.heldout_duplicate_id_count, 1)
+        self.assertEqual(result.disposition, "CONTAMINATION_CANDIDATE_HOLD")
+        self.assertNotIn("duplicate-private", json.dumps(result.as_dict()))
+
     def test_identical_distinct_files_have_matching_file_digest(self):
         rows = [self.row("a", "The lantern light goes out at midnight.")]
         self.write(rows, rows)
