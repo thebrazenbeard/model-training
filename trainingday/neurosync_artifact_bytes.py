@@ -315,6 +315,7 @@ def verify_local_artifact_bytes(
     root_fd = _open_directory_components(root)
     deadline = time.monotonic() + _ELAPSED_CEILING_SECONDS
     try:
+        original_root = os.fstat(root_fd)
         seen_inodes: set[tuple[int, int]] = set()
         observations = []
         for role, parts, digest, size in rows:
@@ -324,6 +325,27 @@ def verify_local_artifact_bytes(
                 raise ArtifactHold("ARTIFACT_HARDLINK_ALIAS")
             seen_inodes.add(inode)
             observations.append(observed)
+
+        # Held dirfds intentionally survive a rename, which is good for
+        # descriptor safety but can make a path-named receipt misleading.
+        # Reopen the requested absolute root through no-follow ancestors to
+        # catch ordinary rename/replacement during this bounded scan.
+        try:
+            current_fd = _open_directory_components(root)
+        except ArtifactHold:
+            raise ArtifactHold("ALLOWROOT_PATH_CHANGED_DURING_READ") from None
+        try:
+            current_root = os.fstat(current_fd)
+            held_root = os.fstat(root_fd)
+            identity = ("st_dev", "st_ino", "st_ctime_ns")
+            if (any(getattr(original_root, a) != getattr(held_root, a)
+                    for a in identity)
+                    or any(getattr(held_root, a) != getattr(current_root, a)
+                           for a in identity)):
+                raise ArtifactHold("ALLOWROOT_PATH_CHANGED_DURING_READ")
+        finally:
+            os.close(current_fd)
+
         return LocalByteEvidence(tuple(observations), profile,
                                  _internal=_LOCAL_RECEIPT_CONSTRUCTOR)
     finally:
