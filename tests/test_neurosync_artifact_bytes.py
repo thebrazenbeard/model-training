@@ -199,6 +199,33 @@ class LocalArtifactBytesTests(unittest.TestCase):
             self.held("ARTIFACT_CHANGED_DURING_READ")
         self.assertTrue(changed)
 
+    def test_root_renamed_and_replaced_during_scan_is_not_matching_receipt(self):
+        original_open = m._open_bounded_file
+        relocated = Path(self.temp.name) / "relocated-original-root"
+        swapped = False
+
+        def swap_after_held_file_open(root_fd, parts):
+            nonlocal swapped
+            parent_fd, file_fd = original_open(root_fd, parts)
+            if not swapped:
+                swapped = True
+                self.root.rename(relocated)
+                self.root.mkdir()
+                # Current pathname now resolves to unrelated bytes while the
+                # scanner's held root fd still sees the relocated originals.
+                (self.root / "donor_trained_checkpoint.bin").write_bytes(
+                    b"unrelated-replacement-checkpoint")
+            return parent_fd, file_fd
+
+        with mock.patch.object(m, "_open_bounded_file",
+                               side_effect=swap_after_held_file_open):
+            self.held("ALLOWROOT_PATH_CHANGED_DURING_READ")
+        self.assertTrue(swapped)
+        self.assertNotEqual(
+            hashlib.sha256((self.root / "donor_trained_checkpoint.bin").read_bytes()).hexdigest(),
+            self.manifest["artifacts"]["donor_trained_checkpoint"]["sha256"],
+        )
+
     def test_unsupported_secure_open_fails_closed(self):
         with mock.patch.object(m, "_require_secure_open",
                                side_effect=m.ArtifactHold("PLATFORM_NO_ATOMIC_PATH_CONTAINMENT")):
