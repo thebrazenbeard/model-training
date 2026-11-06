@@ -41,6 +41,13 @@ are different evidence classes and are **not** inferred from this verifier.
 - Final symlinks, symlinked parent paths, root symlinks, `..`, absolute file
   names, UNC/drive syntax, special files, hardlink aliases, duplicate roles,
   unexpected manifest fields and mismatched size/hash cause `ArtifactHold`.
+- A final no-follow reopening of the declared allowroot compares held/current
+  directory identity and ctime. This rejects the tested case where an attacker
+  relocates the original root while the scan uses its held descriptor, then
+  substitutes a different directory at the original pathname. It is a
+  **point-in-time check**, not an immutable path lease: files or directories
+  may change immediately afterward, so any later model use requires its own
+  trusted handle-bound custody/readback.
 - Per-file declared size is bounded to 32 GiB, sum to 64 GiB, and the scan
   checks a ten-minute monotonic budget. A stalled single filesystem syscall
   or malicious remote filesystem cannot be interrupted by that software
