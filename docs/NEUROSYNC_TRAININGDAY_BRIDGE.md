@@ -40,10 +40,10 @@ Review against the actual current source and artifacts before using a plan.
 ## Tests — entirely synthetic and offline
 
 ```sh
-python -B -m unittest -v tests.test_neurosync_transfer_preflight
-python -B -m unittest -v tests.test_neurosync_experiment_design
-python -B -m unittest -v tests.test_neurosync_manifest_join
-python -B -m unittest -v tests.test_trainingday_neurosync_statebus_gate
+python -B -m unittest discover -s tests -p 'test_neurosync_transfer_preflight.py' -v
+python -B -m unittest discover -s tests -p 'test_neurosync_experiment_design.py' -v
+python -B -m unittest discover -s tests -p 'test_neurosync_manifest_join.py' -v
+python -B -m unittest discover -s tests -p 'test_trainingday_neurosync_statebus_gate.py' -v
 ```
 
 Run the repository's existing TRAININGDAY regression suites separately.
