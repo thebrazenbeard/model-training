@@ -31,6 +31,9 @@ the audit. A malicious actor can still conceal an answer in an allowed string.
   and whitespace cleanup. Detects overlap even when roles or example IDs differ.
 - Detects repeated user prompts with different assistant answers and shared
   multi-turn prefixes with divergent later turns.
+- Counts duplicate record identifiers **within each split**, even when their
+  associated text differs. Such inconsistencies remain HOLD; exact IDs are
+  never emitted. Also reports train/heldout shared-ID count separately.
 - Measures candidate **lexical near duplicates** with fixed 5-character shingle
   Jaccard threshold 0.82; flags for manual review, never automatic deletion.
 - Emits only counts, file SHA-256 digests, typed status and constant warnings;
