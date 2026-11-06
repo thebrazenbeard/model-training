@@ -32,7 +32,8 @@ from trainingday.pinned_base import (
 )
 
 
-SCHEMA = "TRAININGDAY_INTEGRATION_PREFLIGHT_V1"
+# V2 renames terminal observation to avoid implying release qualification.
+SCHEMA = "TRAININGDAY_INTEGRATION_PREFLIGHT_V2"
 
 
 class UnexpectedAuthorityChange(RuntimeError):
@@ -130,7 +131,8 @@ def report() -> dict:
         _step("new_run_adapter_gguf_conversion", "UNKNOWN",
               "NO_NEW_RUN_ADAPTER_CONVERSION_OR_DIGEST_BINDING",
               "independent_new_checkpoint_restore", "real_base_model_inference"),
-        _step("trained_vera_conversation", "UNKNOWN", "NO_LIVE_SERVING_PROBE",
+        _step("unqualified_new_run_conversation_probe", "UNKNOWN",
+              "NO_LIVE_PROBE_OR_RELEASE_QUALIFICATION",
               "new_run_adapter_gguf_conversion"),
     ]
     assert launcher_denies
