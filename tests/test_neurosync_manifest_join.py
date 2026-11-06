@@ -9,9 +9,11 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
-if (ROOT / "trainingday" / "neurosync_experiment_design.py").is_file():
+if Path(__file__).resolve().parent.name == "tests":
     # Published model-training/tests layout: always exercise the repository
-    # implementation rather than a stray scratch module on sys.path.
+    # implementation, and fail loudly if the production module is absent.
+    if not (ROOT / "trainingday" / "neurosync_experiment_design.py").is_file():
+        raise RuntimeError("missing required trainingday/neurosync_experiment_design.py")
     sys.path.insert(0, str(ROOT))
     from trainingday.neurosync_experiment_design import example_source_plan
 else:
