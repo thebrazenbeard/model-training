@@ -11,6 +11,18 @@ from trainingday import dialogue_curriculum as dialogue
 
 
 class DialogueAdmissionNegativeControls(unittest.TestCase):
+    def test_train_dev_leakage_through_multiturn_history_is_rejected(self):
+        # Existing final-prompt uniqueness alone misses an earlier DEV turn.
+        for train_message_index, dev_message_index in ((-2, 0), (-1, 1)):
+            with self.subTest(train_message_index=train_message_index):
+                rows = dialogue.candidate_rows()
+                train = next(row for row in rows if row["split"] == "train")
+                dev = next(row for row in rows if row["split"] == "dev" and len(row["messages"]) == 4)
+                dev["messages"][dev_message_index]["content"] = train["messages"][train_message_index]["content"]
+
+                with self.assertRaisesRegex(ValueError, "cross-split message collision"):
+                    dialogue.validate(rows)
+
     def test_normalized_train_dev_prompt_leakage_is_rejected(self):
         rows = dialogue.candidate_rows()
         train = next(row for row in rows if row["split"] == "train")
