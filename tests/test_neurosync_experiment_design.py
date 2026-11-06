@@ -3,17 +3,17 @@
 from copy import deepcopy
 import json
 import unittest
+from pathlib import Path
 
-try:
-    # Distribution layout: model-training/trainingday and model-training/tests.
+if Path(__file__).resolve().parent.name == "tests":
+    # Published model-training/tests: never fall back to a similarly named
+    # unrelated module when the intended production sibling is missing.
     from trainingday.neurosync_experiment_design import (
         ARMS, IndependentResultAuthorityUnavailable, PlanHold,
         example_source_plan, require_independent_result_qualification,
         validate_study_plan,
     )
-except ModuleNotFoundError as exc:
-    if exc.name not in {"trainingday", "trainingday.neurosync_experiment_design"}:
-        raise
+else:
     # Isolated scratch layout: module and tests next to each other.
     from neurosync_experiment_design import (
         ARMS, IndependentResultAuthorityUnavailable, PlanHold,
