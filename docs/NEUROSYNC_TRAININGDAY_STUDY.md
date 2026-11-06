@@ -69,8 +69,9 @@ untouched, context-only, direct-copy, and deliberately shuffled control arms.
 Consequently, nobody may report only the prettiest comparison while hiding
 the more informative controls.
 
-The validator rejects unrecognized keys (therefore it cannot accidentally carry
-hidden examples or answer keys), wrong/duplicate/missing arms, protocol-label
+The validator rejects unknown answer-bearing fields, but cannot detect covert
+answer or prompt content embedded inside an otherwise allowed text field.
+It also rejects wrong/duplicate/missing arms, protocol-label
 substitution, changed baseline exposure guards, dropped controls/contrasts,
 claimed execution, reused train/heldout commitments, incomplete strata,
 absent blinded scoring, and broken cold-receiver preregistration. The
@@ -102,5 +103,5 @@ the combined experiment is **UNBOUND / NOT RUN**.
 Offline verification:
 
 ```sh
-python -m unittest -v test_neurosync_experiment_design
+python -B -m unittest discover -s tests -p 'test_neurosync_experiment_design.py' -v
 ```
