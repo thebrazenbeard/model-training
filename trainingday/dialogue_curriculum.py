@@ -243,6 +243,17 @@ def validate(rows: list[dict], split: str | None = None) -> None:
         raise ValueError("prompt collision")
     if len({_normalized_prompt(r["messages"][-2]["content"]) for r in rows}) != len(rows):
         raise ValueError("normalized prompt collision")
+    # Final-prompt uniqueness is insufficient for multi-turn examples: a DEV
+    # history turn could quote a TRAIN question *or answer* verbatim. This is
+    # a conservative rule for this tiny fictional candidate, not a semantic
+    # paraphrase detector or a protected-heldout custody guarantee.
+    message_splits: dict[str, str] = {}
+    for row in rows:
+        for message in row["messages"]:
+            key = _normalized_prompt(message["content"])
+            previous_split = message_splits.setdefault(key, row["split"])
+            if previous_split != row["split"]:
+                raise ValueError("normalized cross-split message collision")
     per_family = Counter((r["split"], r["family"]) for r in rows)
     for family in FAMILIES:
         if split in (None, "train") and per_family["train", family] != TRAIN_PER_FAMILY:
