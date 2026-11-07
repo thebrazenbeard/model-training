@@ -197,6 +197,15 @@ class NeuroSyncAdapterOnlySourceTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(AdapterOnlySourceMismatch):
                 check_adapter_only_source_handoff(intent, envelope, bundle)
 
+    def test_manifest_cannot_alias_adapter_weight_or_base_config_artifacts(self):
+        for sha in ("4" * 64, "3" * 64):
+            intent, envelope, bundle = fixture()
+            intent["input_artifacts"]["train_manifest"]["sha256"] = sha
+            envelope["proposed_artifact_digests"]["train_manifest"] = sha
+            envelope["intent_sha256_untrusted"] = canonical_sha(intent)
+            with self.subTest(alias_digest=sha), self.assertRaises(AdapterOnlySourceMismatch):
+                check_adapter_only_source_handoff(intent, envelope, bundle)
+
 
 if __name__ == "__main__":
     unittest.main()

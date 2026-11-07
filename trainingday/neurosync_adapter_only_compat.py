@@ -224,6 +224,9 @@ def check_adapter_only_source_handoff(intent, envelope, bundle):
              artifact_digests["adapter_config"] == config)
     _require(len({artifact_digests[name] for name in (
         "train_manifest", "sealed_holdout_manifest", "shuffled_control_manifest")}) == 3)
+    manifests = {artifact_digests[name] for name in (
+        "train_manifest", "sealed_holdout_manifest", "shuffled_control_manifest")}
+    _require(not manifests.intersection({donor, tokenizer, config_base, weights, config}))
     provenance = intent.get("training_provenance")
     _require(type(provenance) is dict)
     receipt = provenance.get("optimizer_receipt_sha256")

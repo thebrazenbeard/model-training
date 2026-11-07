@@ -9,6 +9,9 @@ complete external V1 field topology and declared PEFT geometry, verifies
 the envelope's canonical self-declared intent hash/digest role join, and
 requires the exact **official** Qwen3.5-4B source revision and ordered shard
 metadata from `trainingday.official_public_base`.
+Train, sealed holdout and shuffled-control manifest hashes must also be
+distinct from every declared weight/tokenizer/config role, even if a caller
+assigns coherent byte sizes to the same digest.
 
 ```python
 from trainingday.neurosync_adapter_only_compat import (
