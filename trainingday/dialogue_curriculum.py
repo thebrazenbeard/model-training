@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
+import unicodedata
 
 
 SCHEMA = "VERA_DIALOGUE_PILOT_CANDIDATE_V1"
@@ -20,6 +21,26 @@ FAMILIES = (
 TRAIN_PER_FAMILY = 8
 DEV_PER_FAMILY = 2
 ALLOWED_SPLITS = ("train", "dev")
+ROW_FIELDS = frozenset({
+    "id", "scenario_id", "family", "split", "messages", "source_kind",
+    "rights_status", "training_authorized", "heldout",
+})
+MESSAGE_FIELDS = frozenset({"role", "content"})
+
+# Unicode 18.0 Default_Ignorable_Code_Point, compressed from the authoritative
+# DerivedCoreProperties.txt ranges. Reject rather than strip: ZWJ and variation
+# selectors can be meaningful in other writing systems. This *fictional source
+# candidate* requires unambiguous displayed text, not general Unicode folding.
+# https://www.unicode.org/Public/18.0.0/ucd/DerivedCoreProperties.txt
+_DEFAULT_IGNORABLE_U18 = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C),
+    (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180B, 0x180F),
+    (0x200B, 0x200F), (0x202A, 0x202E), (0x2060, 0x206F),
+    (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
 
 # Independently written, imaginary scenes. There are no personal-chat exports,
 # real user histories, live runtime claims, or proprietary persona phrases here.
@@ -154,6 +175,16 @@ def _canonical_bytes(obj: object) -> bytes:
                        separators=(",", ":")) + "\n").encode("utf-8")
 
 
+def _normalized_prompt(prompt: str) -> str:
+    """Detect obvious public TRAIN/DEV aliasing; not semantic disjointness."""
+    return " ".join(unicodedata.normalize("NFKC", prompt).casefold().split())
+
+
+def _contains_default_ignorable(text: str) -> bool:
+    return any(start <= ord(char) <= end
+               for char in text for start, end in _DEFAULT_IGNORABLE_U18)
+
+
 def candidate_rows(split: str | None = None) -> list[dict]:
     """Return source candidates only. 'heldout' is intentionally impossible."""
     if split is not None and split not in ALLOWED_SPLITS:
@@ -189,6 +220,20 @@ def candidate_rows(split: str | None = None) -> list[dict]:
 
 
 def validate(rows: list[dict], split: str | None = None) -> None:
+    if type(rows) is not list:
+        raise ValueError("candidate rows must be a list")
+    for row in rows:
+        if type(row) is not dict or set(row) != ROW_FIELDS:
+            raise ValueError("candidate row fields mismatch")
+        messages = row["messages"]
+        if type(messages) is not list or len(messages) not in (2, 4):
+            raise ValueError("dialogue shape invalid")
+        if any(type(m) is not dict or set(m) != MESSAGE_FIELDS or
+               type(m["role"]) is not str or type(m["content"]) is not str
+               for m in messages):
+            raise ValueError("dialogue message fields mismatch")
+        if any(_contains_default_ignorable(m["content"]) for m in messages):
+            raise ValueError("default-ignorable Unicode in dialogue text")
     expected_count = {None: 80, "train": 64, "dev": 16}[split]
     if len(rows) != expected_count or len({r["id"] for r in rows}) != len(rows):
         raise ValueError("candidate cardinality/identity mismatch")
@@ -196,6 +241,19 @@ def validate(rows: list[dict], split: str | None = None) -> None:
         raise ValueError("fictional scenario collision")
     if len({r["messages"][-2]["content"] for r in rows}) != len(rows):
         raise ValueError("prompt collision")
+    if len({_normalized_prompt(r["messages"][-2]["content"]) for r in rows}) != len(rows):
+        raise ValueError("normalized prompt collision")
+    # Final-prompt uniqueness is insufficient for multi-turn examples: a DEV
+    # history turn could quote a TRAIN question *or answer* verbatim. This is
+    # a conservative rule for this tiny fictional candidate, not a semantic
+    # paraphrase detector or a protected-heldout custody guarantee.
+    message_splits: dict[str, str] = {}
+    for row in rows:
+        for message in row["messages"]:
+            key = _normalized_prompt(message["content"])
+            previous_split = message_splits.setdefault(key, row["split"])
+            if previous_split != row["split"]:
+                raise ValueError("normalized cross-split message collision")
     per_family = Counter((r["split"], r["family"]) for r in rows)
     for family in FAMILIES:
         if split in (None, "train") and per_family["train", family] != TRAIN_PER_FAMILY:
