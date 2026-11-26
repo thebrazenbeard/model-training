@@ -32,7 +32,8 @@ from trainingday.pinned_base import (
 )
 
 
-SCHEMA = "TRAININGDAY_INTEGRATION_PREFLIGHT_V1"
+# V2 renames terminal observation to avoid implying release qualification.
+SCHEMA = "TRAININGDAY_INTEGRATION_PREFLIGHT_V2"
 
 
 class UnexpectedAuthorityChange(RuntimeError):
@@ -117,14 +118,22 @@ def report() -> dict:
               "authenticated_local_weight_bytes",
               "admitted_train_and_dev_rights",
               "host_owned_process_gpu_and_replay_lease"),
+        _step("independent_new_checkpoint_restore", "UNKNOWN",
+              "NO_POST_TRAINING_RESTORE_PROBE", "reloaded_optimizer_checkpoint"),
         _step("independent_protected_evaluation", "UNKNOWN", "NO_EVALUATOR_READBACK",
-              "reloaded_optimizer_checkpoint"),
+              "independent_new_checkpoint_restore"),
+        # This is the historical R16 conversion track, NOT evidence that a
+        # new optimizer run produced the adapter that a converter consumed.
         _step("verified_adapter_gguf_conversion", "UNKNOWN",
               "NO_OFFICIAL_ADAPTER_CONVERSION_PROBE",
               "recovered_R16_adapter_provenance",
               "real_base_model_inference"),
-        _step("trained_vera_conversation", "UNKNOWN", "NO_LIVE_SERVING_PROBE",
-              "verified_adapter_gguf_conversion"),
+        _step("new_run_adapter_gguf_conversion", "UNKNOWN",
+              "NO_NEW_RUN_ADAPTER_CONVERSION_OR_DIGEST_BINDING",
+              "independent_new_checkpoint_restore", "real_base_model_inference"),
+        _step("unqualified_new_run_conversation_probe", "UNKNOWN",
+              "NO_LIVE_PROBE_OR_RELEASE_QUALIFICATION",
+              "new_run_adapter_gguf_conversion"),
     ]
     assert launcher_denies
     return {
